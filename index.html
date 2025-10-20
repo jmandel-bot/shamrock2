@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Tile Board</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+        }
+
+        #root {
+            width: 100%;
+            height: 100%;
+        }
+
+        .app-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            touch-action: none;
+        }
+
+        .board {
+            position: absolute;
+            border-radius: 50%;
+            background: #2a2a2a;
+            border: 3px solid #444;
+            cursor: pointer;
+            transition: transform 0.5s ease-out;
+        }
+
+        .board:hover {
+            border-color: #666;
+        }
+
+        .tile {
+            position: absolute;
+            cursor: move;
+            transition: opacity 0.3s ease;
+            will-change: transform;
+        }
+
+        .tile.rotating {
+            transition: transform 0.5s ease-out;
+        }
+
+        .tile-content {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        .tile-label {
+            position: absolute;
+            font-size: 14px;
+            font-weight: bold;
+            color: white;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+            white-space: nowrap;
+            transform-origin: center;
+        }
+
+        .tile-label.top {
+            top: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+
+        .tile-label.bottom {
+            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%) rotate(180deg);
+        }
+
+        .tile-label.left {
+            left: 8px;
+            top: 50%;
+            transform: translateY(-50%) rotate(-90deg);
+            transform-origin: center;
+        }
+
+        .tile-label.right {
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%) rotate(90deg);
+            transform-origin: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+        const { useState, useRef, useEffect, useCallback } = React;
+
+        // Utility function to calculate distance between two points
+        const distance = (x1, y1, x2, y2) => {
+            return Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+        };
+
+        // Utility function to normalize rotation (0-360)
+        const normalizeRotation = (rotation) => {
+            return ((rotation % 360) + 360) % 360;
+        };
+
+        // Utility function to calculate shortest rotation path
+        const getRotationTransition = (from, to) => {
+            from = normalizeRotation(from);
+            to = normalizeRotation(to);
+
+            // Always rotate forward (clockwise)
+            if (to < from) {
+                to += 360;
+            }
+            return to;
+        };
+
+        // Rotate a point around another point
+        const rotatePoint = (px, py, cx, cy, angle) => {
+            const rad = (angle * Math.PI) / 180;
+            const cos = Math.cos(rad);
+            const sin = Math.sin(rad);
+            const dx = px - cx;
+            const dy = py - cy;
+            return {
+                x: cx + (dx * cos - dy * sin),
+                y: cy + (dx * sin + dy * cos)
+            };
+        };
+
+        const Tile = ({ tile, isOnBoard, onDragStart, onRotate }) => {
+            const tileRef = useRef(null);
+            const [isRotating, setIsRotating] = useState(false);
+
+            const handleMouseDown = (e) => {
+                e.preventDefault();
+                onDragStart(tile.id, e.clientX, e.clientY);
+            };
+
+            const handleTouchStart = (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                onDragStart(tile.id, touch.clientX, touch.clientY);
+            };
+
+            const handleClick = (e) => {
+                // Only trigger if we're not dragging
+                if (e.detail === 0) return; // Ignore programmatic clicks
+                onRotate(tile.id);
+                setIsRotating(true);
+                setTimeout(() => setIsRotating(false), 500);
+            };
+
+            const opacity = isOnBoard ? 1 : 0.8;
+            const size = 100;
+
+            // Calculate display rotation (always forward)
+            const displayRotation = normalizeRotation(tile.rotation);
+
+            const style = {
+                width: `${size}px`,
+                height: `${size}px`,
+                transform: `translate(${tile.x - size/2}px, ${tile.y - size/2}px) rotate(${displayRotation}deg)`,
+                opacity: opacity,
+                backgroundColor: tile.color,
+                border: '2px solid rgba(255, 255, 255, 0.3)',
+                borderRadius: '4px'
+            };
+
+            return (
+                <div
+                    ref={tileRef}
+                    className={`tile ${isRotating ? 'rotating' : ''}`}
+                    style={style}
+                    onMouseDown={handleMouseDown}
+                    onTouchStart={handleTouchStart}
+                    onClick={handleClick}
+                >
+                    <div className="tile-content">
+                        <div className="tile-label top">{tile.labels.top}</div>
+                        <div className="tile-label right">{tile.labels.right}</div>
+                        <div className="tile-label bottom">{tile.labels.bottom}</div>
+                        <div className="tile-label left">{tile.labels.left}</div>
+                    </div>
+                </div>
+            );
+        };
+
+        const Board = ({ board, onRotate }) => {
+            const [isRotating, setIsRotating] = useState(false);
+
+            const handleClick = () => {
+                onRotate();
+                setIsRotating(true);
+                setTimeout(() => setIsRotating(false), 500);
+            };
+
+            const displayRotation = normalizeRotation(board.rotation);
+
+            const style = {
+                width: `${board.radius * 2}px`,
+                height: `${board.radius * 2}px`,
+                left: `${board.x - board.radius}px`,
+                top: `${board.y - board.radius}px`,
+                transform: `rotate(${displayRotation}deg)`
+            };
+
+            return (
+                <div
+                    className={`board ${isRotating ? 'rotating' : ''}`}
+                    style={style}
+                    onClick={handleClick}
+                />
+            );
+        };
+
+        const App = () => {
+            const containerRef = useRef(null);
+            const [dimensions, setDimensions] = useState({ width: window.innerWidth, height: window.innerHeight });
+
+            const [state, setState] = useState({
+                tiles: [
+                    {
+                        id: 'tile1',
+                        x: 200,
+                        y: 200,
+                        rotation: 0,
+                        color: '#e74c3c',
+                        labels: { top: 'North', right: 'East', bottom: 'South', left: 'West' }
+                    },
+                    {
+                        id: 'tile2',
+                        x: 400,
+                        y: 300,
+                        rotation: 0,
+                        color: '#3498db',
+                        labels: { top: 'Up', right: 'Right', bottom: 'Down', left: 'Left' }
+                    },
+                    {
+                        id: 'tile3',
+                        x: 600,
+                        y: 200,
+                        rotation: 0,
+                        color: '#2ecc71',
+                        labels: { top: 'Top', right: 'R', bottom: 'Bot', left: 'L' }
+                    },
+                    {
+                        id: 'tile4',
+                        x: 300,
+                        y: 500,
+                        rotation: 0,
+                        color: '#f39c12',
+                        labels: { top: '1', right: '2', bottom: '3', left: '4' }
+                    },
+                    {
+                        id: 'tile5',
+                        x: 700,
+                        y: 450,
+                        rotation: 0,
+                        color: '#9b59b6',
+                        labels: { top: 'A', right: 'B', bottom: 'C', left: 'D' }
+                    }
+                ],
+                board: {
+                    x: dimensions.width / 2,
+                    y: dimensions.height / 2,
+                    radius: 200,
+                    rotation: 0
+                }
+            });
+
+            const dragState = useRef({
+                isDragging: false,
+                draggedTileId: null,
+                startX: 0,
+                startY: 0,
+                tileStartX: 0,
+                tileStartY: 0,
+                hasMoved: false
+            });
+
+            useEffect(() => {
+                const handleResize = () => {
+                    const newDimensions = { width: window.innerWidth, height: window.innerHeight };
+                    setDimensions(newDimensions);
+                    setState(prev => ({
+                        ...prev,
+                        board: {
+                            ...prev.board,
+                            x: newDimensions.width / 2,
+                            y: newDimensions.height / 2
+                        }
+                    }));
+                };
+
+                window.addEventListener('resize', handleResize);
+                return () => window.removeEventListener('resize', handleResize);
+            }, []);
+
+            // Check if a tile is on the board
+            const isTileOnBoard = useCallback((tile) => {
+                const dist = distance(tile.x, tile.y, state.board.x, state.board.y);
+                return dist <= state.board.radius - 50; // 50px margin for tile half-size
+            }, [state.board.x, state.board.y, state.board.radius]);
+
+            const handleDragStart = (tileId, clientX, clientY) => {
+                const tile = state.tiles.find(t => t.id === tileId);
+                if (!tile) return;
+
+                dragState.current = {
+                    isDragging: true,
+                    draggedTileId: tileId,
+                    startX: clientX,
+                    startY: clientY,
+                    tileStartX: tile.x,
+                    tileStartY: tile.y,
+                    hasMoved: false
+                };
+            };
+
+            const handleMouseMove = useCallback((e) => {
+                if (!dragState.current.isDragging) return;
+
+                const dx = e.clientX - dragState.current.startX;
+                const dy = e.clientY - dragState.current.startY;
+
+                // Mark as moved if we've moved more than 5px
+                if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+                    dragState.current.hasMoved = true;
+                }
+
+                const newX = dragState.current.tileStartX + dx;
+                const newY = dragState.current.tileStartY + dy;
+
+                setState(prev => ({
+                    ...prev,
+                    tiles: prev.tiles.map(tile =>
+                        tile.id === dragState.current.draggedTileId
+                            ? { ...tile, x: newX, y: newY }
+                            : tile
+                    )
+                }));
+            }, []);
+
+            const handleTouchMove = useCallback((e) => {
+                if (!dragState.current.isDragging) return;
+                e.preventDefault();
+
+                const touch = e.touches[0];
+                const dx = touch.clientX - dragState.current.startX;
+                const dy = touch.clientY - dragState.current.startY;
+
+                // Mark as moved if we've moved more than 5px
+                if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+                    dragState.current.hasMoved = true;
+                }
+
+                const newX = dragState.current.tileStartX + dx;
+                const newY = dragState.current.tileStartY + dy;
+
+                setState(prev => ({
+                    ...prev,
+                    tiles: prev.tiles.map(tile =>
+                        tile.id === dragState.current.draggedTileId
+                            ? { ...tile, x: newX, y: newY }
+                            : tile
+                    )
+                }));
+            }, []);
+
+            const handleDragEnd = useCallback(() => {
+                dragState.current.isDragging = false;
+                dragState.current.draggedTileId = null;
+                dragState.current.hasMoved = false;
+            }, []);
+
+            const handleTileRotate = (tileId) => {
+                // Only rotate if we haven't been dragging
+                if (dragState.current.hasMoved) return;
+
+                setState(prev => ({
+                    ...prev,
+                    tiles: prev.tiles.map(tile =>
+                        tile.id === tileId
+                            ? { ...tile, rotation: tile.rotation + 90 }
+                            : tile
+                    )
+                }));
+            };
+
+            const handleBoardRotate = () => {
+                setState(prev => {
+                    const newBoardRotation = prev.board.rotation + 90;
+
+                    // Find tiles on the board and rotate them with it
+                    const updatedTiles = prev.tiles.map(tile => {
+                        const onBoard = distance(tile.x, tile.y, prev.board.x, prev.board.y) <= prev.board.radius - 50;
+
+                        if (onBoard) {
+                            // Rotate the tile's position around the board center
+                            const rotated = rotatePoint(tile.x, tile.y, prev.board.x, prev.board.y, 90);
+                            return {
+                                ...tile,
+                                x: rotated.x,
+                                y: rotated.y,
+                                rotation: tile.rotation + 90
+                            };
+                        }
+                        return tile;
+                    });
+
+                    return {
+                        ...prev,
+                        board: { ...prev.board, rotation: newBoardRotation },
+                        tiles: updatedTiles
+                    };
+                });
+            };
+
+            useEffect(() => {
+                window.addEventListener('mousemove', handleMouseMove);
+                window.addEventListener('mouseup', handleDragEnd);
+                window.addEventListener('touchmove', handleTouchMove, { passive: false });
+                window.addEventListener('touchend', handleDragEnd);
+
+                return () => {
+                    window.removeEventListener('mousemove', handleMouseMove);
+                    window.removeEventListener('mouseup', handleDragEnd);
+                    window.removeEventListener('touchmove', handleTouchMove);
+                    window.removeEventListener('touchend', handleDragEnd);
+                };
+            }, [handleMouseMove, handleTouchMove, handleDragEnd]);
+
+            return (
+                <div ref={containerRef} className="app-container">
+                    <Board board={state.board} onRotate={handleBoardRotate} />
+                    {state.tiles.map(tile => (
+                        <Tile
+                            key={tile.id}
+                            tile={tile}
+                            isOnBoard={isTileOnBoard(tile)}
+                            onDragStart={handleDragStart}
+                            onRotate={handleTileRotate}
+                        />
+                    ))}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
