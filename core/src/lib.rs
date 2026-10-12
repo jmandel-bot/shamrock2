@@ -90,11 +90,17 @@ pub extern "C" fn inbox_reserve(len: u32) -> *mut u8 {
     ib.as_mut_ptr()
 }
 
+/// Inbound packet (in the inbox) from the peer on connection `link`.
 #[no_mangle]
-pub extern "C" fn on_message(len: u32) {
+pub extern "C" fn on_message(len: u32, link: u32) {
     let bytes = core::mem::take(&mut g().inbox);
-    g().app.on_packet(&bytes[..(len as usize).min(bytes.len())]);
+    g().app.on_packet(&bytes[..(len as usize).min(bytes.len())], link);
     g().inbox = bytes;
+}
+
+#[no_mangle]
+pub extern "C" fn on_link_lost(link: u32) {
+    g().app.on_link_lost(link);
 }
 
 #[no_mangle]
@@ -142,6 +148,13 @@ pub extern "C" fn watch() {
 #[no_mangle]
 pub extern "C" fn remove_seat(id: u32) {
     g().app.remove_seat(id);
+}
+
+/// Local card size (display only). Returns the clamped value.
+#[no_mangle]
+pub extern "C" fn set_zoom(z: f32) -> f32 {
+    g().app.set_zoom(z);
+    g().app.zoom
 }
 
 #[no_mangle]
@@ -234,13 +247,13 @@ pub extern "C" fn probe_shown_angle(i: u32) -> f32 {
 /// Rendered size of card words, in CSS px.
 #[no_mangle]
 pub extern "C" fn probe_word_px() -> f32 {
-    app::WORD_SIZE * g().app.scale()
+    app::WORD_SIZE * g().app.scale() * g().app.zoom
 }
 
 /// Rendered card edge length, in CSS px.
 #[no_mangle]
 pub extern "C" fn probe_card_px() -> f32 {
-    model::CARD * g().app.scale()
+    model::CARD * g().app.scale() * g().app.zoom
 }
 
 /// Harness only: correct rotation for spot `s` of the clover being guessed

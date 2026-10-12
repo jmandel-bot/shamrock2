@@ -1,6 +1,6 @@
 //! Native harness: properties the game must satisfy, independent of browsers.
 
-use cloverleaf::app::{App, EV_EDIT_CLUE, EV_NET};
+use cloverleaf::app::{App, EV_EDIT_CLUE, EV_NET, ZOOM_MAX, ZOOM_MIN};
 use cloverleaf::model::*;
 
 const TAU: f32 = std::f32::consts::TAU;
@@ -68,7 +68,7 @@ impl Table {
             for (from, p) in sent {
                 for (k, a) in self.apps.iter_mut().enumerate() {
                     if k != from {
-                        a.on_packet(&p);
+                        a.on_packet(&p, from as u32 + 1);
                     }
                 }
             }
@@ -287,21 +287,61 @@ fn decoy_bid_sets_cards_in_play() {
 }
 
 #[test]
-fn absent_players_dont_block_guessing() {
+fn away_players_block_until_someone_starts_without_them() {
     let mut t = Table::new(3);
     t.apps[1].action(1);
     t.pump();
     write_and_ready(&mut t.apps[0]);
     write_and_ready(&mut t.apps[1]);
     t.pump();
-    assert_eq!(t.apps[0].shared.phase(), Phase::Writing);
-    let gone = t.apps.pop().unwrap();
+    // Going quiet (a backgrounded tab) is not leaving.
     for _ in 0..60 {
         t.t += 200.0;
-        t.pump();
+        for k in 0..2 {
+            t.apps[k].frame(t.t);
+            drain(&mut t.apps[k]);
+        }
     }
-    assert_eq!(t.apps[0].shared.phase(), Phase::Guessing(0));
+    assert_eq!(t.apps[0].shared.phase(), Phase::Writing, "a silent player still blocks");
+    // Even a dropped connection doesn't auto-skip anyone (another device
+    // may simply not have connected to them yet)...
+    let gone = t.apps.pop().unwrap();
+    for a in t.apps.iter_mut() {
+        a.on_link_lost(3);
+    }
+    t.pump();
+    assert_eq!(t.apps[0].shared.phase(), Phase::Writing);
+    assert!(t.apps[0].ui_json().contains("(away)"), "but they're shown as away");
+    // ...a ready player decides.
+    t.apps[0].action(5);
+    t.pump();
+    assert_eq!(t.apps[1].shared.phase(), Phase::Guessing(0));
     assert!(!t.apps[0].shared.puzzles().contains(&gone.seat.unwrap()));
+}
+
+#[test]
+fn a_device_that_cant_see_everyone_never_starts_early() {
+    let mut t = Table::new(3);
+    t.apps[0].action(1);
+    t.pump();
+    // A watcher who has only heard from two of the three players.
+    let mut w = app(321);
+    w.watch();
+    t.apps[0].on_peer_join();
+    for p in drain(&mut t.apps[0]).0 {
+        w.on_packet(&p, 1);
+    }
+    write_and_ready(&mut t.apps[0]);
+    write_and_ready(&mut t.apps[1]);
+    t.pump();
+    for p in [0, 1] {
+        t.apps[p].on_peer_join();
+        for pk in drain(&mut t.apps[p]).0 {
+            w.on_packet(&pk, p as u32 + 1);
+        }
+    }
+    w.frame(t.t + 5.0);
+    assert_eq!(w.shared.phase(), Phase::Writing);
 }
 
 #[test]
@@ -315,7 +355,7 @@ fn choosing_an_existing_name_takes_over_the_seat() {
     phone.on_packet(&{
         t.apps[0].on_peer_join();
         drain(&mut t.apps[0]).0.concat()
-    });
+    }, 0);
     let k = t.add(phone);
     t.apps[k].join("player 0"); // names are case-insensitive identities
     t.pump();
@@ -358,10 +398,10 @@ fn new_game_resets_scores_and_keeps_whoever_is_here() {
     t.pump();
     assert_eq!(t.apps[0].shared.game_score(), 6);
     let gone = t.apps.pop().unwrap();
-    for _ in 0..60 {
-        t.t += 200.0;
-        t.pump();
+    for a in t.apps.iter_mut() {
+        a.on_link_lost(3);
     }
+    t.pump();
     t.apps[0].action(7);
     t.pump();
     let s = &t.apps[1].shared;
@@ -587,7 +627,7 @@ fn late_joiner_receives_full_state() {
     let mut late = app(77);
     t.apps[0].on_peer_join();
     for p in drain(&mut t.apps[0]).0 {
-        late.on_packet(&p);
+        late.on_packet(&p, 0);
     }
     assert_eq!(late.shared.digest(), t.apps[0].shared.digest());
 }
@@ -662,9 +702,9 @@ fn replicas_converge_under_reordering_and_duplication() {
             while i < pending.len() {
                 if r.below(3) == 0 {
                     let (dst, p) = pending.swap_remove(i);
-                    reps[dst].on_packet(&p);
+                    reps[dst].on_packet(&p, 0);
                     if r.below(5) == 0 {
-                        reps[dst].on_packet(&p);
+                        reps[dst].on_packet(&p, 0);
                     }
                 } else {
                     i += 1;
@@ -672,7 +712,7 @@ fn replicas_converge_under_reordering_and_duplication() {
             }
         }
         for (dst, p) in pending.drain(..).rev() {
-            reps[dst].on_packet(&p);
+            reps[dst].on_packet(&p, 0);
         }
         let d0 = reps[0].shared.digest();
         for a in &reps[1..] {
@@ -716,4 +756,43 @@ fn board_fills_the_screen_and_everything_fits() {
             }
         }
     }
+}
+
+#[test]
+fn card_size_is_local_and_hit_testing_follows_it() {
+    let mut t = table_in_guessing(2);
+    let w = t.writer_now();
+    let g = t.guesser_for(w);
+    let (o, a) = {
+        let (head, tail) = t.apps.split_at_mut(g.max(1));
+        if g == 0 { (&mut tail[0], &mut head[0]) } else { (&mut head[0], &mut tail[0]) }
+    };
+    for a in [&mut *a, &mut *o] {
+        (a.w, a.h) = (390.0, 700.0);
+        a.settle();
+    }
+    let digest = a.shared.digest();
+    let k = a.scale();
+    a.set_zoom(9.0);
+    assert!((a.zoom - ZOOM_MAX).abs() < 1e-6, "clamped");
+    assert_eq!(a.shared.digest(), digest, "zoom is not shared state");
+    // A spot in the board corner: zoomed cards overlap neighbours at most edge to edge.
+    assert!(CARD * ZOOM_MAX <= 2.0 * SLOT_OFF + 0.01);
+    // A tap near the zoomed card's corner (outside its unzoomed size) still hits it.
+    let (from, to) = (card_at(a, 0), a.slot_screen(1));
+    drag(a, from, to);
+    let (cx, cy) = a.slot_screen(1);
+    let corner = HALF * k * (1.0 + ZOOM_MAX) / 2.0;
+    let rot = a.scene().cards[0].rot;
+    tap(a, (cx + corner, cy + corner));
+    assert_eq!(a.scene().cards[0].rot, (rot + 1) % 4);
+    // Every card stays on screen at the largest size.
+    for i in 0..a.scene().cards.len() {
+        let (x, y, _) = a.card_screen(i);
+        assert!(x > 0.0 && x < a.w && y > 0.0 && y < a.h, "card {i} off screen");
+    }
+    // Another player at a different size sees the same positions on the board.
+    o.set_zoom(ZOOM_MIN);
+    t.pump();
+    assert!(t.digests_equal());
 }

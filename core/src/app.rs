@@ -21,11 +21,14 @@ const C_CLEAR: f32 = 5.0;
 const DRAG_THRESHOLD: f32 = 6.0;
 const CURSOR_TTL_MS: f64 = 4000.0;
 const HELLO_EVERY_MS: f64 = 2000.0;
-const PEER_TTL_MS: f64 = 7000.0;
 pub const WORD_SIZE: f32 = 26.0;
 /// Tray depth (short axis) in board units: two rows of cards plus air.
 const TRAY_UNITS: f32 = 400.0;
 const PAD: f32 = 8.0;
+/// Per-device card size range. At the top end, cards in neighbouring spots
+/// on the board just touch.
+pub const ZOOM_MIN: f32 = 0.8;
+pub const ZOOM_MAX: f32 = 2.0 * SLOT_OFF / CARD;
 
 /// 2D affine matrix in canvas `setTransform(a, b, c, d, e, f)` order.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -170,8 +173,10 @@ pub struct App {
     pub dpr: f32,
     press: Option<Press>,
     editing: Option<u8>,
-    /// Device → (seat, last heard).
-    pub peers: BTreeMap<u32, (u32, f64)>,
+    /// Device → (seat, link it arrives over). Presence follows the
+    /// connection, not a timer, so a backgrounded tab (no frames, no
+    /// heartbeats) still counts as here until its connection actually drops.
+    pub peers: BTreeMap<u32, (u32, u32)>,
     pub cursors: BTreeMap<u32, RemoteCursor>,
     my_cursor: (u8, f32, f32),
     cursor_dirty: bool,
@@ -181,6 +186,8 @@ pub struct App {
     last_phase: Phase,
     poses: BTreeMap<(u32, u8), Pose>,
     dt: f32,
+    /// Local card size multiplier (display only; positions are shared).
+    pub zoom: f32,
     pub now: f64,
     pub outbox: Vec<u8>,
     pub cmds: Vec<f32>,
@@ -214,6 +221,7 @@ impl App {
             last_phase: Phase::Lobby,
             poses: BTreeMap::new(),
             dt: 0.0,
+            zoom: 1.0,
             now: 0.0,
             outbox: Vec::new(),
             cmds: Vec::new(),
@@ -284,7 +292,8 @@ impl App {
 
     // ---- network in ---------------------------------------------------------
 
-    pub fn on_packet(&mut self, bytes: &[u8]) {
+    /// A packet from the peer on connection `link`.
+    pub fn on_packet(&mut self, bytes: &[u8], link: u32) {
         for m in decode(bytes) {
             match m {
                 Msg::Op(op) => {
@@ -304,11 +313,11 @@ impl App {
                     }
                 }
                 Msg::Hello { device, seat } if device != self.device => {
-                    self.peers.insert(device, (seat, self.now));
+                    self.peers.insert(device, (seat, link));
                 }
                 Msg::Cursor { device, seat, kind, x, y } if device != self.device => {
                     let now = self.now;
-                    self.peers.insert(device, (seat, now));
+                    self.peers.insert(device, (seat, link));
                     self.cursors.insert(device, RemoteCursor { seat, kind, x, y, seen: now });
                 }
                 _ => {}
@@ -321,6 +330,15 @@ impl App {
         self.press = None;
         self.dirty_cards.clear();
         self.poses.clear();
+    }
+
+    /// The connection `link` closed: everyone who spoke over it is gone.
+    pub fn on_link_lost(&mut self, link: u32) {
+        let gone: Vec<u32> = self.peers.iter().filter(|(_, (_, l))| *l == link).map(|(d, _)| *d).collect();
+        for d in gone {
+            self.peers.remove(&d);
+            self.cursors.remove(&d);
+        }
     }
 
     pub fn on_peer_join(&mut self) {
@@ -368,7 +386,7 @@ impl App {
         let mut v: BTreeSet<u32> = self
             .peers
             .values()
-            .filter(|(seat, t)| *seat != 0 && self.now - t < PEER_TTL_MS)
+            .filter(|(seat, _)| *seat != 0)
             .map(|(s, _)| *s)
             .collect();
         v.extend(self.seat);
@@ -376,7 +394,7 @@ impl App {
     }
 
     pub fn watchers(&self) -> usize {
-        self.peers.values().filter(|(seat, t)| *seat == 0 && self.now - t < PEER_TTL_MS).count()
+        self.peers.values().filter(|(seat, _)| *seat == 0).count()
             + self.seat.is_none() as usize
     }
 
@@ -492,7 +510,7 @@ impl App {
     pub fn tray_px(&self, u: f32, v: f32) -> (f32, f32) {
         let l = self.layout();
         let Some((x, y, w, h, horiz)) = l.tray else { return (-1000.0, -1000.0) };
-        let half = HALF * l.k + 4.0;
+        let half = HALF * l.k * self.zoom + 4.0;
         let along = |o: f32, len: f32, t: f32| o + half + t.clamp(0.0, 1.0) * (len - 2.0 * half).max(0.0);
         if horiz { (along(x, w, u), along(y, h, v)) } else { (along(x, w, v), along(y, h, u)) }
     }
@@ -501,14 +519,18 @@ impl App {
     pub fn px_tray(&self, px: f32, py: f32) -> (f32, f32) {
         let l = self.layout();
         let Some((x, y, w, h, horiz)) = l.tray else { return (0.5, 0.5) };
-        let half = HALF * l.k + 4.0;
+        let half = HALF * l.k * self.zoom + 4.0;
         let t = |o: f32, len: f32, p: f32| ((p - o - half) / (len - 2.0 * half).max(1.0)).clamp(0.0, 1.0);
         if horiz { (t(x, w, px), t(y, h, py)) } else { (t(y, h, py), t(x, w, px)) }
     }
 
+    pub fn set_zoom(&mut self, z: f32) {
+        self.zoom = if z.is_finite() { z.clamp(ZOOM_MIN, ZOOM_MAX) } else { 1.0 };
+    }
+
     /// Card-local units → CSS px, for a card's resting place.
     pub fn card_m(&self, c: &Card) -> M {
-        let r = M::r(turn(c.rot));
+        let r = M::r(turn(c.rot)).then(M::s(self.zoom));
         match c.loc {
             Loc::Table { x, y } => {
                 let (px, py) = self.tray_px(x, y);
@@ -524,10 +546,10 @@ impl App {
 
     fn pose_m(&self, p: &Pose) -> M {
         if p.board {
-            self.board_m().then(M::t(p.x, p.y)).then(M::r(p.a))
+            self.board_m().then(M::t(p.x, p.y)).then(M::r(p.a)).then(M::s(self.zoom))
         } else {
             let (px, py) = self.tray_px(p.x, p.y);
-            M::t(px, py).then(M::s(self.scale())).then(M::r(p.a))
+            M::t(px, py).then(M::s(self.scale())).then(M::r(p.a)).then(M::s(self.zoom))
         }
     }
 
@@ -962,15 +984,17 @@ impl App {
         self.render();
     }
 
-    /// Guessing starts once every player at the table has tapped Ready.
+    /// Guessing starts once every seated player has tapped Ready. This must
+    /// not depend on who *this* device thinks is present: in a mesh, a device
+    /// that hasn't connected to someone yet would start without them. Players
+    /// who really left are skipped explicitly ("Start without them" / Remove).
     fn maybe_start_guessing(&mut self) {
         if self.shared.phase() != Phase::Writing {
             return;
         }
         let players = self.shared.players();
-        let here: Vec<u32> = self.present().into_iter().filter(|s| players.contains(s)).collect();
         let ready = |s: &u32| self.shared.subs.get(s).is_some_and(|x| x.ready);
-        if !here.is_empty() && here.iter().all(ready) {
+        if !players.is_empty() && players.iter().all(ready) {
             let s = self.stamp();
             self.commit(Body::Start(s));
         }
@@ -1181,10 +1205,13 @@ impl App {
             Phase::Guessing(k) => ("guessing", k, s.puzzles().len()),
             Phase::End => ("end", 0, s.puzzles().len()),
         };
-        let waiting: Vec<String> = present
+        let waiting: Vec<String> = players
             .iter()
-            .filter(|p| players.contains(p) && !s.subs.get(p).is_some_and(|x| x.ready))
-            .map(|p| json_str(&self.name_of(*p)))
+            .filter(|p| !s.subs.get(p).is_some_and(|x| x.ready))
+            .map(|p| {
+                let away = if present.contains(p) { "" } else { " (away)" };
+                json_str(&format!("{}{away}", self.name_of(*p)))
+            })
             .collect();
         let sub = self.my_sub();
         let check = writer.map(|w| s.check(w)).unwrap_or_default();

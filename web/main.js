@@ -99,9 +99,12 @@ function drainOutbox() {
   }
 }
 
-function receive(u8) {
+// Presence follows connections: each peer connection gets a numeric link id.
+const linkId = (s) => { let h = 0x811c9dc5; for (const c of String(s)) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193); return (h >>> 0) || 1; };
+
+function receive(u8, link) {
   stats.recvPackets++; stats.recvBytes += u8.length;
-  X.on_message(writeInbox(u8));
+  X.on_message(writeInbox(u8), link);
 }
 
 // ---- input ------------------------------------------------------------------
@@ -221,6 +224,13 @@ $('watchMenuBtn').onclick = watch;
 $('redealBtn').onclick = () => { closeSheets(); act(6); };
 $('newGameBtn').onclick = () => { closeSheets(); act(7); };
 
+// Card size is per device (display only): bigger cards just overlap more.
+const zoomKey = 'cloverleaf:zoom';
+let zoom = X.set_zoom(+(recall(zoomKey) ?? (Math.min(innerWidth, innerHeight) < 520 ? 1.3 : 1)));
+const setZoom = (z) => { stats.presses++; zoom = X.set_zoom(z); remember(zoomKey, zoom); };
+$('sizeDown').onclick = () => setZoom(zoom - 0.15);
+$('sizeUp').onclick = () => setZoom(zoom + 0.15);
+
 const setDecoys = (d) => { X.set_decoys(Math.max(0, Math.min(4, d))); drainOutbox(); renderUi(true); };
 $('decDown').onclick = () => { stats.presses++; setDecoys(ui().decoys - 1); };
 $('decUp').onclick = () => { stats.presses++; setDecoys(ui().decoys + 1); };
@@ -300,6 +310,7 @@ function renderUi(force = false) {
   altBtn.hidden = !alt;
   if (alt) { altBtn.textContent = alt[0]; altBtn.onclick = alt[1]; }
   $('decoys').hidden = !decoys;
+  $('size').hidden = !(s.phase === 'guessing' || (s.phase === 'writing' && s.seated));
   $('decLabel').textContent = `${s.decoys} decoy${s.decoys === 1 ? '' : 's'}`;
 }
 
@@ -307,23 +318,23 @@ function renderUi(force = false) {
 
 const peers = new Set();
 const joined = (id) => { peers.add(id); X.on_peer_join(); drainOutbox(); };
-const left = (id) => peers.delete(id);
+const left = (id) => { peers.delete(id); X.on_link_lost(linkId(id)); };
 
 async function connect() {
   const mode = params.get('net');
   if (mode === 'local') {
     // Same-browser tabs; handy offline. Same shape as the WebRTC path.
     const bc = new BroadcastChannel(`cloverleaf:${roomId}`);
-    const hello = (to) => bc.postMessage({ hello: device, to });
+    const hello = (to) => bc.postMessage({ hello: device, to, from: device });
     bc.onmessage = ({ data }) => {
       if (data.hello) {
         if (!peers.has(data.hello)) { joined(data.hello); hello(data.hello); }
       } else if (data.bye) left(data.bye);
-      else receive(new Uint8Array(data.bytes));
+      else receive(new Uint8Array(data.bytes), linkId(data.from));
     };
     addEventListener('pagehide', () => bc.postMessage({ bye: device }));
     hello();
-    return { send: (u8) => bc.postMessage({ bytes: u8 }) };
+    return { send: (u8) => bc.postMessage({ bytes: u8, from: device }) };
   }
   const signal = params.get('signal');
   const lib = signal ? await import('./vendor/trystero-ws.js') : await import('./vendor/trystero-nostr.js');
@@ -331,7 +342,7 @@ async function connect() {
   if (signal) config.relayConfig = { urls: [signal] };
   const room = lib.joinRoom(config, roomId);
   const action = room.makeAction('m');
-  action.onMessage = (data) => receive(new Uint8Array(data));
+  action.onMessage = (data, { peerId }) => receive(new Uint8Array(data), linkId(peerId));
   room.onPeerJoin = joined;
   room.onPeerLeave = left;
   addEventListener('pagehide', () => room.leave());
@@ -377,6 +388,7 @@ window.__cl = {
   quarter: () => X.view_quarter(),
   wordPx: () => X.probe_word_px(),
   cardPx: () => X.probe_card_px(),
+  zoom: () => zoom,
   settle: () => X.settle(),
   answerRot: (s) => X.answer_rot(s),
 };

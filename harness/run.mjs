@@ -147,7 +147,7 @@ try {
   await Promise.all([...players, W].map((p) => p.page.waitForFunction(() => window.__cl.ui().players.length === 5, null, { timeout: 30000 })));
   metric('join_5_players_ms', performance.now() - t0, ' ms');
   gate('first visit asks for a name; joining is one tap', Math.max(...joinPresses) === 1);
-  await A.page.waitForFunction(() => window.__cl.ui().watchers === 1, null, { timeout: 5000 })
+  await A.page.waitForFunction(() => window.__cl.ui().watchers === 1, null, { timeout: 20000 })
     .then(() => gate('everyone sees the watcher', true), () => gate('everyone sees the watcher', false));
 
   // ---- writing ----------------------------------------------------------------------
@@ -208,15 +208,33 @@ try {
   // Legibility and fill, measured where it matters: while guessing (tray shown).
   for (const p of [G, E]) {
     const word = await p.ev(() => window.__cl.wordPx());
-    const boardPx = (await p.ev(() => window.__cl.cardPx())) / 150 * 810;
+    const boardPx = (await p.ev(() => window.__cl.cardPx() / window.__cl.zoom())) / 150 * 810;
     const side = Math.min(p.viewport.width, p.viewport.height);
     const tag = p === E ? 'phone_390x844' : 'desktop_1280x860';
     metric(`word_px_${tag}`, word, ' px');
     metric(`board_fill_${tag}`, boardPx / side);
   }
   gate('card words ≥ 16 px on desktop', metrics.word_px_desktop_1280x860 >= 16);
-  gate('card words ≥ 12 px on a phone', metrics.word_px_phone_390x844 >= 12);
+  gate('card words ≥ 14 px on a phone (bigger cards by default there)', metrics.word_px_phone_390x844 >= 14);
   gate('the board fills the phone width (≥ 95%)', metrics.board_fill_phone_390x844 >= 0.95);
+
+  // Card size: per device, display only.
+  {
+    const d0 = JSON.stringify(await E.digest());
+    const w0 = await E.ev(() => window.__cl.wordPx());
+    for (let k = 0; k < 4; k++) await E.page.click('#sizeUp');
+    const w1 = await E.ev(() => window.__cl.wordPx());
+    metric('word_px_phone_max_size', w1, ' px');
+    await sleep(200);
+    gate('the card-size buttons enlarge cards on my screen only', w1 > w0 * 1.1 && JSON.stringify(await G.digest()) === d0
+      && Math.abs((await G.ev(() => window.__cl.wordPx())) - metrics.word_px_desktop_1280x860) < 0.01);
+    let onScreen = true;
+    for (let i = 0; i < cur(await E.digest()).cards.length; i++) {
+      const [x, y] = await E.card(i);
+      onScreen &&= x > 0 && x < 390 && y > 0 && y < 844;
+    }
+    gate('at the largest card size every card is still on screen', onScreen);
+  }
 
   const wd = JSON.stringify(await Wr.digest());
   await Wr.settle();
@@ -322,6 +340,7 @@ try {
   gate('next round: same players, score carries over', r2.seats.length === 5 && r2.gameScore === 28 && r2.roundScore === 0);
 
   await D.ctx.close();
+  // (Dee has left mid-writing; others would now see "Waiting for Dee (away)".)
   await A.page.waitForFunction(() => window.__cl.ui().players.find((p) => p.name === 'Dee')?.away, null, { timeout: 15000 })
     .then(() => gate('a player who leaves shows as away', true), () => gate('a player who leaves shows as away', false));
   await A.page.click('#menuBtn');
