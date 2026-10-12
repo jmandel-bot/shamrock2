@@ -1,11 +1,11 @@
 //! Shared, replicated game state.
 //!
-//! Every per-round op carries the `Round` it belongs to, so a replica that
-//! hears about a newer round from any op resets and follows; ops from older
-//! rounds are dropped. Within a round each value is a register merged by a
+//! Every op carries the game and round it belongs to. A newer game resets
+//! everything; a newer round (same game) resets round state but keeps seats
+//! and the score ledger. Within a round each value is a register merged by a
 //! monotone rule (LWW by Lamport stamp, or max for counters). `apply` is
-//! therefore commutative, associative and idempotent: replicas converge
-//! regardless of delivery order or duplication.
+//! commutative, associative and idempotent, so replicas converge regardless
+//! of delivery order or duplication.
 
 use crate::words::WORDS;
 use std::collections::BTreeMap;
@@ -13,18 +13,26 @@ use std::collections::BTreeMap;
 pub const NSLOTS: usize = 4;
 pub const MAX_DECOYS: u8 = 4;
 pub const MAX_CARDS: usize = NSLOTS + MAX_DECOYS as usize;
-pub const WORLD_W: f32 = 900.0;
-pub const WORLD_H: f32 = 1000.0;
-pub const CX: f32 = WORLD_W / 2.0;
-pub const CY: f32 = 320.0;
+
+// Board geometry, in board units (cards are 150 units).
 pub const CARD: f32 = 150.0;
 pub const HALF: f32 = CARD / 2.0;
-pub const SLOT_OFF: f32 = 79.0;
-/// Half-size of the square (in board coords) that counts as "over the board".
-pub const BOARD_REACH: f32 = 205.0;
+pub const SLOT_OFF: f32 = 115.0;
+pub const BOARD_HALF: f32 = 310.0;
+/// Clue leaves sit between these distances from the centre.
+pub const LEAF_IN: f32 = 322.0;
+pub const LEAF_OUT: f32 = 400.0;
+pub const LEAF_HALF_W: f32 = 220.0;
+/// Half-extent of everything on the board, leaves included.
+pub const EXTENT: f32 = 405.0;
 pub const HUB_R: f32 = 30.0;
-pub const MAX_CLUE_BYTES: usize = 60;
-pub const PERFECT_SCORE: u32 = 6;
+/// Dropping within this distance of a free spot snaps into it.
+pub const SNAP_R: f32 = 34.0;
+/// A card within this distance of a spot counts as "in" it for a check.
+pub const CLAIM_R: f32 = 80.0;
+
+pub const MAX_TEXT: usize = 60;
+pub const PERFECT_SCORE: u8 = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Hash)]
 pub struct Stamp {
@@ -32,8 +40,10 @@ pub struct Stamp {
     pub peer: u32,
 }
 
-/// `Table` is in world coords and never turns with anyone's view; `Slot` and
-/// `Float` are in board coords and turn with the board.
+/// `Table` is a spot in the tray, normalised to 0..=1 along the tray's long
+/// (x) and short (y) axes, so it fits every screen; it never turns with
+/// anyone's view. `Slot` and `Float` are in board units and turn with the
+/// board.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Loc {
     Table { x: f32, y: f32 },
@@ -46,7 +56,7 @@ pub struct Card {
     pub loc: Loc,
     /// Clockwise quarter turns, relative to the frame `loc` lives in.
     pub rot: u8,
-    /// Peer currently dragging this card (0 = nobody).
+    /// Seat currently dragging this card (0 = nobody).
     pub held: u32,
     pub stamp: Stamp,
 }
@@ -54,22 +64,31 @@ pub struct Card {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Round {
     pub seed: u32,
+    /// 1-based round number within the game (0 = no round yet).
+    pub n: u16,
     pub stamp: Stamp,
 }
 
-/// A writer's submitted clues.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Seat {
+    pub name: String,
+    pub active: bool,
+    pub stamp: Stamp,
+}
+
+/// A writer's clues (drafts until `ready`) and decoy bid.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Sub {
     pub clues: [String; NSLOTS],
     pub decoys: u8,
+    pub ready: bool,
     pub stamp: Stamp,
 }
 
-/// Result of the guessers' checks on one clover.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct Check {
     pub attempts: u8,
-    /// Bit s set = slot s was right at the last check (and is now locked).
+    /// Bit s set = spot s was right at the last check (and is now locked).
     pub mask: u8,
     pub stamp: Stamp,
 }
@@ -78,18 +97,19 @@ impl Check {
     pub fn done(&self) -> bool {
         self.attempts >= 2 || self.mask == 0b1111
     }
-    pub fn score(&self) -> u32 {
+    pub fn score(&self) -> u8 {
         match (self.attempts, self.mask) {
             (1, 0b1111) => PERFECT_SCORE,
-            _ => self.mask.count_ones(),
+            _ => self.mask.count_ones() as u8,
         }
     }
 }
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Body {
-    /// Just announces the round.
+    /// Just announces the game / round.
     None,
+    Seat(u32, Seat),
     Sub(u32, Sub),
     /// Writing is over; guessing begins.
     Start(Stamp),
@@ -97,10 +117,13 @@ pub enum Body {
     Check(u32, Check),
     /// Index of the clover being guessed (grow-only).
     Next(u16, Stamp),
+    /// Points a writer's clover earned in round `n`.
+    Ledger(u16, u32, u8, Stamp),
 }
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Op {
+    pub game: Stamp,
     pub round: Round,
     pub body: Body,
 }
@@ -116,6 +139,10 @@ pub enum Phase {
 
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Shared {
+    pub game: Stamp,
+    pub seats: BTreeMap<u32, Seat>,
+    /// (round n, writer) → (points, stamp).
+    pub ledger: BTreeMap<(u16, u32), (u8, Stamp)>,
     pub round: Round,
     pub subs: BTreeMap<u32, Sub>,
     pub start: Option<Stamp>,
@@ -124,12 +151,22 @@ pub struct Shared {
     pub next: (u16, Stamp),
 }
 
+/// Seat id for a display name: names are identities, so choosing an
+/// existing name on another device takes that seat over.
+pub fn seat_id(name: &str) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for b in name.trim().to_lowercase().bytes() {
+        h = (h ^ b as u32).wrapping_mul(0x0100_0193);
+    }
+    h.max(1)
+}
+
 /// Everything about one writer's clover that is derived from the seed.
 pub struct Deal {
     pub words: [[&'static str; 4]; MAX_CARDS],
-    /// Rotation of card s in slot s (the answer). Card s belongs in slot s.
+    /// Rotation of card s in spot s (the answer). Card s belongs in spot s.
     pub sol_rot: [u8; NSLOTS],
-    /// Shuffled table spot and rotation for each card when guessing starts.
+    /// Shuffle order for tray spots, and starting rotations.
     pub home: [u8; MAX_CARDS],
     pub home_rot: [u8; MAX_CARDS],
 }
@@ -153,11 +190,14 @@ pub fn deal(seed: u32, writer: u32) -> Deal {
     }
 }
 
-/// Table spot `k` of `n`, in rows of up to five below the board.
-pub fn table_spot(k: usize, n: usize) -> (f32, f32) {
-    let (row, col) = (k / 5, k % 5);
-    let in_row = (n - row * 5).min(5);
-    (CX + (col as f32 - (in_row as f32 - 1.0) / 2.0) * 172.0, 715.0 + row as f32 * 175.0)
+/// Tray spot `k` of `n`: rows of up to four along the tray's long axis.
+pub fn tray_spot(k: usize, n: usize) -> (f32, f32) {
+    let rows = n.div_ceil(4).max(1);
+    let (row, col) = (k / 4, k % 4);
+    let in_row = (n - row * 4).min(4);
+    let x = 0.5 + (col as f32 - (in_row as f32 - 1.0) / 2.0) / 3.0;
+    let y = if rows == 1 { 0.5 } else { row as f32 / (rows - 1) as f32 };
+    (x, y)
 }
 
 pub fn slot_pos(s: usize) -> (f32, f32) {
@@ -166,13 +206,12 @@ pub fn slot_pos(s: usize) -> (f32, f32) {
     P[s]
 }
 
-/// Slot whose quadrant contains board point (x, y).
-pub fn nearest_slot(x: f32, y: f32) -> u8 {
-    match (x >= 0.0, y >= 0.0) {
-        (false, false) => 0,
-        (true, false) => 1,
-        (true, true) => 2,
-        (false, true) => 3,
+/// Board position of a card, if it is on the board.
+pub fn board_pos(c: &Card) -> Option<(f32, f32)> {
+    match c.loc {
+        Loc::Slot(s) => Some(slot_pos(s as usize)),
+        Loc::Float { x, y } => Some((x, y)),
+        Loc::Table { .. } => None,
     }
 }
 
@@ -180,15 +219,42 @@ impl Shared {
     /// Merge one op. Returns true if anything changed.
     pub fn apply(&mut self, op: &Op) -> bool {
         let mut changed = false;
+        if op.game > self.game {
+            *self = Shared { game: op.game, ..Shared::default() };
+            changed = true;
+        }
+        if op.game != self.game {
+            return changed;
+        }
+        // Game-level registers survive rounds.
+        match &op.body {
+            Body::Seat(id, s) => {
+                if self.seats.get(id).is_none_or(|c| s.stamp > c.stamp) {
+                    self.seats.insert(*id, s.clone());
+                    changed = true;
+                }
+            }
+            Body::Ledger(n, w, p, s) => {
+                if self.ledger.get(&(*n, *w)).is_none_or(|c| *s > c.1) {
+                    self.ledger.insert((*n, *w), (*p, *s));
+                    changed = true;
+                }
+            }
+            _ => {}
+        }
         if op.round.stamp > self.round.stamp {
-            *self = Shared { round: op.round, ..Shared::default() };
+            self.round = op.round;
+            self.subs.clear();
+            self.start = None;
+            self.cards.clear();
+            self.checks.clear();
+            self.next = Default::default();
             changed = true;
         }
         if op.round.stamp != self.round.stamp {
             return changed;
         }
         let newer = match &op.body {
-            Body::None => false,
             Body::Sub(w, s) => {
                 let n = self.subs.get(w).is_none_or(|c| s.stamp > c.stamp);
                 if n {
@@ -224,36 +290,45 @@ impl Shared {
                 }
                 n
             }
+            _ => false,
         };
         changed || newer
     }
 
     /// Every stored register, for full-state sync with a new peer.
     pub fn all_ops(&self) -> Vec<Op> {
-        let r = self.round;
-        let mut v = vec![Op { round: r, body: Body::None }];
-        v.extend(self.subs.iter().map(|(w, s)| Op { round: r, body: Body::Sub(*w, s.clone()) }));
-        v.extend(self.start.map(|s| Op { round: r, body: Body::Start(s) }));
-        v.extend(self.cards.iter().map(|((w, i), c)| Op { round: r, body: Body::Card(*w, *i, *c) }));
-        v.extend(self.checks.iter().map(|(w, c)| Op { round: r, body: Body::Check(*w, *c) }));
+        let (g, r) = (self.game, self.round);
+        let op = |body| Op { game: g, round: r, body };
+        let mut v = vec![op(Body::None)];
+        v.extend(self.seats.iter().map(|(id, s)| op(Body::Seat(*id, s.clone()))));
+        v.extend(self.ledger.iter().map(|((n, w), (p, s))| op(Body::Ledger(*n, *w, *p, *s))));
+        v.extend(self.subs.iter().map(|(w, s)| op(Body::Sub(*w, s.clone()))));
+        v.extend(self.start.map(|s| op(Body::Start(s))));
+        v.extend(self.cards.iter().map(|((w, i), c)| op(Body::Card(*w, *i, *c))));
+        v.extend(self.checks.iter().map(|(w, c)| op(Body::Check(*w, *c))));
         if self.next.0 > 0 {
-            v.push(Op { round: r, body: Body::Next(self.next.0, self.next.1) });
+            v.push(op(Body::Next(self.next.0, self.next.1)));
         }
         v
     }
 
-    /// Writers whose clovers get guessed, in order. Only clues submitted
-    /// before guessing started count.
+    /// Active seats, by id.
+    pub fn players(&self) -> Vec<u32> {
+        self.seats.iter().filter(|(_, s)| s.active).map(|(id, _)| *id).collect()
+    }
+
+    /// Writers whose clovers get guessed, in order: those who were ready
+    /// when guessing started.
     pub fn puzzles(&self) -> Vec<u32> {
         let Some(start) = self.start else { return Vec::new() };
         let mut v: Vec<(Stamp, u32)> =
-            self.subs.iter().filter(|(_, s)| s.stamp < start).map(|(w, s)| (s.stamp, *w)).collect();
+            self.subs.iter().filter(|(_, s)| s.ready && s.stamp < start).map(|(w, s)| (s.stamp, *w)).collect();
         v.sort();
         v.into_iter().map(|(_, w)| w).collect()
     }
 
     pub fn phase(&self) -> Phase {
-        if self.round.stamp == Stamp::default() {
+        if self.round.n == 0 {
             Phase::Lobby
         } else if self.start.is_none() {
             Phase::Writing
@@ -274,58 +349,60 @@ impl Shared {
     pub fn home_card(&self, d: &Deal, n: usize, i: usize) -> Card {
         // Rank of card i among the n cards in play gives its shuffled spot.
         let k = (0..n).filter(|&j| d.home[j] < d.home[i]).count();
-        let (x, y) = table_spot(k, n);
+        let (x, y) = tray_spot(k, n);
         Card { loc: Loc::Table { x, y }, rot: d.home_rot[i], held: 0, stamp: Stamp::default() }
     }
 
-    /// Effective cards of `writer`'s clover while it is being guessed, with
-    /// locked (already-correct) slots enforced, conflicts resolved (newest
-    /// claim wins, losers go home) and the answer shown once done.
+    /// Effective cards of `writer`'s clover while it is being guessed (locked
+    /// spots enforced, answer shown once done) and which card claims each
+    /// spot for a check: the nearest within `CLAIM_R`.
     pub fn layout(&self, writer: u32) -> (Vec<Card>, [Option<usize>; NSLOTS]) {
         let d = deal(self.round.seed, writer);
         let n = self.ncards(writer);
         let check = self.check(writer);
-        let solved = |s: usize| Card { loc: Loc::Slot(s as u8), rot: d.sol_rot[s], held: 0, stamp: Stamp::default() };
         let locked = |s: usize| check.done() || check.mask & (1 << s) != 0;
-        let mut cards: Vec<Card> = (0..n)
+        let cards: Vec<Card> = (0..n)
             .map(|i| {
                 if i < NSLOTS && locked(i) {
-                    solved(i)
+                    Card { loc: Loc::Slot(i as u8), rot: d.sol_rot[i], held: 0, stamp: Stamp::default() }
+                } else if check.done() {
+                    // Once done, decoys go back to the tray to show the answer.
+                    self.home_card(&d, n, i)
                 } else {
                     self.cards.get(&(writer, i as u8)).copied().unwrap_or_else(|| self.home_card(&d, n, i))
                 }
             })
             .collect();
-        let mut owner = [None::<usize>; NSLOTS];
-        for s in 0..NSLOTS {
+        let mut claim = [None::<usize>; NSLOTS];
+        for (s, cl) in claim.iter_mut().enumerate() {
             if locked(s) {
-                owner[s] = Some(s);
+                *cl = Some(s);
+                continue;
             }
+            let (sx, sy) = slot_pos(s);
+            *cl = (0..n)
+                .filter(|&i| !(i < NSLOTS && locked(i)))
+                .filter_map(|i| {
+                    let (x, y) = board_pos(&cards[i])?;
+                    let dist = (x - sx).hypot(y - sy);
+                    (dist <= CLAIM_R).then_some((dist.to_bits(), core::cmp::Reverse(cards[i].stamp), i))
+                })
+                .min()
+                .map(|t| t.2);
         }
-        for (i, c) in cards.iter().enumerate() {
-            if let Loc::Slot(s) = c.loc {
-                let s = s as usize;
-                if locked(s) {
-                    continue;
-                }
-                match owner[s] {
-                    Some(j) if cards[j].stamp > c.stamp => {}
-                    _ => owner[s] = Some(i),
-                }
-            }
-        }
-        for (i, c) in cards.iter_mut().enumerate() {
-            if let Loc::Slot(s) = c.loc {
-                if owner[s as usize] != Some(i) {
-                    *c = self.home_card(&d, n, i);
-                }
-            }
-        }
-        (cards, owner)
+        (cards, claim)
     }
 
-    pub fn total_score(&self) -> u32 {
-        self.puzzles().iter().map(|w| self.check(*w)).filter(|c| c.done()).map(|c| c.score()).sum()
+    pub fn round_score(&self, n: u16) -> u32 {
+        self.ledger.range((n, 0)..=(n, u32::MAX)).map(|(_, (p, _))| *p as u32).sum()
+    }
+
+    pub fn game_score(&self) -> u32 {
+        self.ledger.values().map(|(p, _)| *p as u32).sum()
+    }
+
+    pub fn seat_score(&self, seat: u32) -> u32 {
+        self.ledger.iter().filter(|((_, w), _)| *w == seat).map(|(_, (p, _))| *p as u32).sum()
     }
 
     /// Canonical rendering of the shared state; equal digests == converged.
@@ -336,34 +413,51 @@ impl Shared {
             Phase::Guessing(k) => format!("guessing:{k}"),
             Phase::End => "end".to_string(),
         };
-        let mut out = format!("{{\"phase\":\"{phase}\",\"seed\":{},\"subs\":[", self.round.seed);
+        let seats: Vec<String> =
+            self.seats.iter().map(|(id, s)| format!("[{id},{},{}]", json_str(&s.name), s.active)).collect();
         let subs: Vec<String> = self
             .subs
             .iter()
-            .map(|(w, s)| format!("[{w},{},{}]", s.decoys, s.clues.iter().map(|c| json_str(c)).collect::<Vec<_>>().join(",")))
+            .map(|(w, s)| {
+                let clues: Vec<String> = s.clues.iter().map(|c| json_str(c)).collect();
+                format!("[{w},{},{},{}]", s.decoys, s.ready, clues.join(","))
+            })
             .collect();
-        out += &subs.join(",");
-        out += "],\"puzzles\":[";
+        let f = |v: f32| format!("{v:.2}");
         let puzzles: Vec<String> = self
             .puzzles()
             .iter()
             .map(|&w| {
-                let (cards, _) = self.layout(w);
+                let (cards, claim) = self.layout(w);
                 let c = self.check(w);
                 let cards: Vec<String> = cards
                     .iter()
                     .map(|c| match c.loc {
-                        Loc::Table { x, y } => format!("[\"table\",{x:.1},{y:.1},{},{}]", c.rot, c.held),
+                        Loc::Table { x, y } => format!("[\"table\",{},{},{},{}]", f(x), f(y), c.rot, c.held),
                         Loc::Slot(s) => format!("[\"slot\",{s},{},{}]", c.rot, c.held),
-                        Loc::Float { x, y } => format!("[\"float\",{x:.1},{y:.1},{},{}]", c.rot, c.held),
+                        Loc::Float { x, y } => format!("[\"float\",{},{},{},{}]", f(x), f(y), c.rot, c.held),
                     })
                     .collect();
-                format!("{{\"writer\":{w},\"attempts\":{},\"mask\":{},\"cards\":[{}]}}", c.attempts, c.mask, cards.join(","))
+                let claim: Vec<String> = claim.iter().map(|o| o.map_or("null".into(), |i| i.to_string())).collect();
+                format!(
+                    "{{\"writer\":{w},\"attempts\":{},\"mask\":{},\"claim\":[{}],\"cards\":[{}]}}",
+                    c.attempts,
+                    c.mask,
+                    claim.join(","),
+                    cards.join(",")
+                )
             })
             .collect();
-        out += &puzzles.join(",");
-        out += &format!("],\"score\":{}}}", self.total_score());
-        out
+        format!(
+            "{{\"phase\":\"{phase}\",\"round\":{},\"seed\":{},\"seats\":[{}],\"subs\":[{}],\"puzzles\":[{}],\"roundScore\":{},\"gameScore\":{}}}",
+            self.round.n,
+            self.round.seed,
+            seats.join(","),
+            subs.join(","),
+            puzzles.join(","),
+            self.round_score(self.round.n),
+            self.game_score()
+        )
     }
 }
 
@@ -404,25 +498,27 @@ impl Rng {
 
 // ---------------------------------------------------------------------------
 // Wire format: a packet is a concatenation of records, each `[tag u8] body`.
-// All integers little-endian. Per-round records start with the round
-// (stamp + seed, 16 bytes).
+// All integers little-endian. Op records start with the game stamp and the
+// round (stamp, seed, n): 30 bytes.
 
-const T_ROUND: u8 = 1;
+const T_NONE: u8 = 1;
 const T_SUB: u8 = 2;
 const T_START: u8 = 3;
 const T_CARD: u8 = 4;
 const T_CHECK: u8 = 5;
 const T_NEXT: u8 = 6;
-const T_HELLO: u8 = 7;
-const T_CURSOR: u8 = 8;
+const T_SEAT: u8 = 7;
+const T_LEDGER: u8 = 8;
+const T_HELLO: u8 = 20;
+const T_CURSOR: u8 = 21;
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Msg {
     Op(Op),
-    /// Presence heartbeat with display name.
-    Hello { peer: u32, name: String },
-    /// kind: 0 hidden, 1 world coords, 2 board coords.
-    Cursor { peer: u32, kind: u8, x: f32, y: f32 },
+    /// Presence heartbeat: a device and the seat it plays (0 = watching).
+    Hello { device: u32, seat: u32 },
+    /// kind: 0 hidden, 1 tray coords, 2 board coords.
+    Cursor { device: u32, seat: u32, kind: u8, x: f32, y: f32 },
 }
 
 fn put_stamp(b: &mut Vec<u8>, s: Stamp) {
@@ -431,31 +527,47 @@ fn put_stamp(b: &mut Vec<u8>, s: Stamp) {
 }
 
 fn put_str(b: &mut Vec<u8>, s: &str) {
-    let s = &s.as_bytes()[..s.len().min(MAX_CLUE_BYTES)];
+    let s = clamp_text(s, MAX_TEXT);
     b.push(s.len() as u8);
-    b.extend_from_slice(s);
+    b.extend_from_slice(s.as_bytes());
+}
+
+fn put_f32s(b: &mut Vec<u8>, v: &[f32]) {
+    for x in v {
+        b.extend_from_slice(&x.to_le_bytes());
+    }
 }
 
 pub fn encode(m: &Msg, b: &mut Vec<u8>) {
     match m {
-        Msg::Op(Op { round, body }) => {
-            let tag = match body {
-                Body::None => T_ROUND,
+        Msg::Op(Op { game, round, body }) => {
+            b.push(match body {
+                Body::None => T_NONE,
                 Body::Sub(..) => T_SUB,
                 Body::Start(..) => T_START,
                 Body::Card(..) => T_CARD,
                 Body::Check(..) => T_CHECK,
                 Body::Next(..) => T_NEXT,
-            };
-            b.push(tag);
+                Body::Seat(..) => T_SEAT,
+                Body::Ledger(..) => T_LEDGER,
+            });
+            put_stamp(b, *game);
             put_stamp(b, round.stamp);
             b.extend_from_slice(&round.seed.to_le_bytes());
+            b.extend_from_slice(&round.n.to_le_bytes());
             match body {
                 Body::None => {}
+                Body::Seat(id, s) => {
+                    b.extend_from_slice(&id.to_le_bytes());
+                    put_stamp(b, s.stamp);
+                    b.push(s.active as u8);
+                    put_str(b, &s.name);
+                }
                 Body::Sub(w, s) => {
                     b.extend_from_slice(&w.to_le_bytes());
                     put_stamp(b, s.stamp);
                     b.push(s.decoys);
+                    b.push(s.ready as u8);
                     for c in &s.clues {
                         put_str(b, c);
                     }
@@ -471,8 +583,7 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                         Loc::Float { x, y } => (2, x, y),
                     };
                     b.push(k);
-                    b.extend_from_slice(&x.to_le_bytes());
-                    b.extend_from_slice(&y.to_le_bytes());
+                    put_f32s(b, &[x, y]);
                     b.push(c.rot);
                     b.extend_from_slice(&c.held.to_le_bytes());
                 }
@@ -486,19 +597,25 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                     b.extend_from_slice(&k.to_le_bytes());
                     put_stamp(b, *s);
                 }
+                Body::Ledger(n, w, p, s) => {
+                    b.extend_from_slice(&n.to_le_bytes());
+                    b.extend_from_slice(&w.to_le_bytes());
+                    b.push(*p);
+                    put_stamp(b, *s);
+                }
             }
         }
-        Msg::Hello { peer, name } => {
+        Msg::Hello { device, seat } => {
             b.push(T_HELLO);
-            b.extend_from_slice(&peer.to_le_bytes());
-            put_str(b, name);
+            b.extend_from_slice(&device.to_le_bytes());
+            b.extend_from_slice(&seat.to_le_bytes());
         }
-        Msg::Cursor { peer, kind, x, y } => {
+        Msg::Cursor { device, seat, kind, x, y } => {
             b.push(T_CURSOR);
-            b.extend_from_slice(&peer.to_le_bytes());
+            b.extend_from_slice(&device.to_le_bytes());
+            b.extend_from_slice(&seat.to_le_bytes());
             b.push(*kind);
-            b.extend_from_slice(&x.to_le_bytes());
-            b.extend_from_slice(&y.to_le_bytes());
+            put_f32s(b, &[*x, *y]);
         }
     }
 }
@@ -536,9 +653,12 @@ impl<'a> Reader<'a> {
     fn lt(&mut self, max: u8) -> Option<u8> {
         self.u8().filter(|v| *v < max)
     }
+    fn bool(&mut self) -> Option<bool> {
+        Some(self.lt(2)? == 1)
+    }
     fn str(&mut self) -> Option<String> {
         let n = self.u8()? as usize;
-        if n > MAX_CLUE_BYTES {
+        if n > MAX_TEXT {
             return None;
         }
         Some(core::str::from_utf8(self.take(n)?).ok()?.to_string())
@@ -547,25 +667,33 @@ impl<'a> Reader<'a> {
     fn msg(&mut self) -> Option<Msg> {
         let tag = self.u8()?;
         if tag == T_HELLO {
-            return Some(Msg::Hello { peer: self.u32()?, name: self.str()? });
+            return Some(Msg::Hello { device: self.u32()?, seat: self.u32()? });
         }
         if tag == T_CURSOR {
-            let peer = self.u32()?;
+            let (device, seat) = (self.u32()?, self.u32()?);
             let kind = self.lt(3)?;
-            return Some(Msg::Cursor { peer, kind, x: self.f32()?, y: self.f32()? });
+            return Some(Msg::Cursor { device, seat, kind, x: self.f32()?, y: self.f32()? });
         }
-        let round = Round { stamp: self.stamp()?, seed: self.u32()? };
+        let game = self.stamp()?;
+        let round = Round { stamp: self.stamp()?, seed: self.u32()?, n: self.u16()? };
         let body = match tag {
-            T_ROUND => Body::None,
+            T_NONE => Body::None,
+            T_SEAT => {
+                let id = self.u32()?;
+                let stamp = self.stamp()?;
+                let active = self.bool()?;
+                Body::Seat(id, Seat { name: self.str()?, active, stamp })
+            }
             T_SUB => {
                 let w = self.u32()?;
                 let stamp = self.stamp()?;
                 let decoys = self.u8().filter(|d| *d <= MAX_DECOYS)?;
+                let ready = self.bool()?;
                 let mut clues: [String; NSLOTS] = Default::default();
                 for c in clues.iter_mut() {
                     *c = self.str()?;
                 }
-                Body::Sub(w, Sub { clues, decoys, stamp })
+                Body::Sub(w, Sub { clues, decoys, ready, stamp })
             }
             T_START => Body::Start(self.stamp()?),
             T_CARD => {
@@ -575,7 +703,7 @@ impl<'a> Reader<'a> {
                 let k = self.u8()?;
                 let (x, y) = (self.f32()?, self.f32()?);
                 let loc = match k {
-                    0 => Loc::Table { x, y },
+                    0 => Loc::Table { x: x.clamp(0.0, 1.0), y: y.clamp(0.0, 1.0) },
                     1 if (0.0..NSLOTS as f32).contains(&x) && x.fract() == 0.0 => Loc::Slot(x as u8),
                     2 => Loc::Float { x, y },
                     _ => return None,
@@ -595,9 +723,14 @@ impl<'a> Reader<'a> {
                 let k = self.u16()?;
                 Body::Next(k, self.stamp()?)
             }
+            T_LEDGER => {
+                let (n, w) = (self.u16()?, self.u32()?);
+                let p = self.u8().filter(|p| *p <= PERFECT_SCORE)?;
+                Body::Ledger(n, w, p, self.stamp()?)
+            }
             _ => return None,
         };
-        Some(Msg::Op(Op { round, body }))
+        Some(Msg::Op(Op { game, round, body }))
     }
 }
 
@@ -614,7 +747,7 @@ pub fn decode(b: &[u8]) -> Vec<Msg> {
     out
 }
 
-/// Byte-truncate a clue to the wire limit on a char boundary.
+/// Trim and byte-truncate text on a char boundary.
 pub fn clamp_text(s: &str, max: usize) -> String {
     let s = s.trim();
     let mut end = s.len().min(max);

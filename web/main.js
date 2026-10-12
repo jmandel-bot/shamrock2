@@ -1,5 +1,5 @@
-// Platform shim: everything here is plumbing. Game rules, sync, geometry,
-// hit-testing and drawing decisions live in core.wasm (Rust).
+// Platform shim: everything here is plumbing. Game rules, sync, layout,
+// hit-testing, animation and drawing decisions live in core.wasm (Rust).
 
 const params = new URLSearchParams(location.search);
 if (!location.hash.slice(1)) location.hash = Math.random().toString(36).slice(2, 8);
@@ -8,21 +8,18 @@ const roomId = decodeURIComponent(location.hash.slice(1));
 const $ = (id) => document.getElementById(id);
 const canvas = $('c'), ctx = canvas.getContext('2d'), clueInput = $('clue');
 const enc = new TextEncoder(), dec = new TextDecoder();
-const store = (area, key, make) => {
-  try { return area.getItem(key) ?? (area.setItem(key, make()), area.getItem(key)); } catch { return make(); }
-};
+const remember = (key, value) => { try { value == null ? localStorage.removeItem(key) : localStorage.setItem(key, value); } catch {} };
+const recall = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
 
 const { instance } = await WebAssembly.instantiateStreaming(fetch('core.wasm'), {});
 const X = instance.exports;
-// Same tab + same room = same player after a reload.
-const seed = store(sessionStorage, `cloverleaf:${roomId}`, () => crypto.getRandomValues(new Uint32Array(2)).join(':')).split(':');
-const me = X.init(+seed[0], +seed[1]) >>> 0; // u32 comes back as i32
+const seed = crypto.getRandomValues(new Uint32Array(2));
+const device = X.init(seed[0], seed[1]) >>> 0; // u32 comes back as i32
 
 const bytes = (ptr, len) => new Uint8Array(X.memory.buffer, ptr, len);
 const writeInbox = (u8) => { bytes(X.inbox_reserve(u8.length), u8.length).set(u8); return u8.length; };
+const writeText = (s) => writeInbox(enc.encode(s));
 const scratchJson = (len) => JSON.parse(dec.decode(bytes(X.scratch_ptr(), len)));
-const savedName = store(localStorage, 'cloverleaf:name', () => '');
-if (savedName) X.set_name(writeInbox(enc.encode(savedName)));
 
 // ---- canvas: replay the command buffer ------------------------------------
 
@@ -55,7 +52,7 @@ function paint(n) {
         i += 7; break;
       }
       case 4: { // text x y size color bold off len maxw
-        ctx.font = `${f[i + 5] ? 600 : 400} ${f[i + 3]}px system-ui, sans-serif`;
+        ctx.font = `${f[i + 5] ? 700 : 400} ${f[i + 3]}px system-ui, -apple-system, sans-serif`;
         ctx.fillStyle = css(u[i + 4]);
         ctx.fillText(dec.decode(bytes(strs + f[i + 6], f[i + 7])), f[i + 1], f[i + 2], f[i + 8]);
         i += 9; break;
@@ -70,7 +67,15 @@ function paint(n) {
 
 const stats = { sentPackets: 0, sentBytes: 0, recvPackets: 0, recvBytes: 0, frameMs: [], presses: 0 };
 let net = null;
-let flash = '', flashUntil = 0;
+
+let toastTimer = 0;
+function toast(msg, ms = 4500) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
+}
 
 function drainOutbox() {
   const len = X.outbox_len();
@@ -89,7 +94,7 @@ function drainOutbox() {
       const [x, y, w, h, angle] = [1, 5, 9, 13, 17].map((o) => b.getFloat32(o, true));
       openClueEditor(body[0], x, y, w, h, angle, dec.decode(body.subarray(21)));
     } else if (kind === 3) {
-      flash = dec.decode(body); flashUntil = performance.now() + 6000;
+      toast(dec.decode(body));
     }
   }
 }
@@ -102,8 +107,7 @@ function receive(u8) {
 // ---- input ------------------------------------------------------------------
 
 const local = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-let downAt = null;
-canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); downAt = local(e); X.pointer_down(...downAt); });
+canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); X.pointer_down(...local(e)); });
 canvas.addEventListener('pointermove', (e) => X.pointer_move(...local(e)));
 canvas.addEventListener('pointerup', (e) => { stats.presses++; X.pointer_up(...local(e)); drainOutbox(); });
 canvas.addEventListener('pointercancel', (e) => X.pointer_up(...local(e)));
@@ -113,11 +117,6 @@ addEventListener('keydown', (e) => {
   if (e.key === 'q') X.rotate_view(-1);
   if (e.key === 'e' || e.key === ' ') X.rotate_view(1);
 });
-$('copy').onclick = async () => {
-  await navigator.clipboard?.writeText(location.href).catch(() => {});
-  flash = `Invite link copied: ${location.href}`; flashUntil = performance.now() + 5000;
-};
-$('decoys').onchange = (e) => X.set_decoys(+e.target.value);
 const act = (code) => { stats.presses++; X.action(code); drainOutbox(); renderUi(true); };
 
 let editing = -1;
@@ -139,7 +138,7 @@ function closeClueEditor(commit, advance = false) {
   editing = -1;
   // Stay visible while Rust decides whether to open the next leaf: hiding a
   // focused input fires a late blur that would close the next leaf.
-  if (commit) X.set_clue(idx, writeInbox(enc.encode(clueInput.value)), advance ? 1 : 0);
+  if (commit) X.set_clue(idx, writeText(clueInput.value), advance ? 1 : 0);
   drainOutbox();
   if (editing < 0) clueInput.style.display = 'none';
 }
@@ -154,113 +153,175 @@ new ResizeObserver(() => {
   canvas.width = Math.round(r.width * dpr);
   canvas.height = Math.round(r.height * dpr);
   X.resize(r.width, r.height, dpr);
-  // Layout shifts (e.g. the roster re-wrapping) must not interrupt typing.
+  // Layout shifts must not interrupt typing.
   if (editing >= 0) { X.edit_clue(editing); drainOutbox(); }
 }).observe(canvas);
+
+// ---- joining, watching, menu ------------------------------------------------------
+
+const nameKey = `cloverleaf:${roomId}:name`;
+function joinAs(name) {
+  name = name.trim();
+  if (!name) return;
+  X.join(writeText(name));
+  drainOutbox();
+  remember(nameKey, name);
+  closeSheets();
+  renderUi(true);
+}
+function watch() {
+  X.watch();
+  drainOutbox();
+  remember(nameKey, '');
+  closeSheets();
+  renderUi(true);
+}
+const closeSheets = () => document.querySelectorAll('.overlay').forEach((o) => o.classList.remove('open'));
+function openJoin() {
+  const s = ui();
+  const others = s.players.filter((p) => !p.you);
+  $('seatList').replaceChildren(
+    ...(others.length ? [Object.assign(document.createElement('p'), { textContent: 'Or continue as:' })] : []),
+    ...others.map((p) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'menuBtn';
+      b.innerHTML = `<span class="chip${p.away ? ' away' : ''}"><i style="background:${p.color}"></i>${esc(p.name)}</span>${p.away ? ' <small>away</small>' : ''}`;
+      b.onclick = () => joinAs(p.name);
+      return b;
+    }));
+  $('nameInput').value = s.name ?? recall(nameKey) ?? '';
+  $('joinSheet').classList.add('open');
+  setTimeout(() => $('nameInput').focus(), 50);
+}
+$('joinForm').onsubmit = (e) => { e.preventDefault(); stats.presses++; joinAs($('nameInput').value); };
+$('watchBtn').onclick = watch;
+$('menuBtn').onclick = () => {
+  const s = ui();
+  $('linkText').textContent = location.href;
+  $('playerList').replaceChildren(...s.players.filter((p) => p.away && !p.you).map((p) => {
+    const row = document.createElement('div');
+    row.className = 'item';
+    const label = Object.assign(document.createElement('span'), { className: 'grow', textContent: `${p.name} is away` });
+    const rm = Object.assign(document.createElement('button'), { textContent: 'Remove' });
+    rm.onclick = () => { X.remove_seat(p.id); drainOutbox(); row.remove(); };
+    row.append(label, rm);
+    return row;
+  }));
+  $('watchMenuBtn').hidden = !s.seated;
+  $('menuSheet').classList.add('open');
+};
+$('closeMenu').onclick = closeSheets;
+document.querySelectorAll('.overlay').forEach((o) => o.addEventListener('click', (e) => e.target === o && closeSheets()));
+$('copyLink').onclick = async () => {
+  try { await navigator.clipboard.writeText(location.href); toast('Invite link copied'); }
+  catch { getSelection().selectAllChildren($('linkText')); toast('Select the link above and copy it'); }
+};
+$('switchBtn').onclick = () => { closeSheets(); openJoin(); };
+$('watchMenuBtn').onclick = watch;
+$('redealBtn').onclick = () => { closeSheets(); act(6); };
+$('newGameBtn').onclick = () => { closeSheets(); act(7); };
+
+const setDecoys = (d) => { X.set_decoys(Math.max(0, Math.min(4, d))); drainOutbox(); renderUi(true); };
+$('decDown').onclick = () => { stats.presses++; setDecoys(ui().decoys - 1); };
+$('decUp').onclick = () => { stats.presses++; setDecoys(ui().decoys + 1); };
 
 // ---- HTML controls mirror the Rust UI state ------------------------------------
 
 const ui = () => scratchJson(X.ui());
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+const names = (xs) => xs.length <= 2 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`;
 let lastUi = '';
+
 function renderUi(force = false) {
   const s = ui();
-  const key = JSON.stringify(s) + (performance.now() < flashUntil ? flash : '');
+  const key = JSON.stringify(s);
   if (!force && key === lastUi) return;
   lastUi = key;
 
-  const roster = $('roster');
-  if (!roster.contains(document.activeElement)) {
-    roster.replaceChildren(...s.players.map((p) => {
-      const chip = document.createElement('span');
-      chip.className = 'chip' + (p.writer ? ' writer' : '') + (p.away ? ' away' : '');
-      if (p.away) chip.title = 'Left the table';
-      const dot = document.createElement('i');
-      dot.style.background = p.color;
-      chip.append(dot);
-      if (p.you) {
-        const input = document.createElement('input');
-        input.id = 'myname'; input.value = p.name; input.title = 'Your name (click to change)';
-        input.onchange = () => {
-          try { localStorage.setItem('cloverleaf:name', input.value); } catch {}
-          X.set_name(writeInbox(enc.encode(input.value)));
-        };
-        input.onkeydown = (e) => e.key === 'Enter' && input.blur();
-        chip.append(input);
-      } else chip.append(p.name);
-      const mark = s.phase === 'writing' ? (p.sub ? ' ✓' : ' ✎') : p.writer ? ' ★' : p.score != null ? ` +${p.score}` : '';
-      if (mark) chip.append(mark);
-      return chip;
-    }));
-  }
+  const mark = { writing: '✎', ready: '✓', writer: '★' };
+  $('roster').replaceChildren(...s.players.map((p) => {
+    const chip = document.createElement('span');
+    chip.className = `chip${p.you ? ' you' : ''}${p.status === 'writer' ? ' writer' : ''}${p.away ? ' away' : ''}`;
+    chip.innerHTML = `<i style="background:${p.color}"></i>${esc(p.name)} ${mark[p.status] ?? ''}${p.score ? ` <small>${p.score}</small>` : ''}`;
+    chip.title = p.away ? `${p.name} is away` : p.name;
+    return chip;
+  }), ...(s.watchers ? [Object.assign(document.createElement('span'), { className: 'chip', textContent: `👀 ${s.watchers}` })] : []));
 
-  const go = $('go'), alt = $('alt');
-  let hint = '', label = '', enabled = false, onGo = null, altLabel = '', onAlt = null;
-  $('decoysWrap').style.display = s.phase === 'writing' && !s.submitted ? 'inline-flex' : 'none';
-  switch (s.phase) {
+  let hint = '', go = null, alt = null;
+  const decoys = s.phase === 'writing' && s.seated && !s.ready;
+  if (!s.seated) {
+    hint = !s.players.length ? 'Nobody is playing yet. Join to start a table.'
+      : `Watching${s.phase === 'guessing' ? ` <b>${esc(s.writerName ?? '')}</b>'s clover` : ''}.`;
+    go = ['Join the game', true, openJoin];
+  } else switch (s.phase) {
     case 'lobby':
-      hint = 'Share the invite link. Start when everyone is here (late joiners can still play).';
-      [label, enabled, onGo] = ['Start game', true, () => act(1)];
+      hint = 'Send the invite link (⋯ menu), then deal when everyone is in. People can join later too.';
+      go = ['Deal cards', true, () => act(1)];
       break;
     case 'writing':
-      if (!s.submitted) {
-        hint = s.filled === 0
-          ? 'Your secret clover: tap a leaf and write one clue linking the two words that face it. Enter jumps to the next leaf.'
-          : 'Keep going. Tap ⟳ or the board to turn it so words read upright.';
-        [label, enabled, onGo] = [`Submit clues (${s.filled}/4)`, s.canSubmit, () => act(2)];
+      if (!s.ready) {
+        hint = s.filled < 4
+          ? `<b>Your secret clover.</b> Tap a leaf and write a clue linking the two words facing it (${s.filled}/4). Enter jumps to the next leaf.`
+          : 'Choose how many decoy cards to mix in, then tap <b>Ready</b>.';
+        go = ['Ready', s.canReady, () => act(2)];
       } else {
-        hint = s.waiting ? `Submitted. Waiting for ${s.waiting} player${s.waiting > 1 ? 's' : ''} to finish writing…` : 'Submitted. Starting…';
-        [label, enabled] = ['Submitted ✓', false];
-        if (s.waiting) [altLabel, onAlt] = ['Start guessing without them', () => act(5)];
+        hint = s.waiting.length ? `Waiting for ${esc(names(s.waiting))}…` : 'Everyone is ready. Starting…';
+        go = ['Ready ✓', true, () => act(2), 'on'];
+        if (s.waiting.length) alt = ['Start without them', () => act(5)];
       }
       break;
     case 'guessing': {
-      const pos = `Clover ${s.k + 1} of ${s.n}`;
+      const what = `<b>${esc(s.writerName)}</b>'s clover · ${s.k + 1} of ${s.n} · ${s.writerDecoys} decoy${s.writerDecoys === 1 ? '' : 's'}`;
       if (s.done) {
-        hint = `${pos} by ${s.writerName} is done.`;
-        [label, enabled, onGo] = [s.k + 1 < s.n ? 'Next clover ▸' : 'See results ▸', true, () => act(4)];
+        hint = `${what} · done`;
+        go = [s.k + 1 < s.n ? 'Next clover' : 'See scores', true, () => act(4)];
       } else if (s.isWriter) {
-        hint = `${pos} is yours. No hints! Watch the others guess.`;
-        [label, enabled] = ['Guessing…', false];
+        hint = `${what}. It's yours: no hints while they guess!`;
+        go = ['Guessing…', false];
       } else {
-        hint = `${pos} by ${s.writerName}. Drag cards onto the board, tap a card to turn it, tap ⟳ to turn the board. ${s.attempts ? 'Last try!' : 'You get 2 tries.'}`;
-        [label, enabled, onGo] = [s.attempts ? 'Check (last try)' : 'Check', s.canCheck, () => act(3)];
+        hint = `${what}. Drag cards anywhere; they snap when close to a spot. Tap a card to turn it. ${s.claimed}/4 spots filled.`;
+        go = [s.attempts ? 'Check (last try)' : 'Check', s.canCheck, () => act(3)];
       }
       break;
     }
     case 'end':
-      hint = `Game over: ${s.total} points from ${s.n} clover${s.n === 1 ? '' : 's'} (6 for a perfect first try).`;
-      [label, enabled, onGo] = ['Play again', true, () => act(1)];
+      hint = `Round ${s.round}: <b>+${s.roundScore}</b> · game total <b>${s.gameScore}</b>. A perfect first try scores 6.`;
+      go = ['Next round', true, () => act(1)];
       break;
   }
-  if (performance.now() < flashUntil) hint = flash;
-  $('hint').textContent = hint;
-  go.textContent = label; go.disabled = !enabled; go.onclick = onGo;
-  alt.hidden = !altLabel; alt.textContent = altLabel; alt.onclick = onAlt;
-  $('decoys').value = String(s.decoys);
+  $('hint').innerHTML = hint;
+  const goBtn = $('go');
+  goBtn.textContent = go?.[0] ?? '';
+  goBtn.hidden = !go;
+  goBtn.disabled = !go?.[1];
+  goBtn.onclick = go?.[2] ?? null;
+  goBtn.classList.toggle('on', go?.[3] === 'on');
+  const altBtn = $('alt');
+  altBtn.hidden = !alt;
+  if (alt) { altBtn.textContent = alt[0]; altBtn.onclick = alt[1]; }
+  $('decoys').hidden = !decoys;
+  $('decLabel').textContent = `${s.decoys} decoy${s.decoys === 1 ? '' : 's'}`;
 }
 
 // ---- network ----------------------------------------------------------------
 
 const peers = new Set();
-function showPeers(state) {
-  $('net').textContent = state ?? `room “${roomId}” · ${peers.size + 1} connected`;
-}
-const joined = (id) => { peers.add(id); showPeers(); X.on_peer_join(); };
-const left = (id) => { peers.delete(id); showPeers(); };
+const joined = (id) => { peers.add(id); X.on_peer_join(); drainOutbox(); };
+const left = (id) => peers.delete(id);
 
 async function connect() {
   const mode = params.get('net');
   if (mode === 'local') {
     // Same-browser tabs; handy offline. Same shape as the WebRTC path.
     const bc = new BroadcastChannel(`cloverleaf:${roomId}`);
-    const hello = (to) => bc.postMessage({ hello: me, to });
+    const hello = (to) => bc.postMessage({ hello: device, to });
     bc.onmessage = ({ data }) => {
       if (data.hello) {
         if (!peers.has(data.hello)) { joined(data.hello); hello(data.hello); }
       } else if (data.bye) left(data.bye);
       else receive(new Uint8Array(data.bytes));
     };
-    addEventListener('pagehide', () => bc.postMessage({ bye: me }));
+    addEventListener('pagehide', () => bc.postMessage({ bye: device }));
     hello();
     return { send: (u8) => bc.postMessage({ bytes: u8 }) };
   }
@@ -277,8 +338,13 @@ async function connect() {
   return { send: (u8) => peers.size && action.send(u8) };
 }
 
-showPeers('connecting…');
-connect().then((n) => { net = n; showPeers(); }, (e) => showPeers(`offline: ${e.message}`));
+connect().then((n) => { net = n; }, (e) => toast(`Can't connect: ${e.message}`, 10000));
+
+// Returning to this room re-takes your seat; a first visit asks. Wait a
+// moment first so we've heard the table's state (and existing names).
+const saved = params.has('fresh') ? null : recall(nameKey);
+if (saved) setTimeout(() => joinAs(saved), 1500);
+else if (saved === null) setTimeout(() => { if (!ui().seated) openJoin(); }, 900);
 
 // ---- frame loop ---------------------------------------------------------------
 
@@ -298,14 +364,16 @@ requestAnimationFrame(tick);
 
 // ---- harness hooks (read-only probes + a settle switch) ------------------------
 
-const probe = (fn, i) => { fn(i); return Array.from(new Float32Array(X.memory.buffer, X.probe_ptr(), 3)); };
+const probe = (fn, ...a) => { fn(...a); return Array.from(new Float32Array(X.memory.buffer, X.probe_ptr(), 3)); };
 window.__cl = {
-  me, X, stats, peers, ui,
+  device, X, stats, peers, ui, joinAs, watch,
   digest: () => scratchJson(X.digest()),
   card: (i) => probe(X.probe_card, i),
   slot: (s) => probe(X.probe_slot, s),
+  board: (x, y) => probe(X.probe_board, x, y),
   petal: (d) => probe(X.probe_petal, d),
-  hub: () => probe(X.probe_hub, 0),
+  hub: () => probe(X.probe_hub),
+  shownAngle: (i) => X.probe_shown_angle(i),
   quarter: () => X.view_quarter(),
   wordPx: () => X.probe_word_px(),
   cardPx: () => X.probe_card_px(),

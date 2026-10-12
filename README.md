@@ -42,12 +42,15 @@ node harness/serve.mjs # prints a URL
 
 **How a game goes** (So Clover! rules, everyone at once):
 
-1. **Start game:** one press by anyone.
-2. **Write.** Everyone gets a private clover: 4 locked cards in random rotations. Tap a leaf, type a clue that links the two words facing it, then press Enter. The board turns so the next empty leaf faces you. After the 4th leaf, press **Submit** (optionally choose 0–4 extra decoy cards first).
-3. **Guessing starts by itself** once every connected player has submitted. Clovers are guessed one at a time. Everyone except the writer shares one board: drag cards on, tap a card to turn it, and press **Check**. Correct cards lock and wrong ones go back for one more try. A perfect first try is worth 6 points; otherwise you get 1 point per correct card.
-4. **Next clover**, then **Play again**.
+1. **Join.** Your first visit asks for a name: tap Join, or *Just watch*. Names are identities, so picking a name that's already at the table takes over that seat (to switch devices, or to debug). Your device remembers your name for this room.
+2. **Deal cards:** one press by anyone.
+3. **Write.** Everyone gets a private clover with 4 locked cards in random rotations. Tap a leaf, type a clue linking the two words facing it, then Enter; the board turns so the next empty leaf faces you. Bid how many decoy cards to mix in (− / +), then tap **Ready**. Tapping Ready again, or editing a clue, un-readies you. Drafts are shared state, so a takeover keeps them.
+4. **Guessing starts by itself** once every player at the table is Ready. Absent players don't block it, and there's a *Start without them* button. Clovers are guessed one at a time on a big shared board. Drag cards **anywhere**: loose "maybe" placements stay exactly where you leave them for everyone, and a card only snaps when dropped close to a spot (pushing any card already there back to where yours came from). The card touched last sits on top. A card within reach of a spot counts for **Check**. Correct cards lock and wrong ones go back to the tray for one more try. A perfect first try scores 6; otherwise 1 per correct card.
+5. **Next clover**, then **Next round**. Seats and scores carry across rounds. The ⋯ menu has the invite link, switch player, watch, *Deal new cards*, *New game* (reset scores, keep whoever is here), and *Remove* for away players.
 
-**Turning the board** is local to each player: tap ⟳ at the board's center, tap any empty part of the board, drag around it, or press Q/E. Cards on the board turn with it; cards off the board stay put. Each clover starts upright.
+**Turning the board** is local to each player: tap ⟳ at its centre, tap empty board, or drag around it. Cards on the board turn with it; cards in the tray stay put. Card turns, moves and board turns all animate. Each clover starts upright.
+
+**Layout:** the board grows to fill the screen. While guessing, a tray for loose cards sits below it (portrait) or beside it (landscape). Tray positions are stored relative to the tray, so they fit every screen.
 
 ## Harness
 
@@ -56,17 +59,18 @@ node harness/serve.mjs # prints a URL
 node harness/run.mjs                # 23 browser gates + metrics → harness/out/scorecard.json
 ```
 
-The browser harness plays a whole 5-player game, including one phone-sized player. Latest scorecard (headless Chromium, WebRTC over loopback):
+The browser harness drives the real UI through a whole game: 5 players (one phone-sized), a watcher, a seat takeover from a tablet, two rounds, and a New game. Latest scorecard (headless Chromium, WebRTC over loopback):
 
 | metric | value |
 |---|---|
-| gates | 28/28 |
-| presses to write + submit a clover | 6 (tap leaf, 4× Enter, Submit) |
-| last submit → guessing starts | ~30 ms |
-| card drop visible to 4 peers (p50 / p95) | 5 / 12 ms |
-| late joiner gets full state | ~300 ms |
-| frame CPU, wasm + Canvas2D (p95) | 0.3 ms |
-| wasm size / JS imports | 169 KB / 0 |
-| card word size, desktop / phone | 17.6 / 10.4 px |
+| gates | 33/33 (3 consecutive runs) |
+| presses to join / write a clover + Ready | 1 / 6 |
+| last Ready → guessing starts | ~60 ms |
+| card drop visible on 6 other screens (p50 / p95) | ~18 / ~33 ms |
+| late visitor gets full state | ~300 ms |
+| frame CPU, wasm + Canvas2D (p95) | ~1.3 ms |
+| card word size while guessing, desktop / phone | 23.6 / 12 px |
+| board width on a 390 px phone | 96% of screen |
+| wasm size / JS imports | 220 KB / 0 |
 
-Bugs the harness caught in this iteration: Chrome fires a late `blur` on a hidden input, which closed the next leaf after Enter. The phone roster re-wrapping resized the canvas and closed the editor mid-word. Player IDs came back as signed i32 across the wasm boundary. And writing left the board turned, so guessing began at whatever angle writing ended on.
+Bugs the harness caught this iteration: dropping onto an occupied spot stacked cards without snapping, so turns went to the wrong card. A snapped card drew *under* a loose one, so taps hit the loose card. And a CSS `display` rule overrode `hidden`, leaving the decoy stepper showing during guessing (found by looking at screenshots, not by a gate). One run had a single 4 s latency outlier that didn't recur in three reruns.

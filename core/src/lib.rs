@@ -1,6 +1,6 @@
 //! Raw C-ABI exports for the browser shim. No wasm-bindgen: JS reads the
 //! command buffer / outbox straight out of linear memory and writes inbound
-//! bytes into `inbox`.
+//! bytes and text into `inbox`.
 
 pub mod app;
 pub mod model;
@@ -22,18 +22,25 @@ fn g() -> &'static mut Globals {
     unsafe { (*core::ptr::addr_of_mut!(G)).as_mut().expect("init not called") }
 }
 
-fn inbox_str(len: usize) -> String {
-    String::from_utf8_lossy(&g().inbox[..len.min(g().inbox.len())]).into_owned()
+fn inbox_str(len: u32) -> String {
+    let ib = &g().inbox;
+    String::from_utf8_lossy(&ib[..(len as usize).min(ib.len())]).into_owned()
 }
 
+fn to_scratch(s: String) -> u32 {
+    g().scratch = s.into_bytes();
+    g().scratch.len() as u32
+}
+
+/// Returns this device's id.
 #[no_mangle]
 pub extern "C" fn init(seed_lo: u32, seed_hi: u32) -> u32 {
     let app = App::new((seed_hi as u64) << 32 | seed_lo as u64);
-    let me = app.me;
+    let id = app.device;
     unsafe {
         *core::ptr::addr_of_mut!(G) = Some(Globals { app, inbox: Vec::new(), scratch: Vec::new(), probe: [0.0; 4] });
     }
-    me
+    id
 }
 
 #[no_mangle]
@@ -120,31 +127,56 @@ pub extern "C" fn action(code: u32) {
     g().app.action(code);
 }
 
-/// Clue text is in the inbox. `advance` != 0 opens the next empty leaf.
+/// Name is in the inbox. Joining with an existing name takes that seat over.
 #[no_mangle]
-pub extern "C" fn set_clue(idx: u32, len: u32, advance: u32) {
-    let s = inbox_str(len as usize);
-    g().app.set_clue(idx as u8, &s, advance != 0);
+pub extern "C" fn join(len: u32) {
+    let s = inbox_str(len);
+    g().app.join(&s);
 }
 
-/// Display name is in the inbox.
 #[no_mangle]
-pub extern "C" fn set_name(len: u32) {
-    let s = inbox_str(len as usize);
-    g().app.set_name(&s);
+pub extern "C" fn watch() {
+    g().app.watch();
+}
+
+#[no_mangle]
+pub extern "C" fn remove_seat(id: u32) {
+    g().app.remove_seat(id);
 }
 
 #[no_mangle]
 pub extern "C" fn set_decoys(n: u32) {
-    g().app.decoys = (n as u8).min(model::MAX_DECOYS);
+    g().app.set_decoys(n.min(255) as u8);
 }
 
-/// Writes the UI state (JSON) to scratch; returns its length.
+/// Clue text is in the inbox. `advance` != 0 opens the next empty leaf.
+#[no_mangle]
+pub extern "C" fn set_clue(idx: u32, len: u32, advance: u32) {
+    let s = inbox_str(len);
+    g().app.set_clue(idx as u8, &s, advance != 0);
+}
+
+/// Re-send the clue editor geometry for leaf `d` (after a resize).
+#[no_mangle]
+pub extern "C" fn edit_clue(d: u32) {
+    g().app.edit_clue((d % 4) as u8);
+}
+
+/// UI state (JSON) → scratch; returns its length.
 #[no_mangle]
 pub extern "C" fn ui() -> u32 {
-    let d = g().app.ui_json();
-    g().scratch = d.into_bytes();
-    g().scratch.len() as u32
+    to_scratch(g().app.ui_json())
+}
+
+/// Canonical shared-state digest (JSON) → scratch; returns its length.
+#[no_mangle]
+pub extern "C" fn digest() -> u32 {
+    to_scratch(g().app.shared.digest())
+}
+
+#[no_mangle]
+pub extern "C" fn scratch_ptr() -> *const u8 {
+    g().scratch.as_ptr()
 }
 
 // ---- harness probes --------------------------------------------------------
@@ -164,9 +196,7 @@ pub extern "C" fn probe_ptr() -> *const f32 {
     g().probe.as_ptr()
 }
 
-#[no_mangle]
-pub extern "C" fn probe_hub() {
-    let (x, y) = g().app.hub_screen();
+fn probe2((x, y): (f32, f32)) {
     g().probe = [x, y, 0.0, 0.0];
 }
 
@@ -178,14 +208,27 @@ pub extern "C" fn probe_card(i: u32) {
 
 #[no_mangle]
 pub extern "C" fn probe_slot(s: u32) {
-    let (x, y) = g().app.slot_screen((s as usize).min(model::NSLOTS - 1));
-    g().probe = [x, y, 0.0, 0.0];
+    probe2(g().app.slot_screen((s as usize).min(model::NSLOTS - 1)));
+}
+
+#[no_mangle]
+pub extern "C" fn probe_board(x: f32, y: f32) {
+    probe2(g().app.board_screen(x, y));
 }
 
 #[no_mangle]
 pub extern "C" fn probe_petal(d: u32) {
-    let (x, y) = g().app.petal_screen((d % 4) as u8);
-    g().probe = [x, y, 0.0, 0.0];
+    probe2(g().app.petal_screen((d % 4) as u8));
+}
+
+#[no_mangle]
+pub extern "C" fn probe_hub() {
+    probe2(g().app.hub_screen());
+}
+
+#[no_mangle]
+pub extern "C" fn probe_shown_angle(i: u32) -> f32 {
+    g().app.shown_angle(i as usize)
 }
 
 /// Rendered size of card words, in CSS px.
@@ -200,22 +243,9 @@ pub extern "C" fn probe_card_px() -> f32 {
     model::CARD * g().app.scale()
 }
 
-/// Writes the canonical state digest (JSON) to scratch; returns its length.
-#[no_mangle]
-pub extern "C" fn digest() -> u32 {
-    let d = g().app.shared.digest();
-    g().scratch = d.into_bytes();
-    g().scratch.len() as u32
-}
-
-#[no_mangle]
-pub extern "C" fn scratch_ptr() -> *const u8 {
-    g().scratch.as_ptr()
-}
-
-/// Harness only: correct rotation for slot `s` of the clover being guessed
-/// (255 if none). Players could already dig this out of devtools, since
-/// submissions are shared; the game is played on trust.
+/// Harness only: correct rotation for spot `s` of the clover being guessed
+/// (255 if none). Submissions are shared state, so this is no secret from
+/// devtools anyway; the game is played on trust.
 #[no_mangle]
 pub extern "C" fn answer_rot(s: u32) -> u32 {
     let a = &g().app;
@@ -225,10 +255,4 @@ pub extern "C" fn answer_rot(s: u32) -> u32 {
         }
         _ => 255,
     }
-}
-
-/// Re-send the clue editor geometry for leaf `d` (after a resize).
-#[no_mangle]
-pub extern "C" fn edit_clue(d: u32) {
-    g().app.edit_clue((d % 4) as u8);
 }

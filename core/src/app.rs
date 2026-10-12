@@ -1,6 +1,6 @@
-//! Local (per-player) state: identity, presence, clue drafts, view rotation,
-//! pointer interaction and rendering. Rendering emits a flat f32 command
-//! buffer that the JS shim replays onto a Canvas2D context.
+//! Local (per-device) state: identity, presence, view rotation, layout,
+//! pointer interaction, animation and rendering. Rendering emits a flat f32
+//! command buffer that the JS shim replays onto a Canvas2D context.
 
 use crate::model::*;
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
@@ -22,8 +22,10 @@ const DRAG_THRESHOLD: f32 = 6.0;
 const CURSOR_TTL_MS: f64 = 4000.0;
 const HELLO_EVERY_MS: f64 = 2000.0;
 const PEER_TTL_MS: f64 = 7000.0;
-pub const WORD_SIZE: f32 = 24.0;
-const BOARD_HALF: f32 = 185.0;
+pub const WORD_SIZE: f32 = 26.0;
+/// Tray depth (short axis) in board units: two rows of cards plus air.
+const TRAY_UNITS: f32 = 400.0;
+const PAD: f32 = 8.0;
 
 /// 2D affine matrix in canvas `setTransform(a, b, c, d, e, f)` order.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -81,26 +83,13 @@ fn turn(r: u8) -> f32 {
     r as f32 * FRAC_PI_2
 }
 
+/// Shortest signed difference between two angles.
+fn wrap(a: f32) -> f32 {
+    (a + PI).rem_euclid(TAU) - PI
+}
+
 const PALETTE: [u32; 8] =
     [0xe0457bff, 0x2f80edff, 0xf2994aff, 0x9b51e0ff, 0x27ae60ff, 0x00a3a3ff, 0xd4a017ff, 0xeb5757ff];
-
-/// Fallback colour for a peer not (yet) in the roster.
-pub fn peer_color(peer: u32) -> u32 {
-    PALETTE[(peer.wrapping_mul(2654435761) >> 29) as usize]
-}
-
-pub fn default_name(peer: u32) -> String {
-    const A: [&str; 16] = [
-        "Brave", "Calm", "Clever", "Dizzy", "Eager", "Fancy", "Gentle", "Happy", "Jolly", "Lucky", "Mellow",
-        "Nimble", "Quiet", "Sunny", "Swift", "Witty",
-    ];
-    const B: [&str; 16] = [
-        "Badger", "Beaver", "Crane", "Ferret", "Finch", "Gecko", "Heron", "Koala", "Lemur", "Moose", "Otter",
-        "Panda", "Puffin", "Robin", "Stoat", "Walrus",
-    ];
-    let h = peer.wrapping_mul(2246822519);
-    format!("{} {}", A[(h >> 28) as usize], B[((h >> 24) & 15) as usize])
-}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Target {
@@ -115,38 +104,61 @@ struct Press {
     sx: f32,
     sy: f32,
     target: Target,
-    /// Card centre minus pointer, in world coords.
+    /// Card centre minus pointer, in CSS px.
     grab: (f32, f32),
+    /// Where the dragged card started (for swaps).
     origin: Option<Card>,
     moved: bool,
-    /// (pointer angle about the board centre, view angle) at drag start.
+    /// (pointer angle about the board centre, view angle) while spinning.
     spin: Option<(f32, f32)>,
 }
 
 pub struct RemoteCursor {
-    pub peer: u32,
+    pub seat: u32,
     pub kind: u8,
     pub x: f32,
     pub y: f32,
     pub seen: f64,
 }
 
-/// What the board shows right now, for this player.
+/// Where things go on this screen.
+#[derive(Clone, Copy, Debug)]
+pub struct Layout {
+    /// CSS px per board unit.
+    pub k: f32,
+    /// Board centre, CSS px.
+    pub bc: (f32, f32),
+    /// Tray rect (x, y, w, h) and whether its long axis is horizontal.
+    pub tray: Option<(f32, f32, f32, f32, bool)>,
+}
+
+/// Displayed (animated) pose of a card: in board units when on the board,
+/// in tray coords otherwise; angle in radians.
+#[derive(Clone, Copy, Debug)]
+struct Pose {
+    board: bool,
+    x: f32,
+    y: f32,
+    a: f32,
+}
+
+/// What the board shows right now, for this device.
 pub struct Scene {
     pub writer: Option<u32>,
     pub cards: Vec<Card>,
-    pub owner: [Option<usize>; NSLOTS],
+    pub claim: [Option<usize>; NSLOTS],
     pub words: Vec<[&'static str; 4]>,
     pub clues: [String; NSLOTS],
-    /// Cards this player may move (index set).
     pub movable: Vec<bool>,
     pub locked: u8,
 }
 
 pub struct App {
     pub shared: Shared,
-    pub me: u32,
-    pub name: String,
+    /// This device (Lamport tie-break, presence).
+    pub device: u32,
+    /// The seat this device plays, if any (None = watching).
+    pub seat: Option<u32>,
     clock: u64,
     rng: Rng,
     /// Target view rotation in quarter turns (local only).
@@ -157,18 +169,18 @@ pub struct App {
     pub h: f32,
     pub dpr: f32,
     press: Option<Press>,
-    pub drafts: [String; NSLOTS],
-    pub decoys: u8,
     editing: Option<u8>,
-    /// Peer id → (name, last heard).
-    pub peers: BTreeMap<u32, (String, f64)>,
-    pub cursors: Vec<RemoteCursor>,
+    /// Device → (seat, last heard).
+    pub peers: BTreeMap<u32, (u32, f64)>,
+    pub cursors: BTreeMap<u32, RemoteCursor>,
     my_cursor: (u8, f32, f32),
     cursor_dirty: bool,
     last_cursor_ms: f64,
     last_hello_ms: f64,
     dirty_cards: BTreeSet<(u32, u8)>,
     last_phase: Phase,
+    poses: BTreeMap<(u32, u8), Pose>,
+    dt: f32,
     pub now: f64,
     pub outbox: Vec<u8>,
     pub cmds: Vec<f32>,
@@ -178,30 +190,30 @@ pub struct App {
 impl App {
     pub fn new(seed: u64) -> App {
         let mut rng = Rng::new(seed);
-        let me = (rng.next() as u32).max(1);
+        let device = (rng.next() as u32).max(1);
         App {
             shared: Shared::default(),
-            me,
-            name: default_name(me),
+            device,
+            seat: None,
             clock: 0,
             rng,
             q: 0,
             angle: 0.0,
-            w: 900.0,
+            w: 800.0,
             h: 1000.0,
             dpr: 1.0,
             press: None,
-            drafts: Default::default(),
-            decoys: 1,
             editing: None,
             peers: BTreeMap::new(),
-            cursors: Vec::new(),
+            cursors: BTreeMap::new(),
             my_cursor: (0, 0.0, 0.0),
             cursor_dirty: false,
             last_cursor_ms: 0.0,
             last_hello_ms: f64::NEG_INFINITY,
             dirty_cards: BTreeSet::new(),
             last_phase: Phase::Lobby,
+            poses: BTreeMap::new(),
+            dt: 0.0,
             now: 0.0,
             outbox: Vec::new(),
             cmds: Vec::new(),
@@ -211,7 +223,7 @@ impl App {
 
     fn stamp(&mut self) -> Stamp {
         self.clock += 1;
-        Stamp { clock: self.clock, peer: self.me }
+        Stamp { clock: self.clock, peer: self.device }
     }
 
     // ---- outbox -----------------------------------------------------------
@@ -234,9 +246,13 @@ impl App {
         self.event(EV_STATUS, s.as_bytes());
     }
 
+    fn op(&self, body: Body) -> Op {
+        Op { game: self.shared.game, round: self.shared.round, body }
+    }
+
     /// Apply a locally-originated op and broadcast it.
     fn commit(&mut self, body: Body) {
-        let op = Op { round: self.shared.round, body };
+        let op = self.op(body);
         self.shared.apply(&op);
         self.send(&[Msg::Op(op)]);
     }
@@ -244,7 +260,7 @@ impl App {
     /// Local card write; broadcast is coalesced to once per frame.
     fn set_card(&mut self, w: u32, i: usize, loc: Loc, rot: u8, held: u32) {
         let stamp = self.stamp();
-        let op = Op { round: self.shared.round, body: Body::Card(w, i as u8, Card { loc, rot, held, stamp }) };
+        let op = self.op(Body::Card(w, i as u8, Card { loc, rot, held, stamp }));
         self.shared.apply(&op);
         self.dirty_cards.insert((w, i as u8));
     }
@@ -253,18 +269,17 @@ impl App {
         if self.dirty_cards.is_empty() {
             return;
         }
-        let r = self.shared.round;
         let msgs: Vec<Msg> = std::mem::take(&mut self.dirty_cards)
             .into_iter()
-            .filter_map(|k| self.shared.cards.get(&k).map(|c| Msg::Op(Op { round: r, body: Body::Card(k.0, k.1, *c) })))
+            .filter_map(|k| self.shared.cards.get(&k).map(|c| Msg::Op(self.op(Body::Card(k.0, k.1, *c)))))
             .collect();
         self.send(&msgs);
     }
 
     fn hello(&mut self) {
         self.last_hello_ms = self.now;
-        let (peer, name) = (self.me, self.name.clone());
-        self.send(&[Msg::Hello { peer, name }]);
+        let (device, seat) = (self.device, self.seat.unwrap_or(0));
+        self.send(&[Msg::Hello { device, seat }]);
     }
 
     // ---- network in ---------------------------------------------------------
@@ -275,28 +290,26 @@ impl App {
                 Msg::Op(op) => {
                     let s = match &op.body {
                         Body::Sub(_, s) => s.stamp,
-                        Body::Start(s) | Body::Next(_, s) => *s,
+                        Body::Seat(_, s) => s.stamp,
+                        Body::Start(s) | Body::Next(_, s) | Body::Ledger(_, _, _, s) => *s,
                         Body::Card(_, _, c) => c.stamp,
                         Body::Check(_, c) => c.stamp,
                         Body::None => op.round.stamp,
                     };
-                    self.clock = self.clock.max(s.clock).max(op.round.stamp.clock);
-                    let old_round = self.shared.round.stamp;
+                    self.clock = self.clock.max(s.clock).max(op.round.stamp.clock).max(op.game.clock);
+                    let before = (self.shared.game, self.shared.round.stamp);
                     self.shared.apply(&op);
-                    if self.shared.round.stamp != old_round {
+                    if (self.shared.game, self.shared.round.stamp) != before {
                         self.new_round_local();
                     }
                 }
-                Msg::Hello { peer, name } if peer != self.me => {
-                    self.peers.insert(peer, (name, self.now));
+                Msg::Hello { device, seat } if device != self.device => {
+                    self.peers.insert(device, (seat, self.now));
                 }
-                Msg::Cursor { peer, kind, x, y } if peer != self.me => {
+                Msg::Cursor { device, seat, kind, x, y } if device != self.device => {
                     let now = self.now;
-                    self.peers.entry(peer).or_insert_with(|| (default_name(peer), now)).1 = now;
-                    match self.cursors.iter_mut().find(|c| c.peer == peer) {
-                        Some(c) => *c = RemoteCursor { peer, kind, x, y, seen: now },
-                        None => self.cursors.push(RemoteCursor { peer, kind, x, y, seen: now }),
-                    }
+                    self.peers.insert(device, (seat, now));
+                    self.cursors.insert(device, RemoteCursor { seat, kind, x, y, seen: now });
                 }
                 _ => {}
             }
@@ -304,51 +317,85 @@ impl App {
     }
 
     fn new_round_local(&mut self) {
-        self.drafts = Default::default();
         self.editing = None;
         self.press = None;
         self.dirty_cards.clear();
+        self.poses.clear();
     }
 
     pub fn on_peer_join(&mut self) {
         let mut msgs: Vec<Msg> = self.shared.all_ops().into_iter().map(Msg::Op).collect();
-        msgs.push(Msg::Hello { peer: self.me, name: self.name.clone() });
+        msgs.push(Msg::Hello { device: self.device, seat: self.seat.unwrap_or(0) });
         self.send(&msgs);
     }
 
-    pub fn set_name(&mut self, name: &str) {
-        let n = clamp_text(name, 24);
-        self.name = if n.is_empty() { default_name(self.me) } else { n };
+    // ---- seats ----------------------------------------------------------------
+
+    /// Sit down as `name`. An existing name takes over that seat.
+    pub fn join(&mut self, name: &str) {
+        let name = clamp_text(name, 24);
+        if name.is_empty() {
+            return;
+        }
+        if self.shared.game == Stamp::default() {
+            self.shared.game = self.stamp();
+        }
+        let id = seat_id(&name);
+        let stamp = self.stamp();
+        self.commit(Body::Seat(id, Seat { name, active: true, stamp }));
+        self.seat = Some(id);
         self.hello();
     }
 
-    /// Peers heard from recently (not including me).
-    pub fn alive(&self) -> Vec<u32> {
-        self.peers.iter().filter(|(_, (_, t))| self.now - t < PEER_TTL_MS).map(|(p, _)| *p).collect()
+    pub fn watch(&mut self) {
+        self.seat = None;
+        self.hello();
     }
 
-    /// Everyone in this game, sorted (stable colours by rank).
-    pub fn roster(&self) -> Vec<u32> {
-        let mut v = self.alive();
-        v.push(self.me);
-        v.extend(self.shared.subs.keys());
-        v.sort();
-        v.dedup();
+    /// Take a (usually absent) player out of the game.
+    pub fn remove_seat(&mut self, id: u32) {
+        if let Some(s) = self.shared.seats.get(&id).cloned() {
+            let stamp = self.stamp();
+            self.commit(Body::Seat(id, Seat { active: false, stamp, ..s }));
+            if self.seat == Some(id) {
+                self.watch();
+            }
+        }
+    }
+
+    /// Seats with a device here right now (including mine).
+    pub fn present(&self) -> BTreeSet<u32> {
+        let mut v: BTreeSet<u32> = self
+            .peers
+            .values()
+            .filter(|(seat, t)| *seat != 0 && self.now - t < PEER_TTL_MS)
+            .map(|(s, _)| *s)
+            .collect();
+        v.extend(self.seat);
         v
     }
 
-    pub fn color_of(&self, p: u32) -> u32 {
-        match self.roster().iter().position(|&x| x == p) {
-            Some(k) => PALETTE[k % PALETTE.len()],
-            None => peer_color(p),
-        }
+    pub fn watchers(&self) -> usize {
+        self.peers.values().filter(|(seat, t)| *seat == 0 && self.now - t < PEER_TTL_MS).count()
+            + self.seat.is_none() as usize
     }
 
-    pub fn name_of(&self, p: u32) -> String {
-        if p == self.me {
-            return self.name.clone();
-        }
-        self.peers.get(&p).map(|(n, _)| n.clone()).unwrap_or_else(|| default_name(p))
+    pub fn color_of(&self, seat: u32) -> u32 {
+        let players = self.shared.players();
+        let k = players.iter().position(|&x| x == seat).unwrap_or(seat as usize);
+        PALETTE[k % PALETTE.len()]
+    }
+
+    pub fn name_of(&self, seat: u32) -> String {
+        self.shared.seats.get(&seat).map(|s| s.name.clone()).unwrap_or_else(|| "someone".into())
+    }
+
+    fn my_sub(&self) -> Sub {
+        self.seat.and_then(|s| self.shared.subs.get(&s).cloned()).unwrap_or_else(|| Sub { decoys: 1, ..Sub::default() })
+    }
+
+    fn seated_writing(&self) -> Option<u32> {
+        self.seat.filter(|s| self.shared.phase() == Phase::Writing && self.shared.players().contains(s))
     }
 
     // ---- what is on the board -------------------------------------------------
@@ -358,7 +405,7 @@ impl App {
         let empty = || Scene {
             writer: None,
             cards: Vec::new(),
-            owner: [None; NSLOTS],
+            claim: [None; NSLOTS],
             words: Vec::new(),
             clues: Default::default(),
             movable: Vec::new(),
@@ -367,15 +414,16 @@ impl App {
         match s.phase() {
             Phase::Lobby | Phase::End => empty(),
             Phase::Writing => {
-                let d = deal(s.round.seed, self.me);
+                let Some(me) = self.seated_writing() else { return empty() };
+                let d = deal(s.round.seed, me);
                 Scene {
-                    writer: Some(self.me),
+                    writer: Some(me),
                     cards: (0..NSLOTS)
                         .map(|i| Card { loc: Loc::Slot(i as u8), rot: d.sol_rot[i], held: 0, stamp: Stamp::default() })
                         .collect(),
-                    owner: [Some(0), Some(1), Some(2), Some(3)],
+                    claim: [Some(0), Some(1), Some(2), Some(3)],
                     words: d.words[..NSLOTS].to_vec(),
-                    clues: self.drafts.clone(),
+                    clues: self.my_sub().clues,
                     movable: vec![false; NSLOTS],
                     locked: 0b1111,
                 }
@@ -383,17 +431,17 @@ impl App {
             Phase::Guessing(k) => {
                 let w = s.puzzles()[k];
                 let d = deal(s.round.seed, w);
-                let (cards, owner) = s.layout(w);
+                let (cards, claim) = s.layout(w);
                 let check = s.check(w);
                 let locked = if check.done() { 0b1111 } else { check.mask };
-                let can = w != self.me && !check.done();
+                let can = self.seat.is_some_and(|me| me != w) && !check.done();
                 Scene {
                     writer: Some(w),
                     movable: (0..cards.len()).map(|i| can && (i >= NSLOTS || locked & (1 << i) == 0)).collect(),
                     words: d.words[..cards.len()].to_vec(),
                     clues: s.subs.get(&w).map(|x| x.clues.clone()).unwrap_or_default(),
                     cards,
-                    owner,
+                    claim,
                     locked,
                 }
             }
@@ -402,36 +450,112 @@ impl App {
 
     // ---- geometry -----------------------------------------------------------
 
-    pub fn scale(&self) -> f32 {
-        (self.w / WORLD_W).min(self.h / WORLD_H)
-    }
-
-    /// World → CSS pixels.
-    pub fn screen(&self) -> M {
-        let k = self.scale();
-        M::t(self.w / 2.0, self.h / 2.0).then(M::s(k)).then(M::t(-WORLD_W / 2.0, -WORLD_H / 2.0))
-    }
-
-    /// Board coords → world.
-    pub fn board(&self) -> M {
-        M::t(CX, CY).then(M::r(self.angle))
-    }
-
-    /// Card-local coords → world.
-    pub fn card_frame(&self, c: &Card) -> M {
-        let r = M::r(turn(c.rot));
-        match c.loc {
-            Loc::Table { x, y } => M::t(x, y).then(r),
-            Loc::Slot(s) => {
-                let (x, y) = slot_pos(s as usize);
-                self.board().then(M::t(x, y)).then(r)
+    /// Board fills the screen; while guessing, a tray for loose cards goes
+    /// below (portrait) or beside (landscape) it.
+    pub fn layout(&self) -> Layout {
+        let (w, h) = (self.w, self.h);
+        let ext = 2.0 * EXTENT;
+        if !matches!(self.shared.phase(), Phase::Guessing(_)) {
+            let k = ((w - 2.0 * PAD).min(h - 2.0 * PAD) / ext).max(0.05);
+            return Layout { k, bc: (w / 2.0, h / 2.0), tray: None };
+        }
+        if h >= w {
+            let k = ((w - 2.0 * PAD) / ext).min((h - 3.0 * PAD) / (ext + TRAY_UNITS)).max(0.05);
+            let bh = ext * k;
+            let tray_y = PAD + bh + PAD;
+            Layout { k, bc: (w / 2.0, PAD + bh / 2.0), tray: Some((PAD, tray_y, w - 2.0 * PAD, h - tray_y - PAD, true)) }
+        } else {
+            let k = ((h - 2.0 * PAD) / ext).min((w - 3.0 * PAD) / (ext + TRAY_UNITS)).max(0.05);
+            let bw = ext * k;
+            // Keep the group centred; the tray gets at most ~3 card widths.
+            let tray_w = (w - bw - 3.0 * PAD).min(3.2 * CARD * k).max(TRAY_UNITS * k);
+            let left = ((w - bw - tray_w - PAD) / 2.0).max(PAD);
+            Layout {
+                k,
+                bc: (left + bw / 2.0, h / 2.0),
+                tray: Some((left + bw + PAD, PAD, tray_w, h - 2.0 * PAD, false)),
             }
-            Loc::Float { x, y } => self.board().then(M::t(x, y)).then(r),
         }
     }
 
-    pub fn to_world(&self, sx: f32, sy: f32) -> (f32, f32) {
-        self.screen().inv().apply(sx, sy)
+    pub fn scale(&self) -> f32 {
+        self.layout().k
+    }
+
+    /// Board units → CSS px.
+    pub fn board_m(&self) -> M {
+        let l = self.layout();
+        M::t(l.bc.0, l.bc.1).then(M::s(l.k)).then(M::r(self.angle))
+    }
+
+    /// Tray coords (0..1 along long, short axis) → CSS px of a card centre.
+    pub fn tray_px(&self, u: f32, v: f32) -> (f32, f32) {
+        let l = self.layout();
+        let Some((x, y, w, h, horiz)) = l.tray else { return (-1000.0, -1000.0) };
+        let half = HALF * l.k + 4.0;
+        let along = |o: f32, len: f32, t: f32| o + half + t.clamp(0.0, 1.0) * (len - 2.0 * half).max(0.0);
+        if horiz { (along(x, w, u), along(y, h, v)) } else { (along(x, w, v), along(y, h, u)) }
+    }
+
+    /// CSS px → tray coords (clamped).
+    pub fn px_tray(&self, px: f32, py: f32) -> (f32, f32) {
+        let l = self.layout();
+        let Some((x, y, w, h, horiz)) = l.tray else { return (0.5, 0.5) };
+        let half = HALF * l.k + 4.0;
+        let t = |o: f32, len: f32, p: f32| ((p - o - half) / (len - 2.0 * half).max(1.0)).clamp(0.0, 1.0);
+        if horiz { (t(x, w, px), t(y, h, py)) } else { (t(y, h, py), t(x, w, px)) }
+    }
+
+    /// Card-local units → CSS px, for a card's resting place.
+    pub fn card_m(&self, c: &Card) -> M {
+        let r = M::r(turn(c.rot));
+        match c.loc {
+            Loc::Table { x, y } => {
+                let (px, py) = self.tray_px(x, y);
+                M::t(px, py).then(M::s(self.scale())).then(r)
+            }
+            Loc::Slot(s) => {
+                let (x, y) = slot_pos(s as usize);
+                self.board_m().then(M::t(x, y)).then(r)
+            }
+            Loc::Float { x, y } => self.board_m().then(M::t(x, y)).then(r),
+        }
+    }
+
+    fn pose_m(&self, p: &Pose) -> M {
+        if p.board {
+            self.board_m().then(M::t(p.x, p.y)).then(M::r(p.a))
+        } else {
+            let (px, py) = self.tray_px(p.x, p.y);
+            M::t(px, py).then(M::s(self.scale())).then(M::r(p.a))
+        }
+    }
+
+    fn target_pose(c: &Card) -> Pose {
+        let a = turn(c.rot);
+        match c.loc {
+            Loc::Table { x, y } => Pose { board: false, x, y, a },
+            Loc::Slot(s) => {
+                let (x, y) = slot_pos(s as usize);
+                Pose { board: true, x, y, a }
+            }
+            Loc::Float { x, y } => Pose { board: true, x, y, a },
+        }
+    }
+
+    /// Re-express a pose in the other frame without moving it on screen.
+    fn reframe(&self, p: Pose, board: bool) -> Pose {
+        if p.board == board {
+            return p;
+        }
+        let (px, py) = self.pose_m(&Pose { a: 0.0, ..p }).apply(0.0, 0.0);
+        if board {
+            let (x, y) = self.board_m().inv().apply(px, py);
+            Pose { board, x, y, a: p.a - self.angle }
+        } else {
+            let (x, y) = self.px_tray(px, py);
+            Pose { board, x, y, a: p.a + self.angle }
+        }
     }
 
     fn dragging_card(&self) -> Option<usize> {
@@ -441,48 +565,47 @@ impl App {
         })
     }
 
-    /// Back-to-front draw order: slotted, table, floating, then my drag.
+    /// Back-to-front draw order: like a real table, the card touched last
+    /// is on top; cards being held or dragged float above everything.
     fn draw_order(&self, cards: &[Card]) -> Vec<usize> {
         let dragging = self.dragging_card();
         let rank = |i: usize| -> u8 {
-            if Some(i) == dragging {
-                return 4;
-            }
-            match cards[i].loc {
-                Loc::Slot(_) => 0,
-                Loc::Table { .. } if cards[i].held == 0 => 1,
-                _ => 2,
+            match (Some(i) == dragging, cards[i].held) {
+                (true, _) => 2,
+                (false, 0) => 0,
+                _ => 1,
             }
         };
         let mut v: Vec<usize> = (0..cards.len()).collect();
-        v.sort_by_key(|&i| rank(i));
+        v.sort_by_key(|&i| (rank(i), cards[i].stamp));
         v
     }
 
-    fn petal_frame_at(&self, d: u8, angle: f32) -> M {
-        M::t(CX, CY).then(M::r(angle)).then(M::r(turn(d)))
+    fn leaf_m_at(&self, d: u8, angle: f32) -> M {
+        let l = self.layout();
+        M::t(l.bc.0, l.bc.1).then(M::s(l.k)).then(M::r(angle + turn(d)))
     }
 
-    fn petal_frame(&self, d: u8) -> M {
-        self.petal_frame_at(d, self.angle)
+    fn leaf_mid() -> f32 {
+        -(LEAF_IN + LEAF_OUT) / 2.0
     }
 
-    fn hit(&self, wx: f32, wy: f32) -> Target {
-        let (bx, by) = self.board().inv().apply(wx, wy);
+    fn hit(&self, px: f32, py: f32) -> Target {
+        let (bx, by) = self.board_m().inv().apply(px, py);
         if bx.hypot(by) <= HUB_R + 6.0 {
             return Target::Hub;
         }
         let sc = self.scene();
         let card = self.draw_order(&sc.cards).into_iter().rev().find(|&i| {
-            let (lx, ly) = self.card_frame(&sc.cards[i]).inv().apply(wx, wy);
+            let (lx, ly) = self.card_m(&sc.cards[i]).inv().apply(px, py);
             lx.abs() <= HALF && ly.abs() <= HALF
         });
         if let Some(i) = card.filter(|&i| sc.movable[i]) {
             return Target::Card(i);
         }
         if let Some(d) = (0..4).find(|&d| {
-            let (x, y) = self.petal_frame(d).inv().apply(wx, wy);
-            x.abs() <= 150.0 && (-240.0..=-165.0).contains(&y)
+            let (x, y) = self.leaf_m_at(d, self.angle).inv().apply(px, py);
+            x.abs() <= LEAF_HALF_W && (-LEAF_OUT..=-LEAF_IN).contains(&y)
         }) {
             return Target::Petal(d);
         }
@@ -495,13 +618,12 @@ impl App {
     // ---- input --------------------------------------------------------------
 
     pub fn pointer_down(&mut self, sx: f32, sy: f32) {
-        let (wx, wy) = self.to_world(sx, sy);
-        let target = self.hit(wx, wy);
+        let target = self.hit(sx, sy);
         let (grab, origin) = match target {
             Target::Card(i) => {
                 let c = self.scene().cards[i];
-                let (cx, cy) = self.card_frame(&c).apply(0.0, 0.0);
-                ((cx - wx, cy - wy), Some(c))
+                let (cx, cy) = self.card_m(&c).apply(0.0, 0.0);
+                ((cx - sx, cy - sy), Some(c))
             }
             _ => ((0.0, 0.0), None),
         };
@@ -509,11 +631,15 @@ impl App {
     }
 
     pub fn pointer_move(&mut self, sx: f32, sy: f32) {
-        let (wx, wy) = self.to_world(sx, sy);
-        let (bx, by) = self.board().inv().apply(wx, wy);
-        if matches!(self.shared.phase(), Phase::Guessing(_)) {
-            let over = bx.abs() <= BOARD_REACH && by.abs() <= BOARD_REACH;
-            self.my_cursor = if over { (2, bx, by) } else { (1, wx, wy) };
+        if matches!(self.shared.phase(), Phase::Guessing(_)) && self.seat.is_some() {
+            let (bx, by) = self.board_m().inv().apply(sx, sy);
+            let on_board = bx.abs() <= EXTENT && by.abs() <= EXTENT;
+            self.my_cursor = if on_board {
+                (2, bx, by)
+            } else {
+                let (u, v) = self.px_tray(sx, sy);
+                (1, u, v)
+            };
             self.cursor_dirty = true;
         }
 
@@ -522,26 +648,21 @@ impl App {
             return;
         }
         p.moved = true;
-        let target = p.target;
-        match target {
+        match p.target {
             Target::Card(i) => {
-                let (cx, cy) = (wx + p.grab.0, wy + p.grab.1);
+                let (cx, cy) = (sx + p.grab.0, sy + p.grab.1);
                 self.drag_card(i, cx, cy);
             }
             _ => {
                 // Dragging anywhere else spins my view of the board.
                 let (psx, psy, spin) = (p.sx, p.sy, p.spin);
-                let ang = |x: f32, y: f32| (y - CY).atan2(x - CX);
-                let start = spin.unwrap_or_else(|| {
-                    let (x0, y0) = self.screen().inv().apply(psx, psy);
-                    (ang(x0, y0), self.angle)
-                });
-                let mut d = ang(wx, wy) - start.0;
-                d = (d + PI).rem_euclid(TAU) - PI;
-                self.angle = start.1 + d;
-                // Keep the spin continuous across the ±π seam.
+                let bc = self.layout().bc;
+                let ang = |x: f32, y: f32| (y - bc.1).atan2(x - bc.0);
+                let start = spin.unwrap_or((ang(psx, psy), self.angle));
+                self.angle = start.1 + wrap(ang(sx, sy) - start.0);
+                let a = self.angle;
                 if let Some(p) = self.press.as_mut() {
-                    p.spin = Some((ang(wx, wy), self.angle));
+                    p.spin = Some((ang(sx, sy), a));
                 }
             }
         }
@@ -549,11 +670,13 @@ impl App {
 
     fn drag_card(&mut self, i: usize, cx: f32, cy: f32) {
         let sc = self.scene();
-        let Some(w) = sc.writer else { return };
+        let (Some(w), Some(me)) = (sc.writer, self.seat) else { return };
         let cur = sc.cards[i];
         let in_board_frame = !matches!(cur.loc, Loc::Table { .. });
-        let (bx, by) = self.board().inv().apply(cx, cy);
-        let to_board = bx.abs() <= BOARD_REACH && by.abs() <= BOARD_REACH;
+        let (bx, by) = self.board_m().inv().apply(cx, cy);
+        let tray_hit =
+            self.layout().tray.is_some_and(|(x, y, tw, th, _)| cx >= x && cx <= x + tw && cy >= y && cy <= y + th);
+        let to_board = !tray_hit && bx.abs() <= EXTENT && by.abs() <= EXTENT;
         // Keep the card's on-screen orientation when it changes frame.
         let rot = match (in_board_frame, to_board) {
             (false, true) => quarter(cur.rot as i32 - self.q),
@@ -561,12 +684,15 @@ impl App {
             _ => cur.rot,
         };
         let loc = if to_board {
-            Loc::Float { x: bx, y: by }
+            Loc::Float { x: bx.clamp(-BOARD_HALF, BOARD_HALF), y: by.clamp(-BOARD_HALF, BOARD_HALF) }
         } else {
-            Loc::Table { x: cx.clamp(HALF, WORLD_W - HALF), y: cy.clamp(HALF, WORLD_H - HALF) }
+            let (u, v) = self.px_tray(cx, cy);
+            Loc::Table { x: u, y: v }
         };
-        let me = self.me;
         self.set_card(w, i, loc, rot, me);
+        // My own drag follows the finger exactly.
+        let pose = Self::target_pose(&self.shared.cards[&(w, i as u8)]);
+        self.poses.insert((w, i as u8), pose);
     }
 
     pub fn pointer_up(&mut self, sx: f32, sy: f32) {
@@ -577,14 +703,14 @@ impl App {
             return;
         }
         match (p.target, p.moved) {
-            (Target::Card(i), true) => self.drop_card(i, p.origin.unwrap()),
+            (Target::Card(i), true) => self.drop_card(i, p.origin),
             (Target::Card(i), false) => {
                 let sc = self.scene();
                 let c = sc.cards[i];
                 self.set_card(sc.writer.unwrap(), i, c.loc, (c.rot + 1) % 4, 0);
             }
             (Target::Petal(d), false) => {
-                if self.shared.phase() == Phase::Writing {
+                if self.seated_writing().is_some() {
                     self.edit_clue(d);
                 } else {
                     self.face_petal(d);
@@ -596,31 +722,36 @@ impl App {
         self.flush_cards();
     }
 
-    fn drop_card(&mut self, i: usize, origin: Card) {
+    /// Cards stay exactly where they're dropped (so players can leave
+    /// "maybe" placements), except very close to a spot, where they snap. A
+    /// card already snapped there is pushed back to where this one came from.
+    fn drop_card(&mut self, i: usize, origin: Option<Card>) {
         let sc = self.scene();
         let Some(w) = sc.writer else { return };
         let c = sc.cards[i];
         let Loc::Float { x, y } = c.loc else {
             return self.set_card(w, i, c.loc, c.rot, 0);
         };
-        let s = nearest_slot(x, y);
-        if sc.locked & (1 << s) != 0 {
-            // Already solved: bounce back.
-            let rot = if matches!(origin.loc, Loc::Table { .. }) { quarter(c.rot as i32 + self.q) } else { c.rot };
-            return self.set_card(w, i, origin.loc, rot, 0);
-        }
-        if let Some(k) = sc.owner[s as usize].filter(|&k| k != i) {
-            // Swap: the occupant goes where the dragged card came from.
+        let spot = (0..NSLOTS).filter(|&s| sc.locked & (1 << s) == 0).find(|&s| {
+            let (sx, sy) = slot_pos(s);
+            (x - sx).hypot(y - sy) <= SNAP_R
+        });
+        let Some(s) = spot else {
+            return self.set_card(w, i, c.loc, c.rot, 0);
+        };
+        let occupant = (0..sc.cards.len()).find(|&j| j != i && sc.cards[j].loc == Loc::Slot(s as u8));
+        if let (Some(k), Some(o)) = (occupant, origin) {
             let occ = sc.cards[k];
-            match origin.loc {
-                Loc::Slot(_) => self.set_card(w, k, origin.loc, occ.rot, 0),
-                _ => self.set_card(w, k, origin.loc, quarter(occ.rot as i32 + self.q), 0),
-            }
+            let rot = match o.loc {
+                Loc::Table { .. } => quarter(occ.rot as i32 + self.q),
+                _ => occ.rot,
+            };
+            self.set_card(w, k, o.loc, rot, 0);
         }
-        self.set_card(w, i, Loc::Slot(s), c.rot, 0);
+        self.set_card(w, i, Loc::Slot(s as u8), c.rot, 0);
     }
 
-    /// Turn my view so petal `d` sits at the top, reading upright.
+    /// Turn my view so leaf `d` sits at the top, reading upright.
     pub fn face_petal(&mut self, d: u8) {
         let delta = quarter(-(d as i32) - self.q) as i32;
         self.q += if delta == 3 { -1 } else { delta };
@@ -630,28 +761,51 @@ impl App {
         self.face_petal(d);
         self.editing = Some(d);
         let target = self.q as f32 * FRAC_PI_2;
-        let f = self.screen().then(self.petal_frame_at(d, target)).then(M::t(0.0, -204.0));
+        let f = self.leaf_m_at(d, target).then(M::t(0.0, Self::leaf_mid()));
         let (x, y) = f.apply(0.0, 0.0);
         let k = self.scale();
         let mut p = vec![d];
-        for v in [x, y, 290.0 * k, 56.0 * k, f.angle()] {
+        for v in [x, y, 2.0 * LEAF_HALF_W * k * 0.92, (LEAF_OUT - LEAF_IN) * k * 0.8, f.angle()] {
             p.extend_from_slice(&v.to_le_bytes());
         }
-        p.extend_from_slice(self.drafts[d as usize].as_bytes());
+        p.extend_from_slice(self.my_sub().clues[d as usize].as_bytes());
         self.event(EV_EDIT_CLUE, &p);
     }
 
-    /// Store a clue draft; with `advance`, open the next empty leaf.
+    fn put_sub(&mut self, f: impl FnOnce(&mut Sub)) {
+        let Some(me) = self.seated_writing() else { return };
+        let mut sub = self.my_sub();
+        f(&mut sub);
+        sub.stamp = self.stamp();
+        self.commit(Body::Sub(me, sub));
+    }
+
+    /// Save a clue (shared, so another device can take over); with
+    /// `advance`, open the next empty leaf. Editing un-readies you.
     pub fn set_clue(&mut self, d: u8, text: &str, advance: bool) {
-        if d as usize >= NSLOTS || self.shared.phase() != Phase::Writing {
+        if d as usize >= NSLOTS || self.seated_writing().is_none() {
             return;
         }
-        self.drafts[d as usize] = clamp_text(text, MAX_CLUE_BYTES);
+        let text = clamp_text(text, MAX_TEXT);
         self.editing = None;
-        if advance && !self.drafts[d as usize].is_empty() {
-            if let Some(n) = (1..4).map(|k| (d + k) % 4).find(|&n| self.drafts[n as usize].is_empty()) {
+        if self.my_sub().clues[d as usize] != text {
+            self.put_sub(|s| {
+                s.clues[d as usize] = text;
+                s.ready = false;
+            });
+        }
+        let clues = self.my_sub().clues;
+        if advance && !clues[d as usize].is_empty() {
+            if let Some(n) = (1..4).map(|k| (d + k) % 4).find(|&n| clues[n as usize].is_empty()) {
                 self.edit_clue(n);
             }
+        }
+    }
+
+    pub fn set_decoys(&mut self, n: u8) {
+        let n = n.min(MAX_DECOYS);
+        if self.my_sub().decoys != n {
+            self.put_sub(|s| s.decoys = n);
         }
     }
 
@@ -659,25 +813,20 @@ impl App {
         self.q += dir.signum();
     }
 
-    pub fn can_submit(&self) -> bool {
-        self.shared.phase() == Phase::Writing && self.drafts.iter().all(|c| !c.is_empty())
+    pub fn can_ready(&self) -> bool {
+        self.seated_writing().is_some() && self.my_sub().clues.iter().all(|c| !c.is_empty())
     }
 
-    /// 1 start/play again, 2 submit clues, 3 check, 4 next clover, 5 start guessing now.
+    /// 1 start / next round · 2 toggle ready · 3 check · 4 next clover ·
+    /// 5 start guessing without the stragglers · 6 deal new cards · 7 new game.
     pub fn action(&mut self, code: u32) {
         let phase = self.shared.phase();
         match code {
-            1 if matches!(phase, Phase::Lobby | Phase::End) => {
-                let round = Round { seed: self.rng.next() as u32, stamp: self.stamp() };
-                self.shared.apply(&Op { round, body: Body::None });
-                self.new_round_local();
-                self.send(&[Msg::Op(Op { round, body: Body::None })]);
-            }
-            2 if self.can_submit() => {
-                let stamp = self.stamp();
-                let sub = Sub { clues: self.drafts.clone(), decoys: self.decoys.min(MAX_DECOYS), stamp };
-                let me = self.me;
-                self.commit(Body::Sub(me, sub));
+            1 if matches!(phase, Phase::Lobby | Phase::End) => self.new_round(),
+            6 => self.new_round(),
+            2 if self.can_ready() => {
+                let r = !self.my_sub().ready;
+                self.put_sub(|s| s.ready = r);
             }
             3 => self.check(),
             4 => {
@@ -689,19 +838,48 @@ impl App {
                     }
                 }
             }
-            5 if phase == Phase::Writing && self.shared.subs.contains_key(&self.me) => {
+            5 if phase == Phase::Writing && self.shared.subs.values().any(|s| s.ready) => {
                 let s = self.stamp();
                 self.commit(Body::Start(s));
             }
+            7 => self.new_game(),
             _ => {}
+        }
+    }
+
+    fn new_round(&mut self) {
+        if self.shared.players().is_empty() {
+            return self.status("Join the table first.");
+        }
+        let round = Round { seed: self.rng.next() as u32, n: self.shared.round.n + 1, stamp: self.stamp() };
+        let op = Op { game: self.shared.game, round, body: Body::None };
+        self.shared.apply(&op);
+        self.new_round_local();
+        self.send(&[Msg::Op(op)]);
+    }
+
+    /// Fresh scores and seats: everyone here now is dealt in.
+    fn new_game(&mut self) {
+        let here: Vec<(u32, String)> = self
+            .present()
+            .into_iter()
+            .filter_map(|s| self.shared.seats.get(&s).map(|x| (s, x.name.clone())))
+            .collect();
+        let game = self.stamp();
+        self.shared = Shared { game, ..Shared::default() };
+        self.new_round_local();
+        self.commit(Body::None);
+        for (id, name) in here {
+            let stamp = self.stamp();
+            self.commit(Body::Seat(id, Seat { name, active: true, stamp }));
         }
     }
 
     pub fn can_check(&self) -> bool {
         let sc = self.scene();
-        match (self.shared.phase(), sc.writer) {
-            (Phase::Guessing(_), Some(w)) => {
-                w != self.me && !self.shared.check(w).done() && sc.owner.iter().all(|o| o.is_some())
+        match (self.shared.phase(), sc.writer, self.seat) {
+            (Phase::Guessing(_), Some(w), Some(me)) => {
+                w != me && !self.shared.check(w).done() && sc.claim.iter().all(|o| o.is_some())
             }
             _ => false,
         }
@@ -716,7 +894,8 @@ impl App {
         let d = deal(self.shared.round.seed, w);
         let mut mask = 0u8;
         for s in 0..NSLOTS {
-            let k = sc.owner[s].unwrap();
+            let k = sc.claim[s].unwrap();
+            // Orientation is judged relative to the board.
             if k == s && sc.cards[k].rot == d.sol_rot[s] {
                 mask |= 1 << s;
             }
@@ -724,23 +903,27 @@ impl App {
         let prev = self.shared.check(w);
         let stamp = self.stamp();
         let check = Check { attempts: prev.attempts + 1, mask, stamp };
-        // Wrong cards go back to the table for the second try.
         if !check.done() {
+            // Wrong cards go back to the tray for the second try.
             let n = sc.cards.len();
             for s in 0..NSLOTS {
                 if mask & (1 << s) == 0 {
-                    let k = sc.owner[s].unwrap();
+                    let k = sc.claim[s].unwrap();
                     let h = self.shared.home_card(&d, n, k);
                     self.set_card(w, k, h.loc, h.rot, 0);
                 }
             }
         }
         self.commit(Body::Check(w, check));
+        if check.done() {
+            let (n, s) = (self.shared.round.n, self.stamp());
+            self.commit(Body::Ledger(n, w, check.score(), s));
+        }
         self.flush_cards();
         let msg = match (check.done(), check.score()) {
             (true, PERFECT_SCORE) => "Perfect clover! +6".to_string(),
-            (true, s) => format!("{s}/4 right. +{s}"),
-            (false, s) => format!("{s}/4 right. Wrong cards went back; one more try."),
+            (true, s) => format!("{s} of 4 right: +{s}"),
+            (false, s) => format!("{s} of 4 right. Wrong cards went back to the tray; one more try."),
         };
         self.status(&msg);
     }
@@ -748,13 +931,13 @@ impl App {
     // ---- frame --------------------------------------------------------------
 
     pub fn frame(&mut self, now: f64) {
-        let dt = ((now - self.now) / 1000.0).clamp(0.0, 0.1) as f32;
+        self.dt = ((now - self.now) / 1000.0).clamp(0.0, 0.1) as f32;
         self.now = now;
         let spinning = self.press.as_ref().is_some_and(|p| p.spin.is_some());
         if !spinning {
             let target = self.q as f32 * FRAC_PI_2;
             let diff = target - self.angle;
-            self.angle = if diff.abs() < 1e-3 { target } else { self.angle + diff * (1.0 - (-dt * 14.0).exp()) };
+            self.angle = if diff.abs() < 1e-3 { target } else { self.angle + diff * (1.0 - (-self.dt * 12.0).exp()) };
         }
         if now - self.last_hello_ms >= HELLO_EVERY_MS {
             self.hello();
@@ -765,33 +948,38 @@ impl App {
             // New phase or new clover: spin back upright the short way.
             self.last_phase = phase;
             self.q = (self.q as f32 / 4.0).round() as i32 * 4;
+            self.poses.clear();
         }
         self.flush_cards();
         if self.cursor_dirty && now - self.last_cursor_ms >= 33.0 {
             self.cursor_dirty = false;
             self.last_cursor_ms = now;
             let (kind, x, y) = self.my_cursor;
-            let me = self.me;
-            self.send(&[Msg::Cursor { peer: me, kind, x, y }]);
+            let (device, seat) = (self.device, self.seat.unwrap_or(0));
+            self.send(&[Msg::Cursor { device, seat, kind, x, y }]);
         }
-        self.cursors.retain(|c| now - c.seen < CURSOR_TTL_MS);
+        self.cursors.retain(|_, c| now - c.seen < CURSOR_TTL_MS);
         self.render();
     }
 
-    /// Guessing starts on its own once every player present has submitted.
+    /// Guessing starts once every player at the table has tapped Ready.
     fn maybe_start_guessing(&mut self) {
-        if self.shared.phase() != Phase::Writing || !self.shared.subs.contains_key(&self.me) {
+        if self.shared.phase() != Phase::Writing {
             return;
         }
-        if self.alive().iter().all(|p| self.shared.subs.contains_key(p)) {
+        let players = self.shared.players();
+        let here: Vec<u32> = self.present().into_iter().filter(|s| players.contains(s)).collect();
+        let ready = |s: &u32| self.shared.subs.get(s).is_some_and(|x| x.ready);
+        if !here.is_empty() && here.iter().all(ready) {
             let s = self.stamp();
             self.commit(Body::Start(s));
         }
     }
 
-    /// Skip the animation (tests / harness).
+    /// Skip animations (tests / harness).
     pub fn settle(&mut self) {
         self.angle = self.q as f32 * FRAC_PI_2;
+        self.poses.clear();
     }
 
     // ---- rendering ----------------------------------------------------------
@@ -827,85 +1015,132 @@ impl App {
         ]);
     }
 
+    /// Ease displayed card poses toward where the cards really are.
+    fn animate(&mut self, sc: &Scene) {
+        let Some(w) = sc.writer else { return };
+        let k = 1.0 - (-self.dt * 14.0).exp();
+        let dragging = self.dragging_card();
+        for (i, c) in sc.cards.iter().enumerate() {
+            let key = (w, i as u8);
+            let target = Self::target_pose(c);
+            let pose = match self.poses.get(&key) {
+                Some(p) if Some(i) != dragging => {
+                    let p = self.reframe(*p, target.board);
+                    let close = (p.x - target.x).abs() + (p.y - target.y).abs() < 1e-3
+                        && wrap(target.a - p.a).abs() < 1e-3;
+                    if close {
+                        target
+                    } else {
+                        Pose {
+                            board: target.board,
+                            x: p.x + (target.x - p.x) * k,
+                            y: p.y + (target.y - p.y) * k,
+                            a: p.a + wrap(target.a - p.a) * k,
+                        }
+                    }
+                }
+                _ => target,
+            };
+            self.poses.insert(key, pose);
+        }
+    }
+
     pub fn render(&mut self) {
         self.cmds.clear();
         self.strs.clear();
         self.cmds.extend_from_slice(&[C_CLEAR, f32::from_bits(0x1f3b2dff)]);
-        let scr = self.screen();
-        let board = scr.then(self.board());
         let sc = self.scene();
         let phase = self.shared.phase();
+        let l = self.layout();
+        self.animate(&sc);
 
-        self.xform(scr);
-        self.rrect(0.0, 0.0, WORLD_W, WORLD_H, 24.0, 0x2a4d3bff, 0, 0.0);
+        if let Some((x, y, w, h, _)) = l.tray {
+            self.xform(M::ID);
+            self.rrect(x, y, w, h, 14.0, 0x264536ff, 0x35604aff, 1.5);
+        }
 
-        // Board: base + four clue leaves.
+        // Board and leaves.
+        let board = self.board_m();
         self.xform(board);
-        self.rrect(-BOARD_HALF, -BOARD_HALF, 2.0 * BOARD_HALF, 2.0 * BOARD_HALF, 36.0, 0x3f8f4fff, 0x2c6b39ff, 4.0);
+        let b = BOARD_HALF;
+        self.rrect(-b, -b, 2.0 * b, 2.0 * b, 60.0, 0x3f8f4fff, 0x2c6b39ff, 4.0);
+        let mid = Self::leaf_mid();
+        let leaf_h = LEAF_OUT - LEAF_IN;
         for d in 0..4u8 {
-            let f = scr.then(self.petal_frame(d));
-            self.xform(f);
-            let editing = self.editing == Some(d);
-            self.rrect(-150.0, -240.0, 300.0, 72.0, 36.0, if editing { 0x8fdc9bff } else { 0x5cb36aff }, 0x2c6b39ff, 3.0);
+            self.xform(self.leaf_m_at(d, self.angle));
+            let fill = if self.editing == Some(d) { 0x9be3a6ff } else { 0x5cb36aff };
+            self.rrect(-LEAF_HALF_W, -LEAF_OUT, 2.0 * LEAF_HALF_W, leaf_h, leaf_h / 2.0, fill, 0x2c6b39ff, 3.0);
             let clue = sc.clues[d as usize].clone();
             if !clue.is_empty() {
-                self.text(0.0, -204.0, 26.0, 0x10301aff, true, &clue, 270.0);
-            } else if phase == Phase::Writing {
-                self.text(0.0, -204.0, 18.0, 0xffffffaa, false, "tap to write a clue", 270.0);
+                self.text(0.0, mid, 34.0, 0x10301aff, true, &clue, 2.0 * LEAF_HALF_W - 40.0);
+            } else if sc.writer.is_some() && phase == Phase::Writing {
+                self.text(0.0, mid, 24.0, 0xffffffb0, false, "tap to write a clue", 2.0 * LEAF_HALF_W - 40.0);
             }
         }
         self.xform(board);
         for s in 0..NSLOTS {
             let (x, y) = slot_pos(s);
             let solved = sc.locked & (1 << s) != 0 && phase != Phase::Writing;
-            let fill = if solved { 0x6fe08aaa } else { 0x00000022 };
-            self.rrect(x - HALF - 2.0, y - HALF - 2.0, CARD + 4.0, CARD + 4.0, 14.0, fill, 0xffffff40, 2.0);
+            let claimed = sc.claim[s].is_some() && matches!(phase, Phase::Guessing(_));
+            let (fill, stroke) = match (solved, claimed) {
+                (true, _) => (0x6fe08aaa, 0xffffff60),
+                (false, true) => (0x00000030, 0xffe08aaa),
+                _ => (0x00000022, 0xffffff40),
+            };
+            self.rrect(x - HALF - 6.0, y - HALF - 6.0, CARD + 12.0, CARD + 12.0, 18.0, fill, stroke, 3.0);
         }
 
         // Cards.
         let dragging = self.dragging_card();
+        let w = sc.writer.unwrap_or(0);
         for i in self.draw_order(&sc.cards) {
             let c = sc.cards[i];
-            let f = scr.then(self.card_frame(&c));
+            let pose = self.poses.get(&(w, i as u8)).copied().unwrap_or_else(|| Self::target_pose(&c));
+            let f = self.pose_m(&pose);
             if c.held != 0 || Some(i) == dragging {
-                self.xform(M::t(6.0, 9.0).then(f));
+                self.xform(M::t(5.0, 8.0).then(f));
                 self.rrect(-HALF, -HALF, CARD, CARD, 14.0, 0x00000055, 0, 0.0);
             }
             self.xform(f);
+            let solved = matches!(c.loc, Loc::Slot(s) if sc.locked & (1 << s) != 0) && phase != Phase::Writing;
             let (stroke, lw) = match c.held {
-                0 if matches!(c.loc, Loc::Slot(s) if sc.locked & (1 << s) != 0) && phase != Phase::Writing => {
-                    (0x2fa84fff, 5.0)
-                }
+                0 if solved => (0x2fa84fff, 6.0),
                 0 => (0xb9a77fff, 2.0),
-                h if h == self.me => (0xffffffff, 4.0),
-                h => (self.color_of(h), 6.0),
+                h if Some(h) == self.seat => (0xffffffff, 4.0),
+                h => (self.color_of(h), 7.0),
             };
             self.rrect(-HALF, -HALF, CARD, CARD, 14.0, 0xfbf3dcff, stroke, lw);
-            self.circle(0.0, 0.0, 16.0, 0xefe2bdff, 0, 0.0);
+            self.circle(0.0, 0.0, 14.0, 0xefe2bdff, 0, 0.0);
             for s in 0..4u8 {
                 self.xform(f.then(M::r(turn(s))));
-                self.text(0.0, -51.0, WORD_SIZE, 0x2b2112ff, true, sc.words[i][s as usize], 132.0);
+                self.text(0.0, -50.0, WORD_SIZE, 0x2b2112ff, true, sc.words[i][s as usize], 108.0);
             }
         }
 
         // Hub: tap to turn the board.
         self.xform(board);
         self.circle(0.0, 0.0, HUB_R, 0x2c6b39ff, 0xeaf5ecff, 3.0);
-        self.xform(scr.then(M::t(CX, CY)));
-        self.text(0.0, 1.0, 30.0, 0xffffffff, true, "⟳", 40.0);
+        self.xform(M::t(l.bc.0, l.bc.1).then(M::s(l.k)));
+        self.text(0.0, 1.0, 32.0, 0xffffffff, true, "⟳", 44.0);
 
-        // Remote cursors (guessing only: that's when we share a board).
+        // Other guessers' pointers.
         if matches!(phase, Phase::Guessing(_)) {
-            for k in 0..self.cursors.len() {
-                let RemoteCursor { peer, kind, x, y, .. } = self.cursors[k];
+            let cursors: Vec<(u32, u8, f32, f32)> = self.cursors.values().map(|c| (c.seat, c.kind, c.x, c.y)).collect();
+            for (seat, kind, x, y) in cursors {
+                if seat == 0 {
+                    continue;
+                }
                 let m = match kind {
-                    1 => scr,
-                    2 => board,
+                    1 => {
+                        let (px, py) = self.tray_px(x, y);
+                        M::t(px, py)
+                    }
+                    2 => self.board_m().then(M::t(x, y)).then(M::s(1.0 / l.k)),
                     _ => continue,
                 };
-                self.xform(m.then(M::t(x, y)));
-                let col = self.color_of(peer);
-                self.circle(0.0, 0.0, 9.0, col, 0xffffffff, 3.0);
+                let col = self.color_of(seat);
+                self.xform(m);
+                self.circle(0.0, 0.0, 7.0, col, 0xffffffff, 2.5);
             }
         }
     }
@@ -916,22 +1151,27 @@ impl App {
         let s = &self.shared;
         let phase = s.phase();
         let sc = self.scene();
-        let players = self.roster();
-        let alive = self.alive();
+        let present = self.present();
         let writer = sc.writer.filter(|_| matches!(phase, Phase::Guessing(_)));
+        let players = s.players();
         let rows: Vec<String> = players
             .iter()
             .map(|&p| {
-                let score = s.puzzles().contains(&p).then(|| s.check(p)).filter(|c| c.done()).map(|c| c.score());
+                let status = match phase {
+                    Phase::Writing => match s.subs.get(&p) {
+                        Some(x) if x.ready => "ready",
+                        _ => "writing",
+                    },
+                    Phase::Guessing(_) if writer == Some(p) => "writer",
+                    _ => "",
+                };
                 format!(
-                    "{{\"id\":{p},\"name\":{},\"color\":\"#{:06x}\",\"you\":{},\"away\":{},\"sub\":{},\"writer\":{},\"score\":{}}}",
+                    "{{\"id\":{p},\"name\":{},\"color\":\"#{:06x}\",\"you\":{},\"away\":{},\"status\":\"{status}\",\"score\":{}}}",
                     json_str(&self.name_of(p)),
                     self.color_of(p) >> 8,
-                    p == self.me,
-                    p != self.me && !alive.contains(&p),
-                    s.subs.contains_key(&p),
-                    writer == Some(p),
-                    score.map_or("null".into(), |x| x.to_string()),
+                    self.seat == Some(p),
+                    !present.contains(&p),
+                    s.seat_score(p),
                 )
             })
             .collect();
@@ -941,50 +1181,74 @@ impl App {
             Phase::Guessing(k) => ("guessing", k, s.puzzles().len()),
             Phase::End => ("end", 0, s.puzzles().len()),
         };
+        let waiting: Vec<String> = present
+            .iter()
+            .filter(|p| players.contains(p) && !s.subs.get(p).is_some_and(|x| x.ready))
+            .map(|p| json_str(&self.name_of(*p)))
+            .collect();
+        let sub = self.my_sub();
         let check = writer.map(|w| s.check(w)).unwrap_or_default();
+        let seated = self.seat.is_some_and(|me| players.contains(&me));
         format!(
-            "{{\"phase\":\"{pname}\",\"me\":{},\"name\":{},\"players\":[{}],\"submitted\":{},\"canSubmit\":{},\
-             \"filled\":{},\"decoys\":{},\"waiting\":{},\"k\":{k},\"n\":{n},\"writer\":{},\"writerName\":{},\
-             \"isWriter\":{},\"attempts\":{},\"done\":{},\"canCheck\":{},\"total\":{}}}",
-            self.me,
-            json_str(&self.name),
+            "{{\"phase\":\"{pname}\",\"seat\":{},\"seated\":{seated},\"name\":{},\"players\":[{}],\"watchers\":{},\
+             \"ready\":{},\"canReady\":{},\"filled\":{},\"decoys\":{},\"waiting\":[{}],\"anyReady\":{},\
+             \"k\":{k},\"n\":{n},\"writerName\":{},\"writerDecoys\":{},\"isWriter\":{},\"attempts\":{},\"done\":{},\
+             \"canCheck\":{},\"claimed\":{},\"round\":{},\"roundScore\":{},\"gameScore\":{}}}",
+            self.seat.map_or("null".into(), |x| x.to_string()),
+            self.seat.map_or("null".into(), |x| json_str(&self.name_of(x))),
             rows.join(","),
-            s.subs.contains_key(&self.me),
-            self.can_submit(),
-            self.drafts.iter().filter(|c| !c.is_empty()).count(),
-            self.decoys,
-            self.alive().iter().filter(|p| !s.subs.contains_key(p)).count(),
-            writer.map_or("null".into(), |w| w.to_string()),
+            self.watchers(),
+            sub.ready,
+            self.can_ready(),
+            sub.clues.iter().filter(|c| !c.is_empty()).count(),
+            sub.decoys,
+            waiting.join(","),
+            s.subs.values().any(|x| x.ready),
             writer.map_or("null".into(), |w| json_str(&self.name_of(w))),
-            writer == Some(self.me),
+            writer.map_or(0, |w| s.ncards(w) - NSLOTS),
+            writer.is_some() && writer == self.seat,
             check.attempts,
             check.done(),
             self.can_check(),
-            s.total_score(),
+            sc.claim.iter().filter(|c| c.is_some()).count(),
+            s.round.n,
+            s.round_score(s.round.n),
+            s.game_score(),
         )
     }
 
     // ---- harness probes ------------------------------------------------------
 
-    /// Screen centre (CSS px) and on-screen angle of scene card `i`.
+    /// Screen centre (CSS px) and on-screen angle of scene card `i`, at rest.
     pub fn card_screen(&self, i: usize) -> (f32, f32, f32) {
         let sc = self.scene();
         let Some(c) = sc.cards.get(i) else { return (-1.0, -1.0, 0.0) };
-        let f = self.screen().then(self.card_frame(c));
+        let f = self.card_m(c);
         let (x, y) = f.apply(0.0, 0.0);
         (x, y, f.angle())
     }
 
     pub fn slot_screen(&self, s: usize) -> (f32, f32) {
         let (x, y) = slot_pos(s);
-        self.screen().then(self.board()).apply(x, y)
+        self.board_m().apply(x, y)
+    }
+
+    pub fn board_screen(&self, x: f32, y: f32) -> (f32, f32) {
+        self.board_m().apply(x, y)
     }
 
     pub fn petal_screen(&self, d: u8) -> (f32, f32) {
-        self.screen().then(self.petal_frame(d)).apply(0.0, -204.0)
+        self.leaf_m_at(d, self.angle).apply(0.0, Self::leaf_mid())
     }
 
     pub fn hub_screen(&self) -> (f32, f32) {
-        self.screen().apply(CX, CY)
+        self.layout().bc
+    }
+
+    /// Displayed (animated) on-screen angle of card `i`.
+    pub fn shown_angle(&self, i: usize) -> f32 {
+        let sc = self.scene();
+        let w = sc.writer.unwrap_or(0);
+        self.poses.get(&(w, i as u8)).map_or(f32::NAN, |p| self.pose_m(p).angle())
     }
 }
