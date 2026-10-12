@@ -938,7 +938,6 @@ fn card_size_is_local_and_hit_testing_follows_it() {
         a.settle();
     }
     let digest = a.shared.digest();
-    let k = a.scale();
     a.set_zoom(9.0);
     assert!((a.zoom - ZOOM_MAX).abs() < 1e-6, "clamped");
     assert_eq!(a.shared.digest(), digest, "zoom is not shared state");
@@ -948,10 +947,23 @@ fn card_size_is_local_and_hit_testing_follows_it() {
     let (from, to) = (card_at(a, 0), a.slot_screen(1));
     drag(a, from, to);
     let (cx, cy) = a.slot_screen(1);
-    let corner = HALF * k * (1.0 + ZOOM_MAX) / 2.0;
+    // (In the tray, the drawn zoom is capped so three cards fit across.)
+    assert!(a.card_zoom() > 1.0 && a.card_zoom() <= ZOOM_MAX);
+    let corner = HALF * a.scale() * (1.0 + a.card_zoom()) / 2.0;
     let rot = a.scene().cards[0].rot;
     tap(a, (cx + corner, cy + corner));
     assert_eq!(a.scene().cards[0].rot, (rot + 1) % 4);
+    // Tray cards never overlap, even at the largest size.
+    let tray: Vec<(f32, f32)> = (0..a.scene().cards.len())
+        .filter(|&i| matches!(a.scene().cards[i].loc, Loc::Table { .. }))
+        .map(|i| card_at(a, i))
+        .collect();
+    let size = CARD * a.scale() * a.card_zoom();
+    for (i, p) in tray.iter().enumerate() {
+        for q in &tray[i + 1..] {
+            assert!((p.0 - q.0).abs() >= size - 0.5 || (p.1 - q.1).abs() >= size - 0.5, "tray cards overlap: {p:?} {q:?}");
+        }
+    }
     // Every card stays on screen at the largest size.
     for i in 0..a.scene().cards.len() {
         let (x, y, _) = a.card_screen(i);

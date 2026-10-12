@@ -302,13 +302,20 @@ try {
     const w1 = await E.ev(() => window.__cl.wordPx());
     metric('word_px_phone_max_size', w1, ' px');
     await sleep(200);
-    gate('the card-size buttons enlarge cards on my screen only', w1 > w0 * 1.1 && JSON.stringify(await G.digest()) === d0
-      && Math.abs((await G.ev(() => window.__cl.wordPx())) - metrics.word_px_desktop_1280x860) < 0.01);
+    gate('the card-size buttons enlarge cards on my screen only', w1 > w0 && JSON.stringify(await G.digest()) === d0
+      && Math.abs((await G.ev(() => window.__cl.wordPx())) - metrics.word_px_desktop_1280x860) < 0.01, `${w0.toFixed(1)} → ${w1.toFixed(1)}`);
+    // Even at the largest size, three tray cards fit across a phone without overlap.
+    const px = await E.ev(() => window.__cl.cardPx());
+    const tray = [];
     let onScreen = true;
-    for (let i = 0; i < cur(await E.digest()).cards.length; i++) {
+    const cards = cur(await E.digest()).cards;
+    for (let i = 0; i < cards.length; i++) {
       const [x, y] = await E.card(i);
       onScreen &&= x > 0 && x < 390 && y > 0 && y < 844;
+      if (cards[i][0] === 'table') tray.push([x, y]);
     }
+    const overlap = tray.some((a, i) => tray.some((b, j) => j > i && Math.abs(a[0] - b[0]) < px - 0.5 && Math.abs(a[1] - b[1]) < px - 0.5));
+    gate('at the largest card size, tray cards on a phone still never overlap', !overlap && tray.length > 0, `${tray.length} in tray at ${px.toFixed(0)} px`);
     gate('at the largest card size every card is still on screen', onScreen);
   }
 

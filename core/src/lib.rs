@@ -293,13 +293,13 @@ pub extern "C" fn word_budget() -> f32 {
 /// Rendered size of card words, in CSS px.
 #[no_mangle]
 pub extern "C" fn probe_word_px() -> f32 {
-    app::WORD_SIZE * g().app.scale() * g().app.zoom
+    app::WORD_SIZE * g().app.scale() * g().app.card_zoom()
 }
 
 /// Rendered card edge length, in CSS px.
 #[no_mangle]
 pub extern "C" fn probe_card_px() -> f32 {
-    model::CARD * g().app.scale() * g().app.zoom
+    model::CARD * g().app.scale() * g().app.card_zoom()
 }
 
 /// Harness only: correct rotation for spot `s` of the clover being guessed

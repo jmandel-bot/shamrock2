@@ -174,6 +174,9 @@ pub struct Layout {
     pub bc: (f32, f32),
     /// Tray rect (x, y, w, h) and whether its long axis is horizontal.
     pub tray: Option<(f32, f32, f32, f32, bool)>,
+    /// Card zoom actually drawn: this device's card size, capped so three
+    /// cards always fit across the tray.
+    pub z: f32,
 }
 
 /// Displayed (animated) pose of a card: in board units when on the board,
@@ -539,11 +542,31 @@ impl App {
     /// Board fills the screen; while guessing, a tray for loose cards goes
     /// below (portrait) or beside (landscape) it.
     pub fn layout(&self) -> Layout {
+        // A saved big card size must not make tray cards overlap: cap the
+        // zoom so three fit across. Shrinking the zoom only grows the board
+        // scale, so a few rounds settle it, and the final cap uses the final k.
+        let mut l = self.layout_at(self.zoom);
+        for _ in 0..4 {
+            let Some((_, _, tw, th, horiz)) = l.tray else { return l };
+            let cap = (if horiz { tw } else { th }) - 8.0 - (TRAY_PER_LINE as f32 - 1.0) * TRAY_GAP;
+            let cap = cap / (TRAY_PER_LINE as f32 * CARD * l.k);
+            if l.z <= cap {
+                return l;
+            }
+            // A smaller zoom grows k; the next pass re-checks against it.
+            l = self.layout_at(cap);
+        }
+        let Some((_, _, tw, th, horiz)) = l.tray else { return l };
+        let cap = ((if horiz { tw } else { th }) - 8.0 - (TRAY_PER_LINE as f32 - 1.0) * TRAY_GAP) / (TRAY_PER_LINE as f32 * CARD * l.k);
+        Layout { z: l.z.min(cap), ..l }
+    }
+
+    fn layout_at(&self, zoom: f32) -> Layout {
         let (w, h) = (self.w, self.h);
         let ext = 2.0 * EXTENT;
         if !matches!(self.shared.phase(), Phase::Guessing(_)) {
             let k = ((w - 2.0 * PAD).min(h - 2.0 * PAD) / ext).max(0.05);
-            return Layout { k, bc: (w / 2.0, h / 2.0), tray: None };
+            return Layout { k, bc: (w / 2.0, h / 2.0), tray: None, z: zoom };
         }
         // The tray holds every card of the clover without overlap, three to a
         // row (portrait) or column (landscape) at this device's card size; the
@@ -553,7 +576,7 @@ impl App {
             _ => NSLOTS,
         };
         let lines = n.div_ceil(TRAY_PER_LINE).max(1) as f32;
-        let card = CARD * self.zoom;
+        let card = CARD * zoom;
         // Tray length for `lines` cards of `k`: matches `tray_px`'s margins.
         let tray_len = |k: f32| lines * (card * k + TRAY_GAP) + 8.0 - TRAY_GAP;
         let fixed = lines * TRAY_GAP + 8.0 - TRAY_GAP;
@@ -561,7 +584,7 @@ impl App {
             let k = ((w - 2.0 * PAD) / ext).min((h - 3.0 * PAD - fixed) / (ext + lines * card)).max(0.05);
             let bh = ext * k;
             let tray_y = PAD + bh + PAD;
-            Layout { k, bc: (w / 2.0, PAD + bh / 2.0), tray: Some((PAD, tray_y, w - 2.0 * PAD, h - tray_y - PAD, true)) }
+            Layout { k, bc: (w / 2.0, PAD + bh / 2.0), tray: Some((PAD, tray_y, w - 2.0 * PAD, h - tray_y - PAD, true)), z: zoom }
         } else {
             let k = ((h - 2.0 * PAD) / ext).min((w - 3.0 * PAD - fixed) / (ext + lines * card)).max(0.05);
             let bw = ext * k;
@@ -572,6 +595,7 @@ impl App {
                 k,
                 bc: (left + bw / 2.0, h / 2.0),
                 tray: Some((left + bw + PAD, PAD, tray_w, h - 2.0 * PAD, false)),
+                z: zoom,
             }
         }
     }
@@ -590,7 +614,7 @@ impl App {
     pub fn tray_px(&self, u: f32, v: f32) -> (f32, f32) {
         let l = self.layout();
         let Some((x, y, w, h, horiz)) = l.tray else { return (-1000.0, -1000.0) };
-        let half = HALF * l.k * self.zoom + 4.0;
+        let half = HALF * l.k * l.z + 4.0;
         let along = |o: f32, len: f32, t: f32| o + half + t.clamp(0.0, 1.0) * (len - 2.0 * half).max(0.0);
         if horiz { (along(x, w, u), along(y, h, v)) } else { (along(x, w, v), along(y, h, u)) }
     }
@@ -599,9 +623,14 @@ impl App {
     pub fn px_tray(&self, px: f32, py: f32) -> (f32, f32) {
         let l = self.layout();
         let Some((x, y, w, h, horiz)) = l.tray else { return (0.5, 0.5) };
-        let half = HALF * l.k * self.zoom + 4.0;
+        let half = HALF * l.k * l.z + 4.0;
         let t = |o: f32, len: f32, p: f32| ((p - o - half) / (len - 2.0 * half).max(1.0)).clamp(0.0, 1.0);
         if horiz { (t(x, w, px), t(y, h, py)) } else { (t(y, h, py), t(x, w, px)) }
+    }
+
+    /// Card zoom as drawn now (see `Layout::z`).
+    pub fn card_zoom(&self) -> f32 {
+        self.layout().z
     }
 
     pub fn set_zoom(&mut self, z: f32) {
@@ -610,7 +639,7 @@ impl App {
 
     /// Card-local units → CSS px, for a card's resting place.
     pub fn card_m(&self, c: &Card) -> M {
-        let r = M::r(turn(c.rot)).then(M::s(self.zoom));
+        let r = M::r(turn(c.rot)).then(M::s(self.card_zoom()));
         match c.loc {
             Loc::Table { x, y } => {
                 let (px, py) = self.tray_px(x, y);
@@ -626,10 +655,10 @@ impl App {
 
     fn pose_m(&self, p: &Pose) -> M {
         if p.board {
-            self.board_m().then(M::t(p.x, p.y)).then(M::r(p.a)).then(M::s(self.zoom * p.s))
+            self.board_m().then(M::t(p.x, p.y)).then(M::r(p.a)).then(M::s(self.card_zoom() * p.s))
         } else {
             let (px, py) = self.tray_px(p.x, p.y);
-            M::t(px, py).then(M::s(self.scale())).then(M::r(p.a)).then(M::s(self.zoom * p.s))
+            M::t(px, py).then(M::s(self.scale())).then(M::r(p.a)).then(M::s(self.card_zoom() * p.s))
         }
     }
 

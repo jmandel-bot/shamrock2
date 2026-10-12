@@ -54,7 +54,7 @@ node harness/serve.mjs # prints a URL
 
 **The bottom bar is one thin strip**: a one-line status (whose clover, how many are in), the controls the moment needs and the main button; while writing, a thin coloured bar along its top fills as players submit. How-to tips show once per device (the next touch on the board dismisses them) and stay in the ⋯ menu. The menu also has **Full screen** where the browser supports it (Android, desktop); on iPhone, Add to Home Screen opens it full screen via the web manifest.
 
-**Card size** is per device: − / + in the ⋯ menu (narrow screens start larger). Positions on the board are shared; bigger cards just overlap more on your screen. At the largest size, cards in neighbouring spots touch edge to edge.
+**Card size** is per device: − / + in the ⋯ menu (narrow screens start larger). Positions on the board are shared; bigger cards just overlap more on your screen. At the largest size, cards in neighbouring spots touch edge to edge. In the tray, cards never grow past a third of the tray's width, so a saved big size can't make them overlap.
 
 **Presence** follows the WebRTC connections, not a heartbeat, so a phone that locks its screen or a backgrounded tab still counts as at the table.
 
