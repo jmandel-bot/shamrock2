@@ -1,0 +1,187 @@
+//! Raw C-ABI exports for the browser shim. No wasm-bindgen: JS reads the
+//! command buffer / outbox straight out of linear memory and writes inbound
+//! bytes into `inbox`.
+
+pub mod app;
+pub mod model;
+pub mod words;
+
+use app::App;
+
+struct Globals {
+    app: App,
+    inbox: Vec<u8>,
+    scratch: Vec<u8>,
+    probe: [f32; 4],
+}
+
+static mut G: Option<Globals> = None;
+
+fn g() -> &'static mut Globals {
+    // Single-threaded wasm; the shim never re-enters.
+    unsafe { (*core::ptr::addr_of_mut!(G)).as_mut().expect("init not called") }
+}
+
+fn inbox_str(len: usize) -> String {
+    String::from_utf8_lossy(&g().inbox[..len.min(g().inbox.len())]).into_owned()
+}
+
+#[no_mangle]
+pub extern "C" fn init(seed_lo: u32, seed_hi: u32) -> u32 {
+    let app = App::new((seed_hi as u64) << 32 | seed_lo as u64);
+    let me = app.me;
+    unsafe {
+        *core::ptr::addr_of_mut!(G) = Some(Globals { app, inbox: Vec::new(), scratch: Vec::new(), probe: [0.0; 4] });
+    }
+    me
+}
+
+#[no_mangle]
+pub extern "C" fn resize(w: f32, h: f32, dpr: f32) {
+    let a = &mut g().app;
+    (a.w, a.h, a.dpr) = (w.max(1.0), h.max(1.0), dpr.max(0.5));
+}
+
+/// Advances animation, flushes network, renders. Returns command count.
+#[no_mangle]
+pub extern "C" fn frame(now: f64) -> u32 {
+    g().app.frame(now);
+    g().app.cmds.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn cmd_ptr() -> *const f32 {
+    g().app.cmds.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn str_ptr() -> *const u8 {
+    g().app.strs.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn outbox_ptr() -> *const u8 {
+    g().app.outbox.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn outbox_len() -> u32 {
+    g().app.outbox.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn outbox_clear() {
+    g().app.outbox.clear();
+}
+
+/// Returns a buffer of at least `len` bytes for JS to fill before a call
+/// that consumes the inbox.
+#[no_mangle]
+pub extern "C" fn inbox_reserve(len: u32) -> *mut u8 {
+    let ib = &mut g().inbox;
+    ib.resize(len as usize, 0);
+    ib.as_mut_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn on_message(len: u32) {
+    let bytes = core::mem::take(&mut g().inbox);
+    g().app.on_packet(&bytes[..(len as usize).min(bytes.len())]);
+    g().inbox = bytes;
+}
+
+#[no_mangle]
+pub extern "C" fn on_peer_join() {
+    g().app.on_peer_join();
+}
+
+#[no_mangle]
+pub extern "C" fn pointer_down(x: f32, y: f32) {
+    g().app.pointer_down(x, y);
+}
+
+#[no_mangle]
+pub extern "C" fn pointer_move(x: f32, y: f32) {
+    g().app.pointer_move(x, y);
+}
+
+#[no_mangle]
+pub extern "C" fn pointer_up(x: f32, y: f32) {
+    g().app.pointer_up(x, y);
+}
+
+#[no_mangle]
+pub extern "C" fn rotate_view(dir: i32) {
+    g().app.rotate_view(dir);
+}
+
+#[no_mangle]
+pub extern "C" fn action(code: u32) {
+    g().app.action(code);
+}
+
+#[no_mangle]
+pub extern "C" fn set_clue(idx: u32, len: u32) {
+    let s = inbox_str(len as usize);
+    g().app.set_clue(idx as u8, &s);
+}
+
+// ---- harness probes --------------------------------------------------------
+
+#[no_mangle]
+pub extern "C" fn settle() {
+    g().app.settle();
+}
+
+#[no_mangle]
+pub extern "C" fn view_quarter() -> i32 {
+    g().app.q
+}
+
+#[no_mangle]
+pub extern "C" fn probe_ptr() -> *const f32 {
+    g().probe.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn probe_card(i: u32) {
+    let (x, y, a) = g().app.card_screen((i as usize).min(model::NCARDS - 1));
+    g().probe = [x, y, a, 0.0];
+}
+
+#[no_mangle]
+pub extern "C" fn probe_slot(s: u32) {
+    let (x, y) = g().app.slot_screen((s as usize).min(model::NSLOTS - 1));
+    g().probe = [x, y, 0.0, 0.0];
+}
+
+#[no_mangle]
+pub extern "C" fn probe_petal(d: u32) {
+    let (x, y) = g().app.petal_screen((d % 4) as u8);
+    g().probe = [x, y, 0.0, 0.0];
+}
+
+/// Rendered size of card words, in CSS px.
+#[no_mangle]
+pub extern "C" fn probe_word_px() -> f32 {
+    app::WORD_SIZE * g().app.scale()
+}
+
+/// Rendered card edge length, in CSS px.
+#[no_mangle]
+pub extern "C" fn probe_card_px() -> f32 {
+    model::CARD * g().app.scale()
+}
+
+/// Writes the canonical state digest (JSON) to scratch; returns its length.
+#[no_mangle]
+pub extern "C" fn digest() -> u32 {
+    let d = g().app.shared.digest();
+    g().scratch = d.into_bytes();
+    g().scratch.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn scratch_ptr() -> *const u8 {
+    g().scratch.as_ptr()
+}
