@@ -123,6 +123,12 @@ pub extern "C" fn pointer_up(x: f32, y: f32) {
     g().app.pointer_up(x, y);
 }
 
+/// A gesture the browser took over (pinch zoom): undo it, act on nothing.
+#[no_mangle]
+pub extern "C" fn pointer_cancel() {
+    g().app.pointer_cancel();
+}
+
 #[no_mangle]
 pub extern "C" fn rotate_view(dir: i32) {
     g().app.rotate_view(dir);

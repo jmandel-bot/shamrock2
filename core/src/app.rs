@@ -829,6 +829,21 @@ impl App {
         self.poses.insert((w, i as u8), pose);
     }
 
+    /// The gesture was taken over (a second finger: the browser pinch-zooms).
+    /// Nothing happens: a dragged card goes back where it was, a spin snaps
+    /// back to the nearest quarter, and there's no tap.
+    pub fn pointer_cancel(&mut self) {
+        let Some(p) = self.press.take() else { return };
+        if p.spin.is_some() {
+            self.q = (self.angle / FRAC_PI_2).round() as i32;
+        }
+        if let (Target::Card(i), true, Some(o)) = (p.target, p.moved, p.origin) {
+            if let Some(w) = self.scene().writer {
+                self.set_card(w, i, o.loc, o.rot, 0);
+            }
+        }
+    }
+
     pub fn pointer_up(&mut self, sx: f32, sy: f32) {
         self.pointer_move(sx, sy);
         let Some(p) = self.press.take() else { return };

@@ -136,10 +136,28 @@ function receive(u8, link) {
 // ---- input ------------------------------------------------------------------
 
 const local = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); X.pointer_down(...local(e)); });
-canvas.addEventListener('pointermove', (e) => X.pointer_move(...local(e)));
-canvas.addEventListener('pointerup', (e) => { stats.presses++; X.pointer_up(...local(e)); drainOutbox(); });
-canvas.addEventListener('pointercancel', (e) => X.pointer_up(...local(e)));
+// One finger plays; two fingers are the browser's pinch zoom (the canvas
+// allows `touch-action: pinch-zoom`). A second finger cancels whatever the
+// first one started, and nothing acts again until every finger has lifted.
+const fingers = new Set();
+let pinching = false;
+const cancelGesture = () => { if (!pinching) { pinching = true; X.pointer_cancel(); drainOutbox(); } };
+canvas.addEventListener('pointerdown', (e) => {
+  fingers.add(e.pointerId);
+  if (fingers.size > 1) return cancelGesture();
+  pinching = false;
+  try { canvas.setPointerCapture(e.pointerId); } catch {}
+  X.pointer_down(...local(e));
+});
+canvas.addEventListener('pointermove', (e) => { if (!pinching) X.pointer_move(...local(e)); });
+const lift = (e, act) => {
+  const was = fingers.delete(e.pointerId);
+  if (pinching || !was) { if (!fingers.size) pinching = false; return; }
+  if (act) { stats.presses++; X.pointer_up(...local(e)); } else X.pointer_cancel();
+  drainOutbox();
+};
+canvas.addEventListener('pointerup', (e) => lift(e, true));
+canvas.addEventListener('pointercancel', (e) => lift(e, false));
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLInputElement) return;

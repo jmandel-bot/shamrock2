@@ -319,6 +319,32 @@ try {
     gate('at the largest card size every card is still on screen', onScreen);
   }
 
+  // Pinch zoom belongs to the browser: the page allows it, and a second
+  // finger cancels a drag (card goes back, nothing turns).
+  {
+    const meta = await E.ev(() => document.querySelector('meta[name=viewport]').content);
+    const ta = await E.ev(() => getComputedStyle(document.getElementById('c')).touchAction);
+    await E.settle();
+    const before = JSON.stringify(cur(await E.digest()).cards);
+    const i = cur(await E.digest()).cards.findIndex((c) => c[0] === 'table');
+    const [x, y] = await E.card(i);
+    const [sx, sy] = await E.slot(0);
+    await E.ev(([x, y, sx, sy]) => {
+      const c = document.getElementById('c'), r = c.getBoundingClientRect();
+      const ev = (type, id, px, py) => c.dispatchEvent(new PointerEvent(type, { pointerId: id, pointerType: 'touch', isPrimary: id === 1, clientX: r.left + px, clientY: r.top + py, bubbles: true }));
+      ev('pointerdown', 1, x, y);
+      for (let k = 1; k <= 6; k++) ev('pointermove', 1, x + (sx - x) * k / 10, y + (sy - y) * k / 10);
+      ev('pointerdown', 2, x + 80, y + 80);   // second finger: the browser pinches
+      ev('pointermove', 1, sx, sy);
+      ev('pointercancel', 1, sx, sy);
+      ev('pointercancel', 2, x + 120, y + 120);
+    }, [x, y, sx, sy]);
+    await sleep(300);
+    const after = JSON.stringify(cur(await E.digest()).cards);
+    gate('pinch zoom is allowed (no maximum-scale; the board lets the browser pinch)', !/maximum-scale|user-scalable=no/.test(meta) && ta.includes('pinch-zoom'), `${meta} | ${ta}`);
+    gate('a second finger cancels a drag: the card goes back, nothing turns', after === before, after === before ? '' : 'moved');
+  }
+
   const wd = JSON.stringify(await Wr.digest());
   await Wr.settle();
   await Wr.drag((await Wr.card(0)).slice(0, 2), (await Wr.slot(0)).slice(0, 2));

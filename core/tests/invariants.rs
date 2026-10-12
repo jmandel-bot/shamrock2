@@ -1045,6 +1045,32 @@ fn a_card_dropped_above_the_board_stays_on_the_board() {
     }
 }
 
+/// A second finger (the browser's pinch zoom) cancels a drag: the card goes
+/// back where it was, and nothing is tapped or turned.
+#[test]
+fn a_cancelled_gesture_puts_the_card_back_and_acts_on_nothing() {
+    let mut t = table_in_guessing(2);
+    let w = t.writer_now();
+    let g = t.guesser_for(w);
+    let a = &mut t.apps[g];
+    let before = a.shared.layout(w).0[NSLOTS];
+    let from = card_at(a, NSLOTS);
+    let to = a.slot_screen(0);
+    a.pointer_down(from.0, from.1);
+    for k in 1..=5 {
+        let f = k as f32 / 10.0;
+        a.pointer_move(from.0 + (to.0 - from.0) * f, from.1 + (to.1 - from.1) * f);
+    }
+    assert_ne!(a.shared.layout(w).0[NSLOTS].loc, before.loc, "mid-drag");
+    a.pointer_cancel();
+    let after = a.shared.layout(w).0[NSLOTS];
+    assert_eq!((after.loc, after.rot, after.held), (before.loc, before.rot, 0));
+    // A cancelled tap doesn't turn the card either.
+    a.pointer_down(from.0, from.1);
+    a.pointer_cancel();
+    assert_eq!(a.shared.layout(w).0[NSLOTS].rot, before.rot);
+}
+
 /// One test owns the process-wide imported-clover registry.
 #[test]
 fn imported_and_shared_boards_are_guessed_first_and_check_against_their_layout() {
