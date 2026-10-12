@@ -139,7 +139,7 @@ fn solve(t: &mut Table, k: usize, decoy_in_spot0: bool) {
     let a = &mut t.apps[k];
     a.settle();
     let w = a.scene().writer.unwrap();
-    let d = deal(a.shared.round.seed, w);
+    let d = a.shared.deal(w);
     for s in 0..NSLOTS {
         if a.scene().locked & (1 << s) != 0 {
             continue;
@@ -623,25 +623,70 @@ fn card_turns_and_board_turns_animate() {
 }
 
 #[test]
-fn enter_moves_to_next_empty_leaf_and_faces_it() {
+fn tapping_leaves_edits_without_turning_the_board() {
     let mut t = Table::new(1);
     let a = &mut t.apps[0];
     a.action(1);
     a.frame(1000.0);
     drain(a);
     a.settle();
-    let top = a.petal_screen(0);
-    tap(a, top);
-    let (_, ev) = drain(a);
-    assert!(ev.iter().any(|(k, b)| *k == EV_EDIT_CLUE && b[0] == 0));
+    // Tap the side and the outer edge of each leaf, not just its middle.
+    for d in 0..4u8 {
+        for (dx, dy) in [(0.0, -370.0), (-150.0, -330.0), (120.0, -410.0)] {
+            let (x, y) = {
+                let (s, c) = (d as f32 * std::f32::consts::FRAC_PI_2).sin_cos();
+                (dx * c - dy * s, dx * s + dy * c)
+            };
+            let at = a.board_screen(x, y);
+            tap(a, at);
+            let (_, ev) = drain(a);
+            let e = ev.iter().find(|(k, _)| *k == EV_EDIT_CLUE).expect("leaf tap opens the editor");
+            assert_eq!(e.1[0], d, "tap at {dx},{dy} on leaf {d}");
+            assert_eq!(a.q, 0, "tapping a leaf never turns the board");
+        }
+    }
     a.set_clue(0, "ocean", true);
     let (_, ev) = drain(a);
-    let next = ev.iter().find(|(k, _)| *k == EV_EDIT_CLUE).expect("opens next leaf");
+    let next = ev.iter().find(|(k, _)| *k == EV_EDIT_CLUE).expect("Enter opens the next leaf");
     assert_eq!(next.1[0], 1);
-    assert_eq!(a.q.rem_euclid(4), 3);
-    a.settle();
-    let (x, y) = a.petal_screen(1);
-    assert!(approx(x, top.0) && approx(y, top.1));
+    assert_eq!(a.q, 0, "and doesn't turn the board either");
+    let angle = f32::from_le_bytes(next.1[17..21].try_into().unwrap());
+    assert_eq!(angle, 0.0, "editor is upright on screen");
+}
+
+#[test]
+fn writers_see_the_two_keywords_each_leaf_links() {
+    let mut t = Table::new(1);
+    let a = &mut t.apps[0];
+    a.action(1);
+    a.frame(1000.0);
+    let me = a.seat.unwrap();
+    let d = a.shared.deal(me);
+    // Leaf 0 (top) links the top-facing words of the cards in spots 0 and 1.
+    let top = |s: usize| d.words[s][(4 - d.sol_rot[s] as usize) % 4];
+    let label = format!("{} & {}", top(0), top(1));
+    let strs = String::from_utf8_lossy(&a.strs).into_owned();
+    assert!(strs.contains(&label), "{label} not drawn");
+    assert!(!strs.contains("tap to write"));
+}
+
+#[test]
+fn palette_meets_wcag_aa() {
+    fn lum(hex: &str) -> f64 {
+        let v = u32::from_str_radix(&hex[1..], 16).unwrap();
+        let ch = |s: u32| {
+            let c = ((v >> s) & 255) as f64 / 255.0;
+            if c <= 0.03928 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
+    }
+    let json = App::palette_json();
+    for row in json.trim_matches(|c| c == '[' || c == ']').split("],[") {
+        let f: Vec<&str> = row.split(',').map(|x| x.trim_matches(|c| c == '"' || c == '[' || c == ']')).collect();
+        let (a, b) = (lum(f[1]), lum(f[2]));
+        let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+        assert!(ratio >= 4.5, "{}: contrast {ratio:.2}", f[0]);
+    }
 }
 
 #[test]
@@ -823,16 +868,38 @@ fn replicas_converge_under_reordering_and_duplication() {
 }
 
 #[test]
-fn deals_are_distinct_deterministic_and_per_writer() {
-    let a = deal(1, 10);
-    let b = deal(1, 10);
-    let c = deal(1, 11);
-    assert_eq!(a.words, b.words);
-    assert_ne!(a.words, c.words);
-    let mut all: Vec<&str> = a.words.iter().flatten().copied().collect();
-    all.sort();
-    all.dedup();
-    assert_eq!(all.len(), MAX_CARDS * 4);
+fn deals_are_whole_cards_from_a_draw_down_deck() {
+    let mut t = Table::new(3);
+    t.apps[0].action(1);
+    t.pump();
+    let s = &t.apps[0].shared;
+    let mut seen = std::collections::HashSet::new();
+    for &w in s.round.players() {
+        let d = s.deal(w);
+        for c in d.words {
+            assert!(cloverleaf::words::CARDS.contains(&c), "a real Shamrock card");
+            assert!(seen.insert(c), "no card dealt twice in a round");
+        }
+        assert_eq!(s.deal(w).words, d.words, "deterministic");
+    }
+    // The next round deals from further down the deck: no repeats.
+    for _ in 0..3 {
+        let w = t.apps[0].shared.round.players()[0];
+        let _ = w;
+        t.apps[0].action(6);
+        t.pump();
+        let s = &t.apps[1].shared;
+        for &w in s.round.players() {
+            for c in s.deal(w).words {
+                assert!(seen.insert(c), "card repeated before the deck ran out");
+            }
+        }
+    }
+    assert_eq!(seen.len(), 4 * 3 * MAX_CARDS);
+    // Every position maps to a card, and a full pass uses each card once.
+    let g = t.apps[0].shared.game;
+    let pass: std::collections::HashSet<usize> = (0..220).map(|p| deck_card(g, p)).collect();
+    assert_eq!(pass.len(), 220);
 }
 
 #[test]

@@ -159,6 +159,51 @@ try {
   gate('one press deals everyone in, and fixes the roster', true);
   gate("watchers don't get a clover", (await W.ev(() => window.__cl.card(0)))[0] < 0);
 
+  // ---- legibility: contrast, size, no stray selection --------------------------------
+  {
+    const canvasPairs = await A.ev(() => window.__cl.palette());
+    const domPairs = await A.ev(() => {
+      const rgb = (c) => (c.match(/[\d.]+/g) || []).map(Number);
+      const opaqueBg = (el) => {
+        for (let e = el; e; e = e.parentElement) {
+          const c = rgb(getComputedStyle(e).backgroundColor);
+          if (c.length === 3 || c[3] === 1) return c.slice(0, 3);
+        }
+        return [20, 48, 31];
+      };
+      const hex = (c) => '#' + c.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
+      return ['#hint', '#go', '#progLabel', '#logo', '.chip', '#decLabel']
+        .map((sel) => document.querySelector(sel))
+        .filter((el) => el && el.offsetParent)
+        .map((el) => [el.id || el.className, hex(rgb(getComputedStyle(el).color)), hex(opaqueBg(el)), parseFloat(getComputedStyle(el).fontSize)]);
+    });
+    const lum = (h) => {
+      const v = parseInt(h.slice(1), 16);
+      const ch = (s) => { const c = ((v >> s) & 255) / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+      return 0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0);
+    };
+    const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)]; return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+    const all = [...canvasPairs, ...domPairs].map(([n, f, b]) => [n, ratio(f, b)]);
+    const worst = all.reduce((m, p) => (p[1] < m[1] ? p : m));
+    metric('min_contrast_ratio', worst[1]);
+    gate('all text meets WCAG AA contrast (≥ 4.5:1)', worst[1] >= 4.5, `worst: ${worst[0]} ${worst[1].toFixed(2)}`);
+    const smallest = Math.min(...domPairs.map((p) => p[3]));
+    gate('no UI text smaller than 14 px', smallest >= 14, `${smallest}px`);
+    const sel = await E.ev(() => [getComputedStyle(document.getElementById('hint')).userSelect, getComputedStyle(document.getElementById('nameInput')).userSelect]);
+    gate("bars can't be text-selected (no dictionary pop-ups); inputs can", sel[0] === 'none' && sel[1] !== 'none', sel.join(','));
+  }
+
+  // Tapping the side of a leaf opens its editor and never turns the board.
+  {
+    await B.settle();
+    const q0 = await B.quarter();
+    await B.tap((await B.board(150, 330)).slice(0, 2)); // lower-right part of the bottom leaf
+    await B.page.waitForSelector('#clue', { state: 'visible' });
+    await sleep(300);
+    gate('tapping the side of a leaf edits it without turning the board', (await B.quarter()) === q0 && await B.page.isVisible('#clue'));
+    await B.page.keyboard.press('Escape');
+  }
+
   const words = ['ocean', 'storm', 'royal', 'kitchen'];
   const pressCounts = [];
   await Promise.all(players.map(async (p, k) => {
@@ -186,7 +231,7 @@ try {
     .then(() => gate('the progress bar fills as people submit (4 of 5)', true), () => gate('the progress bar fills as people submit (4 of 5)', false));
   const label = await A.page.textContent('#progLabel');
   const proceed = await A.page.textContent('#alt');
-  gate('progress names who is left; override reads "Proceed with 4 of 5"', label.includes('Eve') && proceed === 'Proceed with 4 of 5', `${label} | ${proceed}`);
+  gate('progress names who is left; override reads "Proceed with 4 of 5"', label.includes('Eve') && proceed === 'Proceed with 4 of 5' && (await E.page.textContent('#alt')) === 'Proceed · 4/5', `${label} | ${proceed}`);
   // Submitted players can still edit.
   await A.settle();
   await A.tap((await A.petal(2)).slice(0, 2));
@@ -221,7 +266,7 @@ try {
   // Legibility and fill, measured where it matters: while guessing (tray shown).
   for (const p of [G, E]) {
     const word = await p.ev(() => window.__cl.wordPx());
-    const boardPx = (await p.ev(() => window.__cl.cardPx() / window.__cl.zoom())) / 150 * 810;
+    const boardPx = (await p.ev(() => window.__cl.cardPx() / window.__cl.zoom())) / 150 * 864; // 2 × EXTENT
     const side = Math.min(p.viewport.width, p.viewport.height);
     const tag = p === E ? 'phone_390x844' : 'desktop_1280x860';
     metric(`word_px_${tag}`, word, ' px');

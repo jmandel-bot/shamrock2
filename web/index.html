@@ -3,113 +3,152 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#173026">
-<title>Cloverleaf</title>
+<meta name="theme-color" content="#102719">
+<title>Shamrock</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cg fill='%233f9a5c'%3E%3Cpath id='l' d='M50 52C46 43 27 39 29 25C31 13 46 12 50 23C54 12 69 13 71 25C73 39 54 43 50 52Z'/%3E%3Cuse href='%23l' transform='rotate(118 50 52)'/%3E%3Cuse href='%23l' transform='rotate(-118 50 52)'/%3E%3Cpath d='M48 53Q54 72 64 90L69 87Q58 70 53 52Z'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;600;700&family=Fraunces:opsz,wght@9..144,600&display=swap">
 <style>
+  /* Shamrock: green felt, paper cards, one warm accent. Text pairs meet WCAG AA. */
   :root {
-    --bg: #1f3b2d; --bar: #173026; --sheet: #20402f; --line: #3d7a52; --fg: #eef7f0; --dim: #a7c4b0;
-    --hint: #ffe39a; --go: #f2c14e; --go-fg: #2a2208; --chip: #ffffff14;
+    --felt: #14301f; --bar: #102719; --sheet: #1a3a28; --line: #3d7a52;
+    --fg: #f3f8f1; --dim: #b9d3c0; --hint: #ffe7a6; --leaf: #a8dbb0;
+    --go: #f2c14e; --go-fg: #231c05; --on: #8fe0a2; --on-fg: #0b2414; --chip: #ffffff17;
+    --sans: Figtree, system-ui, -apple-system, sans-serif; --serif: Fraunces, Georgia, serif;
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
   [hidden] { display: none !important; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 15px/1.35 system-ui, -apple-system, sans-serif; overflow: hidden; }
-  body { display: flex; flex-direction: column; }
-  button { font: inherit; color: inherit; border: 0; border-radius: 999px; background: var(--chip); padding: 8px 14px; min-height: 40px; cursor: pointer; }
-  button:disabled { opacity: .45; cursor: default; }
-  button:focus-visible, input:focus-visible { outline: 2px solid var(--hint); outline-offset: 2px; }
-  .go { background: var(--go); color: var(--go-fg); font-weight: 700; padding: 10px 22px; }
-  .go:disabled { background: var(--chip); color: var(--fg); }
-  .go.on { background: #6fd08a; color: #0f2a17; }
+  html, body { margin: 0; height: 100%; background: var(--felt); color: var(--fg); font: 16px/1.35 var(--sans); overflow: hidden; }
+  /* A game surface, not a document: no text selection, callouts or tap flashes
+     (they trigger dictionary lookups on mobile). Inputs stay selectable. */
+  body { display: flex; flex-direction: column; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  input, #linkText { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+  button { font: inherit; font-weight: 600; color: inherit; border: 0; border-radius: 999px; background: var(--chip); padding: 9px 16px; min-height: 44px; cursor: pointer; touch-action: manipulation; transition: transform .12s ease, background .2s; }
+  button:active:not(:disabled) { transform: scale(.96); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--hint); outline-offset: 2px; }
+  .go { background: var(--go); color: var(--go-fg); font-weight: 700; padding: 10px 22px; font-size: 17px; }
+  .go:disabled { background: var(--chip); color: var(--fg); opacity: .65; }
+  .go.on { background: var(--on); color: var(--on-fg); }
 
-  #top { display: flex; align-items: center; gap: 8px; padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px; background: var(--bar); }
-  #logo { font-weight: 800; letter-spacing: .02em; white-space: nowrap; }
+  #top { display: flex; align-items: center; gap: 10px; padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px 12px; background: var(--bar); }
+  #logo { display: inline-flex; align-items: center; gap: 6px; font: 600 20px var(--serif); letter-spacing: .01em; white-space: nowrap; color: var(--fg); }
+  #logo svg { width: 24px; height: 24px; }
+  @media (max-width: 480px) { #logo span { display: none; } }
   #roster { flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
   #roster::-webkit-scrollbar { display: none; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 7px; border-radius: 999px; background: var(--chip); font-size: 13px; white-space: nowrap; flex: none; }
-  .chip i { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-  .chip.you { box-shadow: 0 0 0 1.5px var(--fg) inset; }
-  .chip.writer { box-shadow: 0 0 0 1.5px var(--go) inset; }
-  .chip.away { opacity: .4; }
-  .chip small { color: var(--dim); }
-  #menuBtn { min-width: 40px; padding: 8px 10px; font-size: 18px; line-height: 1; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px 5px 8px; border-radius: 999px; background: var(--chip); font-size: 15px; font-weight: 600; white-space: nowrap; flex: none; }
+  .chip i { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+  .chip.you { box-shadow: 0 0 0 2px var(--fg) inset; }
+  .chip.writer { box-shadow: 0 0 0 2px var(--go) inset; }
+  .chip.away { opacity: .5; }
+  .chip small { color: var(--dim); font-size: 14px; }
+  #menuBtn { min-width: 44px; padding: 8px 10px; font-size: 20px; line-height: 1; }
 
   #stage { position: relative; flex: 1; min-height: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
-  #clue { position: absolute; display: none; transform-origin: center; text-align: center; font: 700 18px system-ui, sans-serif;
-          border: 2px solid #fff; border-radius: 999px; background: #eaffef; color: #10301a; outline: none; }
-  #toast { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); max-width: calc(100% - 24px); background: #000c; color: var(--fg);
-           padding: 8px 14px; border-radius: 12px; font-size: 14px; pointer-events: none; opacity: 0; transition: opacity .25s; text-align: center; }
-  #toast.show { opacity: 1; }
+  #clue { position: absolute; display: none; text-align: center; font: 600 22px var(--serif);
+          border: 3px solid var(--go); border-radius: 16px; background: #f6fcf6; color: #0b2414; outline: none; padding: 0 12px;
+          box-shadow: 0 8px 24px #0006; }
+  #toast { position: absolute; left: 50%; bottom: 12px; transform: translate(-50%, 8px); max-width: calc(100% - 24px); background: #08170e; color: var(--fg);
+           padding: 10px 16px; border-radius: 14px; font-size: 16px; font-weight: 600; pointer-events: none; opacity: 0; transition: opacity .25s, transform .25s; text-align: center; box-shadow: 0 6px 20px #0008; }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
-  #dock { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bar); }
+  #dock { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bar); }
   #progress { flex: 1 1 100%; display: flex; align-items: center; gap: 10px; }
-  #progMain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-  #segs { display: flex; gap: 4px; height: 10px; }
-  #alt { white-space: nowrap; min-height: 34px; padding: 6px 12px; font-size: 14px; }
-  #segs i { flex: 1; border-radius: 5px; border: 1.5px solid currentColor; opacity: .55; transition: background .3s, opacity .3s; }
+  #progMain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+  #segs { display: flex; gap: 5px; height: 12px; }
+  #segs i { flex: 1; border-radius: 6px; border: 2px solid currentColor; opacity: .7; transition: background .35s ease, opacity .35s; }
   #segs i.done { opacity: 1; background: currentColor; }
   #segs i.away { border-style: dashed; }
-  #progLabel { font-size: 13px; color: var(--dim); white-space: nowrap; }
-  #hint { flex: 1 1 14em; min-width: 0; color: var(--hint); font-size: 14px; }
+  #progLabel { font-size: 15px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #alt { white-space: nowrap; font-size: 16px; }
+  #hint { flex: 1 1 14em; min-width: 0; color: var(--hint); font-size: 16px; }
   #hint b { color: var(--fg); }
   #dockBtns { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
   #go { white-space: nowrap; }
+  .stepper { display: inline-flex; align-items: center; gap: 2px; background: var(--chip); border-radius: 999px; padding: 2px; font-size: 15px; font-weight: 600; }
+  .stepper button { min-height: 40px; min-width: 40px; padding: 0; background: transparent; font-size: 22px; }
+  .stepper span { padding: 0 4px; white-space: nowrap; }
   @media (max-width: 480px) {
-    #hint { flex-basis: 100%; }
+    #hint { flex-basis: 100%; font-size: 15px; }
     #dockBtns { width: 100%; justify-content: space-between; gap: 6px; }
-    .stepper { font-size: 12px; }
-    .stepper button { min-width: 30px; }
+    .stepper { font-size: 14px; }
+    .stepper button { min-width: 34px; }
     .go { padding: 10px 16px; }
   }
-  .stepper { display: inline-flex; align-items: center; gap: 2px; background: var(--chip); border-radius: 999px; padding: 2px; font-size: 13px; }
-  .stepper button { min-height: 34px; min-width: 34px; padding: 0; background: transparent; font-size: 18px; }
-  .stepper span { padding: 0 4px; white-space: nowrap; }
 
-  .overlay { position: fixed; inset: 0; background: #0009; display: none; align-items: flex-end; justify-content: center; z-index: 5; }
-  .overlay.open { display: flex; }
-  .sheet { width: min(460px, 100%); background: var(--sheet); border-radius: 18px 18px 0 0; padding: 18px 16px calc(18px + env(safe-area-inset-bottom, 0px));
-           display: flex; flex-direction: column; gap: 12px; max-height: 90%; overflow-y: auto; }
-  @media (min-width: 600px) { .overlay { align-items: center; } .sheet { border-radius: 18px; } }
-  .sheet h2 { margin: 0; font-size: 19px; }
-  .sheet p { margin: 0; color: var(--dim); font-size: 14px; }
-  .sheet input { font: inherit; color: var(--fg); background: #0003; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; width: 100%; }
+  .overlay { position: fixed; inset: 0; background: #000a; display: flex; align-items: flex-end; justify-content: center; z-index: 5;
+             opacity: 0; pointer-events: none; transition: opacity .25s; }
+  .overlay.open { opacity: 1; pointer-events: auto; }
+  .sheet { width: min(460px, 100%); background: var(--sheet); border-radius: 22px 22px 0 0; padding: 22px 18px calc(20px + env(safe-area-inset-bottom, 0px));
+           display: flex; flex-direction: column; gap: 14px; max-height: 92%; overflow-y: auto; transform: translateY(24px); transition: transform .3s cubic-bezier(.2,.8,.2,1); }
+  .overlay.open .sheet { transform: none; }
+  @media (min-width: 600px) { .overlay { align-items: center; } .sheet { border-radius: 22px; } }
+  .sheet h2 { margin: 0; font: 600 24px var(--serif); }
+  .sheet p { margin: 0; color: var(--dim); font-size: 16px; }
+  .sheet input { font: 600 20px var(--sans); color: var(--fg); background: #0004; border: 2px solid var(--line); border-radius: 14px; padding: 12px 14px; width: 100%; }
+  .brand { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px 0 6px; text-align: center; }
+  .brand svg { width: 64px; height: 64px; animation: sway 6s ease-in-out infinite; transform-origin: 50% 90%; }
+  .brand h1 { margin: 0; font: 600 36px var(--serif); letter-spacing: .01em; }
+  .brand p { font-size: 16px; }
+  @keyframes sway { 0%, 100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   .row > .grow { flex: 1; }
   .list { display: flex; flex-direction: column; gap: 6px; }
   .item { display: flex; align-items: center; gap: 10px; padding: 6px 4px; }
   .item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .link { background: none; padding: 6px 0; min-height: 0; color: var(--dim); text-decoration: underline; }
-  .menuBtn { text-align: left; border-radius: 12px; background: #ffffff0d; width: 100%; }
-  .danger { color: #ffb4a8; }
-  code { font-size: 12px; color: var(--dim); word-break: break-all; }
+  .link { background: none; padding: 6px 0; min-height: 0; color: var(--dim); text-decoration: underline; font-weight: 600; }
+  .menuBtn { text-align: left; border-radius: 14px; background: #ffffff10; width: 100%; }
+  .danger { color: #ffc2b8; }
+  code { font-size: 14px; color: var(--dim); word-break: break-all; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition: none !important; animation: none !important; }
+  }
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="mark" viewBox="0 0 100 100">
+    <g fill="currentColor">
+      <path id="leafPath" d="M50 52C46 43 27 39 29 25C31 13 46 12 50 23C54 12 69 13 71 25C73 39 54 43 50 52Z"/>
+      <use href="#leafPath" transform="rotate(118 50 52)"/>
+      <use href="#leafPath" transform="rotate(-118 50 52)"/>
+      <path d="M48 53Q54 72 64 90L69 87Q58 70 53 52Z"/>
+    </g>
+  </symbol>
+</svg>
 <div id="top">
-  <span id="logo">☘ Cloverleaf</span>
+  <span id="logo"><svg style="color: var(--leaf)"><use href="#mark"/></svg><span>Shamrock</span></span>
   <div id="roster"></div>
   <button id="menuBtn" aria-label="Menu">⋯</button>
 </div>
 <div id="stage">
   <canvas id="c"></canvas>
-  <input id="clue" maxlength="40" autocomplete="off" enterkeyhint="next" aria-label="Clue">
-  <div id="toast"></div>
+  <input id="clue" maxlength="40" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="next" aria-label="Clue">
+  <div id="toast" role="status"></div>
 </div>
 <div id="dock">
   <div id="progress" hidden><div id="progMain"><div id="segs"></div><span id="progLabel"></span></div><button id="alt" hidden></button></div>
   <div id="hint"></div>
   <div id="dockBtns">
     <span class="stepper" id="size" hidden title="Card size on your screen only"><button id="sizeDown" aria-label="Smaller cards">−</button><span>Cards</span><button id="sizeUp" aria-label="Bigger cards">+</button></span>
-    <span class="stepper" id="decoys" hidden><button id="decDown" aria-label="Fewer extra cards">−</button><span id="decLabel"></span><button id="decUp" aria-label="More extra cards">+</button></span>
+    <span class="stepper" id="decoys" hidden><button id="decDown" aria-label="Fewer decoy cards">−</button><span id="decLabel"></span><button id="decUp" aria-label="More decoy cards">+</button></span>
     <button id="go" class="go"></button>
   </div>
 </div>
 
 <div class="overlay" id="joinSheet">
   <form class="sheet" id="joinForm">
-    <h2>Join the table</h2>
-    <p>Pick a name. Choosing a name that's already playing takes over that seat (handy for switching devices).</p>
-    <input id="nameInput" maxlength="24" placeholder="Your name" autocomplete="nickname" enterkeyhint="go">
+    <div class="brand">
+      <svg style="color: var(--leaf)"><use href="#mark"/></svg>
+      <h1>Shamrock</h1>
+      <p>Clue your clover. Guess your friends'.</p>
+    </div>
+    <input id="nameInput" maxlength="24" placeholder="Your name" autocomplete="nickname" enterkeyhint="go" aria-label="Your name">
+    <p>Choosing a name that's already playing takes over that seat, handy for switching devices.</p>
     <div class="list" id="seatList"></div>
     <div class="row"><button type="submit" class="go grow" id="joinBtn">Join</button></div>
     <button type="button" class="link" id="watchBtn">Just watch</button>

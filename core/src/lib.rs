@@ -157,6 +157,18 @@ pub extern "C" fn set_zoom(z: f32) -> f32 {
     g().app.zoom
 }
 
+/// 0 = reduced motion (no deal-in or glow).
+#[no_mangle]
+pub extern "C" fn set_motion(on: u32) {
+    g().app.motion = on != 0;
+}
+
+/// Text/background colour pairs used on the canvas (JSON) → scratch.
+#[no_mangle]
+pub extern "C" fn palette() -> u32 {
+    to_scratch(App::palette_json())
+}
+
 #[no_mangle]
 pub extern "C" fn set_decoys(n: u32) {
     g().app.set_decoys(n.min(255) as u8);
@@ -264,7 +276,7 @@ pub extern "C" fn answer_rot(s: u32) -> u32 {
     let a = &g().app;
     match a.scene().writer {
         Some(w) if matches!(a.shared.phase(), model::Phase::Guessing(_)) => {
-            model::deal(a.shared.round.seed, w).sol_rot[(s as usize) % model::NSLOTS] as u32
+            a.shared.deal(w).sol_rot[(s as usize) % model::NSLOTS] as u32
         }
         _ => 255,
     }

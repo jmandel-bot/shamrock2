@@ -7,7 +7,7 @@
 //! commutative, associative and idempotent, so replicas converge regardless
 //! of delivery order or duplication.
 
-use crate::words::WORDS;
+use crate::words::CARDS;
 use std::collections::BTreeMap;
 
 pub const NSLOTS: usize = 4;
@@ -18,13 +18,14 @@ pub const MAX_CARDS: usize = NSLOTS + MAX_DECOYS as usize;
 pub const CARD: f32 = 150.0;
 pub const HALF: f32 = CARD / 2.0;
 pub const SLOT_OFF: f32 = 115.0;
-pub const BOARD_HALF: f32 = 310.0;
+/// Radius of the clover's round centre, where the four spots are.
+pub const BOARD_HALF: f32 = 275.0;
 /// Clue leaves sit between these distances from the centre.
-pub const LEAF_IN: f32 = 322.0;
+pub const LEAF_IN: f32 = 290.0;
 pub const LEAF_OUT: f32 = 400.0;
-pub const LEAF_HALF_W: f32 = 220.0;
+pub const LEAF_HALF_W: f32 = 205.0;
 /// Half-extent of everything on the board, leaves included.
-pub const EXTENT: f32 = 405.0;
+pub const EXTENT: f32 = 432.0;
 pub const HUB_R: f32 = 30.0;
 /// Dropping within this distance of a free spot snaps into it.
 pub const SNAP_R: f32 = 34.0;
@@ -71,6 +72,9 @@ pub struct Round {
     /// Seats dealt into this round (fixed when the round starts).
     pub seats: [u32; MAX_PLAYERS],
     pub nseats: u8,
+    /// Where this round starts dealing in the game's deck (each dealt-in
+    /// player takes `MAX_CARDS` cards).
+    pub deck: u32,
 }
 
 impl Round {
@@ -191,23 +195,18 @@ pub struct Deal {
     pub home_rot: [u8; MAX_CARDS],
 }
 
-pub fn deal(seed: u32, writer: u32) -> Deal {
-    let mut rng = Rng::new(((seed as u64) << 32 | writer as u64) ^ 0x9e37_79b9_7f4a_7c15);
-    let mut idx: Vec<usize> = (0..WORDS.len()).collect();
-    for k in 0..MAX_CARDS * 4 {
-        let j = k + rng.below(idx.len() - k);
-        idx.swap(k, j);
+/// The game's draw-down deck: card at deck position `pos`. Each pass
+/// through the deck is a fresh shuffle seeded by the game, so cards don't
+/// repeat until the deck runs out.
+pub fn deck_card(game: Stamp, pos: u32) -> usize {
+    let n = CARDS.len();
+    let (pass, at) = (pos as usize / n, pos as usize % n);
+    let mut rng = Rng::new(game.clock ^ ((game.peer as u64) << 32) ^ (pass as u64).wrapping_mul(0xa076_1d64_78bd_642f));
+    let mut perm: Vec<usize> = (0..n).collect();
+    for k in (1..n).rev() {
+        perm.swap(k, rng.below(k + 1));
     }
-    let mut home: [u8; MAX_CARDS] = core::array::from_fn(|i| i as u8);
-    for k in (1..MAX_CARDS).rev() {
-        home.swap(k, rng.below(k + 1));
-    }
-    Deal {
-        words: core::array::from_fn(|c| core::array::from_fn(|s| WORDS[idx[c * 4 + s]])),
-        sol_rot: core::array::from_fn(|_| rng.below(4) as u8),
-        home,
-        home_rot: core::array::from_fn(|_| rng.below(4) as u8),
-    }
+    perm[at]
 }
 
 /// Tray spot `k` of `n`: rows of up to four along the tray's long axis.
@@ -333,6 +332,24 @@ impl Shared {
         self.seats.iter().filter(|(_, s)| s.active).map(|(id, _)| *id).collect()
     }
 
+    /// What `writer` was dealt this round: whole cards from the deck.
+    pub fn deal(&self, writer: u32) -> Deal {
+        let seat = self.round.players().iter().position(|p| *p == writer).unwrap_or(writer as usize % MAX_PLAYERS);
+        let base = self.round.deck + (seat * MAX_CARDS) as u32;
+        let cards: [usize; MAX_CARDS] = core::array::from_fn(|i| deck_card(self.game, base + i as u32));
+        let mut rng = Rng::new(((self.round.seed as u64) << 32 | writer as u64) ^ 0x9e37_79b9_7f4a_7c15);
+        let mut home: [u8; MAX_CARDS] = core::array::from_fn(|i| i as u8);
+        for k in (1..MAX_CARDS).rev() {
+            home.swap(k, rng.below(k + 1));
+        }
+        Deal {
+            words: core::array::from_fn(|c| CARDS[cards[c]]),
+            sol_rot: core::array::from_fn(|_| rng.below(4) as u8),
+            home,
+            home_rot: core::array::from_fn(|_| rng.below(4) as u8),
+        }
+    }
+
     /// A writer's latest clues (while writing).
     pub fn latest(&self, w: u32) -> Option<&Sub> {
         self.subs.range((w, Stamp::default())..=(w, Stamp { clock: u64::MAX, peer: u32::MAX })).next_back().map(|(_, s)| s)
@@ -394,7 +411,7 @@ impl Shared {
     /// spots enforced, answer shown once done) and which card claims each
     /// spot for a check: the nearest within `CLAIM_R`.
     pub fn layout(&self, writer: u32) -> (Vec<Card>, [Option<usize>; NSLOTS]) {
-        let d = deal(self.round.seed, writer);
+        let d = self.deal(writer);
         let n = self.ncards(writer);
         let check = self.check(writer);
         let locked = |s: usize| check.done() || check.mask & (1 << s) != 0;
@@ -599,6 +616,7 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
             for p in round.players() {
                 b.extend_from_slice(&p.to_le_bytes());
             }
+            b.extend_from_slice(&round.deck.to_le_bytes());
             match body {
                 Body::None => {}
                 Body::Seat(id, s) => {
@@ -725,7 +743,7 @@ impl<'a> Reader<'a> {
         for p in seats.iter_mut().take(nseats as usize) {
             *p = self.u32()?;
         }
-        let round = Round { stamp, seed, n, seats, nseats };
+        let round = Round { stamp, seed, n, seats, nseats, deck: self.u32()? };
         let body = match tag {
             T_NONE => Body::None,
             T_SEAT => {

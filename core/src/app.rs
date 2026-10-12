@@ -17,6 +17,40 @@ const C_RRECT: f32 = 2.0;
 const C_CIRCLE: f32 = 3.0;
 const C_TEXT: f32 = 4.0;
 const C_CLEAR: f32 = 5.0;
+/// Heart-shaped clover leaf: tip at the origin, lobes toward -y.
+const C_LEAF: f32 = 6.0;
+
+// Text faces (the shim maps these to fonts).
+const F_SANS_BOLD: u8 = 1;
+const F_SERIF: u8 = 2;
+
+// Palette. Every text/background pair here is checked for WCAG AA contrast
+// by the harness (see `palette_json`).
+const BG: u32 = 0x14301fff;
+const TRAY: u32 = 0x1b3d2aff;
+const TRAY_EDGE: u32 = 0x2b5a3eff;
+const LEAF: u32 = 0xa8dbb0ff;
+const LEAF_ACTIVE: u32 = 0xd6f1daff;
+const LEAF_GLOW: u32 = 0xe9f8cfff;
+const LEAF_EDGE: u32 = 0x2e6b42ff;
+const CENTRE: u32 = 0x2e6b45ff;
+const CENTRE_EDGE: u32 = 0x24573aff;
+const PAPER: u32 = 0xfcf8eeff;
+const PAPER_EDGE: u32 = 0xcdbf9aff;
+const INK: u32 = 0x1c1710ff;
+const CLUE_INK: u32 = 0x0b2414ff;
+const KEYWORD_INK: u32 = 0x1d4a2bff;
+const HUB: u32 = 0x173a27ff;
+const GOLD: u32 = 0xf2c14eff;
+
+fn mix(a: u32, b: u32, t: f32) -> u32 {
+    let t = t.clamp(0.0, 1.0);
+    let ch = |s: u32| -> u32 {
+        let (x, y) = (((a >> s) & 255) as f32, ((b >> s) & 255) as f32);
+        ((x + (y - x) * t).round() as u32) << s
+    };
+    ch(24) | ch(16) | ch(8) | ch(0)
+}
 
 const DRAG_THRESHOLD: f32 = 6.0;
 const CURSOR_TTL_MS: f64 = 4000.0;
@@ -143,6 +177,10 @@ struct Pose {
     x: f32,
     y: f32,
     a: f32,
+    /// Scale (deal-in grows cards from small).
+    s: f32,
+    /// Seconds left before this card starts moving (deal-in stagger).
+    wait: f32,
 }
 
 /// What the board shows right now, for this device.
@@ -188,6 +226,11 @@ pub struct App {
     dt: f32,
     /// Local card size multiplier (display only; positions are shared).
     pub zoom: f32,
+    /// Decorative motion on (off for prefers-reduced-motion).
+    pub motion: bool,
+    /// Soft glow on the leaves after a clover is completed (1 → 0).
+    glow: f32,
+    last_done: Option<(u32, bool)>,
     pub now: f64,
     pub outbox: Vec<u8>,
     pub cmds: Vec<f32>,
@@ -222,6 +265,9 @@ impl App {
             poses: BTreeMap::new(),
             dt: 0.0,
             zoom: 1.0,
+            motion: true,
+            glow: 0.0,
+            last_done: None,
             now: 0.0,
             outbox: Vec::new(),
             cmds: Vec::new(),
@@ -433,7 +479,7 @@ impl App {
             Phase::Lobby | Phase::End => empty(),
             Phase::Writing => {
                 let Some(me) = self.seated_writing() else { return empty() };
-                let d = deal(s.round.seed, me);
+                let d = s.deal(me);
                 Scene {
                     writer: Some(me),
                     cards: (0..NSLOTS)
@@ -448,7 +494,7 @@ impl App {
             }
             Phase::Guessing(k) => {
                 let w = s.puzzles()[k];
-                let d = deal(s.round.seed, w);
+                let d = s.deal(w);
                 let (cards, claim) = s.layout(w);
                 let check = s.check(w);
                 let locked = if check.done() { 0b1111 } else { check.mask };
@@ -546,22 +592,22 @@ impl App {
 
     fn pose_m(&self, p: &Pose) -> M {
         if p.board {
-            self.board_m().then(M::t(p.x, p.y)).then(M::r(p.a)).then(M::s(self.zoom))
+            self.board_m().then(M::t(p.x, p.y)).then(M::r(p.a)).then(M::s(self.zoom * p.s))
         } else {
             let (px, py) = self.tray_px(p.x, p.y);
-            M::t(px, py).then(M::s(self.scale())).then(M::r(p.a)).then(M::s(self.zoom))
+            M::t(px, py).then(M::s(self.scale())).then(M::r(p.a)).then(M::s(self.zoom * p.s))
         }
     }
 
     fn target_pose(c: &Card) -> Pose {
         let a = turn(c.rot);
         match c.loc {
-            Loc::Table { x, y } => Pose { board: false, x, y, a },
+            Loc::Table { x, y } => Pose { board: false, x, y, a, s: 1.0, wait: 0.0 },
             Loc::Slot(s) => {
                 let (x, y) = slot_pos(s as usize);
-                Pose { board: true, x, y, a }
+                Pose { board: true, x, y, a, s: 1.0, wait: 0.0 }
             }
-            Loc::Float { x, y } => Pose { board: true, x, y, a },
+            Loc::Float { x, y } => Pose { board: true, x, y, a, s: 1.0, wait: 0.0 },
         }
     }
 
@@ -573,10 +619,10 @@ impl App {
         let (px, py) = self.pose_m(&Pose { a: 0.0, ..p }).apply(0.0, 0.0);
         if board {
             let (x, y) = self.board_m().inv().apply(px, py);
-            Pose { board, x, y, a: p.a - self.angle }
+            Pose { board, x, y, a: p.a - self.angle, ..p }
         } else {
             let (x, y) = self.px_tray(px, py);
-            Pose { board, x, y, a: p.a + self.angle }
+            Pose { board, x, y, a: p.a + self.angle, ..p }
         }
     }
 
@@ -625,14 +671,16 @@ impl App {
         if let Some(i) = card.filter(|&i| sc.movable[i]) {
             return Target::Card(i);
         }
+        let r = bx.hypot(by);
+        if r <= BOARD_HALF || card.is_some() {
+            return Target::Board;
+        }
+        // Anywhere on a leaf (outside the centre) belongs to that leaf.
         if let Some(d) = (0..4).find(|&d| {
             let (x, y) = self.leaf_m_at(d, self.angle).inv().apply(px, py);
-            x.abs() <= LEAF_HALF_W && (-LEAF_OUT..=-LEAF_IN).contains(&y)
+            -y >= x.abs() && -y <= EXTENT + 10.0
         }) {
             return Target::Petal(d);
-        }
-        if (bx.abs() <= BOARD_HALF && by.abs() <= BOARD_HALF) || card.is_some() {
-            return Target::Board;
         }
         Target::Empty
     }
@@ -706,7 +754,7 @@ impl App {
             _ => cur.rot,
         };
         let loc = if to_board {
-            Loc::Float { x: bx.clamp(-BOARD_HALF, BOARD_HALF), y: by.clamp(-BOARD_HALF, BOARD_HALF) }
+            Loc::Float { x: bx.clamp(HALF - EXTENT, EXTENT - HALF), y: by.clamp(HALF - EXTENT, EXTENT - HALF) }
         } else {
             let (u, v) = self.px_tray(cx, cy);
             Loc::Table { x: u, y: v }
@@ -731,11 +779,10 @@ impl App {
                 let c = sc.cards[i];
                 self.set_card(sc.writer.unwrap(), i, c.loc, (c.rot + 1) % 4, 0);
             }
+            // Tapping a leaf never turns the board: it only edits (when writing).
             (Target::Petal(d), false) => {
                 if self.seated_writing().is_some() {
                     self.edit_clue(d);
-                } else {
-                    self.face_petal(d);
                 }
             }
             (Target::Hub | Target::Board, false) => self.q += 1,
@@ -779,15 +826,19 @@ impl App {
         self.q += if delta == 3 { -1 } else { delta };
     }
 
+    /// Open the editor over leaf `d`, upright on screen (the board stays
+    /// as it is), as big as fits.
     pub fn edit_clue(&mut self, d: u8) {
-        self.face_petal(d);
         self.editing = Some(d);
         let target = self.q as f32 * FRAC_PI_2;
-        let f = self.leaf_m_at(d, target).then(M::t(0.0, Self::leaf_mid()));
-        let (x, y) = f.apply(0.0, 0.0);
+        let (x, y) = self.leaf_m_at(d, target).apply(0.0, Self::leaf_mid());
         let k = self.scale();
+        let w = (2.0 * LEAF_HALF_W * k).clamp(220.0, self.w - 16.0);
+        let h = (72.0 * k).max(48.0);
+        let x = x.clamp(8.0 + w / 2.0, self.w - 8.0 - w / 2.0);
+        let y = y.clamp(8.0 + h / 2.0, self.h - 8.0 - h / 2.0);
         let mut p = vec![d];
-        for v in [x, y, 2.0 * LEAF_HALF_W * k * 0.92, (LEAF_OUT - LEAF_IN) * k * 0.8, f.angle()] {
+        for v in [x, y, w, h, 0.0] {
             p.extend_from_slice(&v.to_le_bytes());
         }
         p.extend_from_slice(self.my_sub().clues[d as usize].as_bytes());
@@ -885,7 +936,10 @@ impl App {
         if players.is_empty() {
             return self.status("Join the table first.");
         }
-        let round = Round { seed: self.rng.next() as u32, n: self.shared.round.n + 1, stamp: self.stamp(), ..Round::default() }
+        let prev = self.shared.round;
+        // Draw down the deck: this round deals after the cards the last one used.
+        let deck = if prev.n == 0 { 0 } else { prev.deck + (prev.nseats as usize * MAX_CARDS) as u32 };
+        let round = Round { seed: self.rng.next() as u32, n: prev.n + 1, stamp: self.stamp(), deck, ..Round::default() }
             .with_players(&players);
         let op = Op { game: self.shared.game, round, body: Body::None };
         self.shared.apply(&op);
@@ -926,7 +980,7 @@ impl App {
         }
         let sc = self.scene();
         let w = sc.writer.unwrap();
-        let d = deal(self.shared.round.seed, w);
+        let d = self.shared.deal(w);
         let mut mask = 0u8;
         for s in 0..NSLOTS {
             let k = sc.claim[s].unwrap();
@@ -979,6 +1033,21 @@ impl App {
         }
         self.maybe_start_guessing();
         let phase = self.shared.phase();
+        // A clover just got finished: let the leaves glow briefly.
+        let done_now = match phase {
+            Phase::Guessing(k) => {
+                let w = self.shared.puzzles()[k];
+                Some((w, self.shared.check(w).done()))
+            }
+            _ => None,
+        };
+        if let (Some((w, true)), Some((pw, false))) = (done_now, self.last_done) {
+            if w == pw {
+                self.glow = 1.0;
+            }
+        }
+        self.last_done = done_now;
+        self.glow = (self.glow - self.dt / 1.8).max(0.0);
         if phase != self.last_phase {
             // New phase or new clover: spin back upright the short way.
             self.last_phase = phase;
@@ -1017,6 +1086,12 @@ impl App {
     pub fn settle(&mut self) {
         self.angle = self.q as f32 * FRAC_PI_2;
         self.poses.clear();
+        let sc = self.scene();
+        if let Some(w) = sc.writer {
+            for (i, c) in sc.cards.iter().enumerate() {
+                self.poses.insert((w, i as u8), Self::target_pose(c));
+            }
+        }
     }
 
     // ---- rendering ----------------------------------------------------------
@@ -1036,7 +1111,7 @@ impl App {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn text(&mut self, x: f32, y: f32, size: f32, color: u32, bold: bool, s: &str, maxw: f32) {
+    fn text(&mut self, x: f32, y: f32, size: f32, color: u32, font: u8, s: &str, maxw: f32) {
         let off = self.strs.len() as f32;
         self.strs.extend_from_slice(s.as_bytes());
         self.cmds.extend_from_slice(&[
@@ -1045,14 +1120,15 @@ impl App {
             y,
             size,
             f32::from_bits(color),
-            if bold { 1.0 } else { 0.0 },
+            font as f32,
             off,
             s.len() as f32,
             maxw,
         ]);
     }
 
-    /// Ease displayed card poses toward where the cards really are.
+    /// Ease displayed card poses toward where the cards really are. Cards
+    /// that appear (a new clover) are dealt in from the centre, staggered.
     fn animate(&mut self, sc: &Scene) {
         let Some(w) = sc.writer else { return };
         let k = 1.0 - (-self.dt * 14.0).exp();
@@ -1063,18 +1139,27 @@ impl App {
             let pose = match self.poses.get(&key) {
                 Some(p) if Some(i) != dragging => {
                     let p = self.reframe(*p, target.board);
-                    let close = (p.x - target.x).abs() + (p.y - target.y).abs() < 1e-3
-                        && wrap(target.a - p.a).abs() < 1e-3;
-                    if close {
-                        target
+                    if p.wait > 0.0 {
+                        Pose { wait: p.wait - self.dt, ..p }
                     } else {
-                        Pose {
-                            board: target.board,
-                            x: p.x + (target.x - p.x) * k,
-                            y: p.y + (target.y - p.y) * k,
-                            a: p.a + wrap(target.a - p.a) * k,
+                        let close = (p.x - target.x).abs() + (p.y - target.y).abs() + (p.s - 1.0).abs() < 1e-3
+                            && wrap(target.a - p.a).abs() < 1e-3;
+                        if close {
+                            target
+                        } else {
+                            Pose {
+                                board: target.board,
+                                x: p.x + (target.x - p.x) * k,
+                                y: p.y + (target.y - p.y) * k,
+                                a: p.a + wrap(target.a - p.a) * k,
+                                s: p.s + (1.0 - p.s) * k,
+                                wait: 0.0,
+                            }
                         }
                     }
+                }
+                None if self.motion && Some(i) != dragging => {
+                    Pose { board: true, x: 0.0, y: 0.0, a: target.a - 0.6, s: 0.35, wait: i as f32 * 0.06 }
                 }
                 _ => target,
             };
@@ -1082,10 +1167,23 @@ impl App {
         }
     }
 
+    /// The two words leaf `d` must link, for the writer: the words on the
+    /// cards either side of it that face it.
+    fn keywords(&self, sc: &Scene, d: u8) -> Option<String> {
+        if self.shared.phase() != Phase::Writing || sc.writer.is_none() || sc.cards.len() < NSLOTS {
+            return None;
+        }
+        let word = |s: usize| {
+            let side = (d as i32 - sc.cards[s].rot as i32).rem_euclid(4) as usize;
+            sc.words[s][side]
+        };
+        Some(format!("{} & {}", word(d as usize), word((d as usize + 1) % NSLOTS)))
+    }
+
     pub fn render(&mut self) {
         self.cmds.clear();
         self.strs.clear();
-        self.cmds.extend_from_slice(&[C_CLEAR, f32::from_bits(0x1f3b2dff)]);
+        self.cmds.extend_from_slice(&[C_CLEAR, f32::from_bits(BG)]);
         let sc = self.scene();
         let phase = self.shared.phase();
         let l = self.layout();
@@ -1093,25 +1191,33 @@ impl App {
 
         if let Some((x, y, w, h, _)) = l.tray {
             self.xform(M::ID);
-            self.rrect(x, y, w, h, 14.0, 0x264536ff, 0x35604aff, 1.5);
+            self.rrect(x, y, w, h, 18.0, TRAY, TRAY_EDGE, 1.5);
         }
 
-        // Board and leaves.
+        // The clover: four heart-shaped leaves (one clue each) round a centre.
         let board = self.board_m();
-        self.xform(board);
-        let b = BOARD_HALF;
-        self.rrect(-b, -b, 2.0 * b, 2.0 * b, 60.0, 0x3f8f4fff, 0x2c6b39ff, 4.0);
+        let glow = if self.motion { self.glow * (0.6 + 0.4 * (self.now as f32 / 180.0).sin()) } else { 0.0 };
         let mid = Self::leaf_mid();
-        let leaf_h = LEAF_OUT - LEAF_IN;
         for d in 0..4u8 {
             self.xform(self.leaf_m_at(d, self.angle));
-            let fill = if self.editing == Some(d) { 0x9be3a6ff } else { 0x5cb36aff };
-            self.rrect(-LEAF_HALF_W, -LEAF_OUT, 2.0 * LEAF_HALF_W, leaf_h, leaf_h / 2.0, fill, 0x2c6b39ff, 3.0);
+            let fill = if self.editing == Some(d) { LEAF_ACTIVE } else { mix(LEAF, LEAF_GLOW, glow) };
+            self.cmds.extend_from_slice(&[C_LEAF, 290.0, 430.0, f32::from_bits(fill), f32::from_bits(LEAF_EDGE), 4.0]);
+        }
+        self.xform(board);
+        self.circle(0.0, 0.0, BOARD_HALF, CENTRE, CENTRE_EDGE, 4.0);
+        for d in 0..4u8 {
+            self.xform(self.leaf_m_at(d, self.angle));
             let clue = sc.clues[d as usize].clone();
-            if !clue.is_empty() {
-                self.text(0.0, mid, 34.0, 0x10301aff, true, &clue, 2.0 * LEAF_HALF_W - 40.0);
-            } else if sc.writer.is_some() && phase == Phase::Writing {
-                self.text(0.0, mid, 24.0, 0xffffffb0, false, "tap to write a clue", 2.0 * LEAF_HALF_W - 40.0);
+            let keys = self.keywords(&sc, d);
+            let maxw = 2.0 * LEAF_HALF_W - 30.0;
+            match (clue.is_empty(), keys) {
+                (false, Some(k)) => {
+                    self.text(0.0, mid - 18.0, 48.0, CLUE_INK, F_SERIF, &clue, maxw);
+                    self.text(0.0, mid + 30.0, 30.0, KEYWORD_INK, F_SANS_BOLD, &k, maxw);
+                }
+                (false, None) => self.text(0.0, mid, 54.0, CLUE_INK, F_SERIF, &clue, maxw),
+                (true, Some(k)) => self.text(0.0, mid, 38.0, KEYWORD_INK, F_SANS_BOLD, &k, maxw),
+                (true, None) => {}
             }
         }
         self.xform(board);
@@ -1120,9 +1226,9 @@ impl App {
             let solved = sc.locked & (1 << s) != 0 && phase != Phase::Writing;
             let claimed = sc.claim[s].is_some() && matches!(phase, Phase::Guessing(_));
             let (fill, stroke) = match (solved, claimed) {
-                (true, _) => (0x6fe08aaa, 0xffffff60),
-                (false, true) => (0x00000030, 0xffe08aaa),
-                _ => (0x00000022, 0xffffff40),
+                (true, _) => (0x9be7a8aa, 0xffffff60),
+                (false, true) => (0x0000002e, GOLD),
+                _ => (0x0000002e, 0xffffff38),
             };
             self.rrect(x - HALF - 6.0, y - HALF - 6.0, CARD + 12.0, CARD + 12.0, 18.0, fill, stroke, 3.0);
         }
@@ -1142,23 +1248,23 @@ impl App {
             let solved = matches!(c.loc, Loc::Slot(s) if sc.locked & (1 << s) != 0) && phase != Phase::Writing;
             let (stroke, lw) = match c.held {
                 0 if solved => (0x2fa84fff, 6.0),
-                0 => (0xb9a77fff, 2.0),
+                0 => (PAPER_EDGE, 2.0),
                 h if Some(h) == self.seat => (0xffffffff, 4.0),
                 h => (self.color_of(h), 7.0),
             };
-            self.rrect(-HALF, -HALF, CARD, CARD, 14.0, 0xfbf3dcff, stroke, lw);
-            self.circle(0.0, 0.0, 14.0, 0xefe2bdff, 0, 0.0);
+            self.rrect(-HALF, -HALF, CARD, CARD, 14.0, PAPER, stroke, lw);
+            self.circle(0.0, 0.0, 9.0, 0xeee4c8ff, 0, 0.0);
             for s in 0..4u8 {
                 self.xform(f.then(M::r(turn(s))));
-                self.text(0.0, -50.0, WORD_SIZE, 0x2b2112ff, true, sc.words[i][s as usize], 108.0);
+                self.text(0.0, -50.0, WORD_SIZE, INK, F_SANS_BOLD, sc.words[i][s as usize], 112.0);
             }
         }
 
         // Hub: tap to turn the board.
         self.xform(board);
-        self.circle(0.0, 0.0, HUB_R, 0x2c6b39ff, 0xeaf5ecff, 3.0);
+        self.circle(0.0, 0.0, HUB_R, HUB, PAPER, 3.0);
         self.xform(M::t(l.bc.0, l.bc.1).then(M::s(l.k)));
-        self.text(0.0, 1.0, 32.0, 0xffffffff, true, "⟳", 44.0);
+        self.text(0.0, 1.0, 32.0, PAPER, F_SANS_BOLD, "⟳", 44.0);
 
         // Other guessers' pointers.
         if matches!(phase, Phase::Guessing(_)) {
@@ -1263,6 +1369,22 @@ impl App {
             s.round_score(s.round.n),
             s.game_score(),
         )
+    }
+
+    /// Text/background colour pairs actually used, for contrast checks.
+    pub fn palette_json() -> String {
+        let pairs = [
+            ("card words", INK, PAPER),
+            ("clue on leaf", CLUE_INK, LEAF),
+            ("clue on glowing leaf", CLUE_INK, LEAF_GLOW),
+            ("clue on active leaf", CLUE_INK, LEAF_ACTIVE),
+            ("keywords on leaf", KEYWORD_INK, LEAF),
+            ("keywords on active leaf", KEYWORD_INK, LEAF_ACTIVE),
+            ("hub glyph", PAPER, HUB),
+        ];
+        let rows: Vec<String> =
+            pairs.iter().map(|(n, f, b)| format!("[\"{n}\",\"#{:06x}\",\"#{:06x}\"]", f >> 8, b >> 8)).collect();
+        format!("[{}]", rows.join(","))
     }
 
     // ---- harness probes ------------------------------------------------------

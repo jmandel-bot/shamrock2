@@ -15,6 +15,9 @@ const { instance } = await WebAssembly.instantiateStreaming(fetch('core.wasm'), 
 const X = instance.exports;
 const seed = crypto.getRandomValues(new Uint32Array(2));
 const device = X.init(seed[0], seed[1]) >>> 0; // u32 comes back as i32
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+X.set_motion(reduceMotion.matches ? 0 : 1);
+reduceMotion.addEventListener?.('change', (e) => X.set_motion(e.matches ? 0 : 1));
 
 const bytes = (ptr, len) => new Uint8Array(X.memory.buffer, ptr, len);
 const writeInbox = (u8) => { bytes(X.inbox_reserve(u8.length), u8.length).set(u8); return u8.length; };
@@ -22,6 +25,15 @@ const writeText = (s) => writeInbox(enc.encode(s));
 const scratchJson = (len) => JSON.parse(dec.decode(bytes(X.scratch_ptr(), len)));
 
 // ---- canvas: replay the command buffer ------------------------------------
+
+const SANS = 'Figtree, system-ui, -apple-system, sans-serif';
+const FONTS = [
+  (px) => `400 ${px}px ${SANS}`,
+  (px) => `700 ${px}px ${SANS}`,
+  (px) => `600 ${px}px Fraunces, Georgia, serif`,
+];
+document.fonts?.load(`700 20px Figtree`).catch(() => {});
+document.fonts?.load(`600 20px Fraunces`).catch(() => {});
 
 const colors = new Map();
 const css = (c) => {
@@ -51,11 +63,23 @@ function paint(n) {
         if (u[i + 5] & 255) { ctx.strokeStyle = css(u[i + 5]); ctx.lineWidth = f[i + 6]; ctx.stroke(); }
         i += 7; break;
       }
-      case 4: { // text x y size color bold off len maxw
-        ctx.font = `${f[i + 5] ? 700 : 400} ${f[i + 3]}px system-ui, -apple-system, sans-serif`;
+      case 4: { // text x y size color face off len maxw
+        ctx.font = FONTS[f[i + 5]](f[i + 3]);
         ctx.fillStyle = css(u[i + 4]);
         ctx.fillText(dec.decode(bytes(strs + f[i + 6], f[i + 7])), f[i + 1], f[i + 2], f[i + 8]);
         i += 9; break;
+      }
+      case 6: { // clover leaf w h fill stroke lw: tip at origin, lobes toward -y
+        const w = f[i + 1], h = f[i + 2];
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.bezierCurveTo(-0.15 * w, -0.25 * h, -1.0 * w, -0.45 * h, -0.85 * w, -0.78 * h);
+        ctx.bezierCurveTo(-0.72 * w, -1.02 * h, -0.2 * w, -1.03 * h, 0, -0.93 * h);
+        ctx.bezierCurveTo(0.2 * w, -1.03 * h, 0.72 * w, -1.02 * h, 0.85 * w, -0.78 * h);
+        ctx.bezierCurveTo(1.0 * w, -0.45 * h, 0.15 * w, -0.25 * h, 0, 0);
+        ctx.fillStyle = css(u[i + 3]); ctx.fill();
+        ctx.strokeStyle = css(u[i + 4]); ctx.lineWidth = f[i + 5]; ctx.stroke();
+        i += 6; break;
       }
       case 5: ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = css(u[i + 1]); ctx.fillRect(0, 0, canvas.width, canvas.height); i += 2; break;
       default: throw new Error(`bad draw command ${f[i]} at ${i}`);
@@ -162,7 +186,7 @@ new ResizeObserver(() => {
 
 // ---- joining, watching, menu ------------------------------------------------------
 
-const nameKey = `cloverleaf:${roomId}:name`;
+const nameKey = `shamrock:${roomId}:name`;
 function joinAs(name) {
   name = name.trim();
   if (!name) return;
@@ -225,7 +249,7 @@ $('redealBtn').onclick = () => { closeSheets(); act(6); };
 $('newGameBtn').onclick = () => { closeSheets(); act(7); };
 
 // Card size is per device (display only): bigger cards just overlap more.
-const zoomKey = 'cloverleaf:zoom';
+const zoomKey = 'shamrock:zoom';
 let zoom = X.set_zoom(+(recall(zoomKey) ?? (Math.min(innerWidth, innerHeight) < 520 ? 1.3 : 1)));
 const setZoom = (z) => { stats.presses++; zoom = X.set_zoom(z); remember(zoomKey, zoom); };
 $('sizeDown').onclick = () => setZoom(zoom - 0.15);
@@ -282,7 +306,10 @@ function renderUi(force = false) {
         hint = 'Submitted. You can still change clues or decoys until guessing starts.';
         go = ['Submitted ✓', true, () => act(2), 'on'];
       }
-      if (s.readyCount > 0 && s.readyCount < s.progress.length) alt = [`Proceed with ${s.readyCount} of ${s.progress.length}`, () => act(5)];
+      if (s.readyCount > 0 && s.readyCount < s.progress.length) {
+        const label = innerWidth < 480 ? `Proceed · ${s.readyCount}/${s.progress.length}` : `Proceed with ${s.readyCount} of ${s.progress.length}`;
+        alt = [label, () => act(5)];
+      }
       break;
     case 'guessing': {
       const what = `<b>${esc(s.writerName)}</b>'s clover · ${s.k + 1} of ${s.n} · ${plural(s.writerDecoys, 'decoy')}`;
@@ -342,7 +369,7 @@ async function connect() {
   const mode = params.get('net');
   if (mode === 'local') {
     // Same-browser tabs; handy offline. Same shape as the WebRTC path.
-    const bc = new BroadcastChannel(`cloverleaf:${roomId}`);
+    const bc = new BroadcastChannel(`shamrock:${roomId}`);
     const hello = (to) => bc.postMessage({ hello: device, to, from: device });
     bc.onmessage = ({ data }) => {
       if (data.hello) {
@@ -356,7 +383,7 @@ async function connect() {
   }
   const signal = params.get('signal');
   const lib = signal ? await import('./vendor/trystero-ws.js') : await import('./vendor/trystero-nostr.js');
-  const config = { appId: 'cloverleaf-rust-wasm-demo' };
+  const config = { appId: 'shamrock-p2p' };
   if (signal) config.relayConfig = { urls: [signal] };
   const room = lib.joinRoom(config, roomId);
   const action = room.makeAction('m');
@@ -409,4 +436,5 @@ window.__cl = {
   zoom: () => zoom,
   settle: () => X.settle(),
   answerRot: (s) => X.answer_rot(s),
+  palette: () => scratchJson(X.palette()),
 };
