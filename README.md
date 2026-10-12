@@ -10,6 +10,8 @@ This is an experiment in the workflow of "delete abstraction layers, write a
 validation harness, let the agent hill-climb it". See [DECISIONS.md](DECISIONS.md)
 for the up-front decisions.
 
+**Play:** https://jmandel-bot.github.io/shamrock2/#pick-a-room-name (share the link; same room = same table)
+
 ## Layout
 
 ```
