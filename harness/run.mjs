@@ -379,11 +379,15 @@ try {
   await G.go();
   await until(all, (d) => d.puzzles[0].attempts === 1);
   const c1 = cur(await B.digest());
-  gate('check 1: right cards lock, the wrong one goes back to the tray', c1.mask === 0b1110 && c1.cards[4][0] === 'table', `mask ${c1.mask}`);
+  gate('a miss boots the wrong card to the tray; right ones stay', c1.mask === 0b1110 && c1.cards[4][0] === 'table', `mask ${c1.mask}`);
+  gate('a miss comes with no commentary', !(await H.page.$eval('#toast', (t) => t.classList.contains('show'))) && (await H.page.textContent('#go')) === 'Guess');
+  const shook = await H.ev(() => new Promise((r) => requestAnimationFrame(() => r(window.__cl.X.probe_shaking ? window.__cl.X.probe_shaking() : -1))));
+  gate('booted cards shake on every screen (simple motion for a miss)', shook > 0, `shaking ${shook}`);
   await solve(H);
   await H.waitGoEnabled();
   await H.go();
-  await until(all, (d) => d.puzzles[0].attempts === 2);
+  await until(all, (d) => d.puzzles[0].attempts === 2 && d.puzzles[0].mask === 15);
+  gate('guessing keeps going until all four are right (no limit, no score)', (await A.digest()).gameScore === 0);
   await G.page.screenshot({ path: `${OUT}3-clover-done.png` });
 
   for (let k = 1; k < 5; k++) {
@@ -397,11 +401,56 @@ try {
     await g.go();
     await until(all, new Function('d', `return d.puzzles[${k}].attempts===1`));
   }
-  await A.go(); // See scores
+  await A.go(); // Finish round
   await until(all, (d) => d.phase === 'end');
   const r1 = await A.digest();
-  gate('round score agrees everywhere (4 + 4×6 = 28)', r1.roundScore === 28 && (await same(all)), `score ${r1.roundScore}`);
+  gate('every clover solved, same state everywhere', r1.puzzles.every((p) => p.mask === 15) && (await same(all)));
   await A.page.screenshot({ path: `${OUT}5-end.png` });
+
+  // ---- share boards: pick clovers, open the link at a fresh table ------------------------
+  console.log('\n# share boards');
+  await A.page.click('#side'); // Share boards
+  await A.page.waitForSelector('#shareSheet.open');
+  await A.page.click('#shareList .item:nth-child(2) input'); // leave one out
+  const link = (await A.page.textContent('#shareText')).trim();
+  await A.page.screenshot({ path: `${OUT}7-share.png` });
+  await A.page.click('#shareClose');
+  metric('share_link_chars', link.length);
+  const sharedUrl = link.replace(/^https?:\/\/[^/]+\//, `http://localhost:${PORT}/`).replace('#', `&signal=ws://localhost:${RELAY}#`);
+  const friends = [];
+  for (const nm of ['Fay', 'Gus']) {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+    const page = await ctx.newPage();
+    page.on('pageerror', (e) => errors.push(`${nm}: ${e.message}`));
+    await page.goto(sharedUrl);
+    await page.waitForSelector('#joinSheet.open');
+    await page.fill('#nameInput', nm);
+    await page.click('#joinBtn');
+    friends.push(page);
+  }
+  await friends[0].waitForFunction(() => window.__cl.ui().players.length === 2, null, { timeout: 30000 });
+  const startLabel2 = await friends[0].textContent('#go');
+  await friends[0].click('#go');
+  await friends[1].waitForFunction(() => window.__cl.digest().phase === 'guessing:0', null, { timeout: 10000 });
+  const fd = await friends[1].evaluate(() => window.__cl.digest());
+  const srcClues = r1.subs.filter((x) => r1.puzzles.some((p, i) => i !== 1 && p.writer === x[0])).map((x) => x.slice(3).join('/'));
+  const gotClues = fd.subs.map((x) => x.slice(3).join('/'));
+  gate('a share link opens a fresh table straight into the chosen clovers', startLabel2 === 'Start guessing' && fd.puzzles.length === 4
+    && srcClues.every((c) => gotClues.includes(c)), `${fd.puzzles.length} boards`);
+  // Placing a shared board as its writer laid it out solves it first time.
+  const Fr = { page: friends[1], ev: (fn, a) => friends[1].evaluate(fn, a), digest: () => friends[1].evaluate(() => window.__cl.digest()),
+    card: (i) => friends[1].evaluate((i) => window.__cl.card(i), i), slot: (s) => friends[1].evaluate((s) => window.__cl.slot(s), s),
+    settle: () => friends[1].evaluate(() => window.__cl.settle()),
+    origin: () => friends[1].evaluate(() => { const r = document.getElementById('c').getBoundingClientRect(); return [r.left, r.top]; }) };
+  Fr.drag = async (from, to) => { const o = await Fr.origin(), m = friends[1].mouse; await m.move(o[0] + from[0], o[1] + from[1]); await m.down();
+    for (let k = 1; k <= 12; k++) await m.move(o[0] + from[0] + (to[0] - from[0]) * k / 12, o[1] + from[1] + (to[1] - from[1]) * k / 12); await m.up(); };
+  Fr.tap = async (at) => { const o = await Fr.origin(); await friends[1].mouse.click(o[0] + at[0], o[1] + at[1]); };
+  await solve(Fr);
+  await friends[1].waitForFunction(() => !document.getElementById('go').disabled);
+  await friends[1].click('#go');
+  await friends[0].waitForFunction(() => window.__cl.digest().puzzles[0].attempts === 1, null, { timeout: 8000 });
+  gate("a shared board checks against its writer's answer", (await friends[0].evaluate(() => window.__cl.digest())).puzzles[0].mask === 15);
+  for (const p of friends) await p.context().close();
 
   // ---- next round keeps the table and the score -----------------------------------------
   console.log('\n# rounds and games');
@@ -410,7 +459,7 @@ try {
   await until(all, (d) => d.phase === 'writing' && d.round === 2);
   gate('next round button names the players', nextLabel === 'Next round with 5 players', nextLabel);
   const r2 = await C.digest();
-  gate('next round: same players, score carries over', r2.seats.length === 5 && r2.gameScore === 28 && r2.roundScore === 0);
+  gate('next round: same players', r2.seats.length === 5);
 
   await D.ctx.close();
   // (Dee has left mid-writing; others would now see "Waiting for Dee (away)".)
@@ -420,9 +469,9 @@ try {
   await A.page.screenshot({ path: `${OUT}6-menu.png` });
   await A.page.click('#newGameBtn');
   const live = [A, B, C, E, A2, W];
-  await until(live, (d) => d.phase === 'lobby' && d.gameScore === 0);
+  await until(live, (d) => d.phase === 'lobby' && d.round === 0);
   const g2 = await B.digest();
-  gate("New game resets scores and keeps who's here", g2.seats.length === 4 && !g2.seats.some((s) => s[1] === 'Dee'), g2.seats.map((s) => s[1]).join(','));
+  gate("New game starts over with whoever is here", g2.seats.length === 4 && !g2.seats.some((s) => s[1] === 'Dee'), g2.seats.map((s) => s[1]).join(','));
 
   t0 = performance.now();
   const F = await open('Late');

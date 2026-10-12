@@ -117,8 +117,9 @@ pub struct Check {
 }
 
 impl Check {
+    /// Solved: guesses keep going until every spot is right (no scoring).
     pub fn done(&self) -> bool {
-        self.attempts >= 2 || self.mask == 0b1111
+        self.mask == 0b1111
     }
     pub fn score(&self) -> u8 {
         match (self.attempts, self.mask) {
@@ -189,18 +190,21 @@ pub struct Custom {
     /// Cards 0..4 are the answer (card s in spot s, words clockwise from the
     /// top as they sit there); the rest are decoys.
     pub cards: Vec<[&'static str; 4]>,
+    writer: u32,
 }
 
-static CUSTOM: std::sync::OnceLock<Custom> = std::sync::OnceLock::new();
+static CUSTOMS: std::sync::Mutex<Vec<&'static Custom>> = std::sync::Mutex::new(Vec::new());
 
 impl Custom {
-    /// The imported clover's author gets a seat id no typed name can produce.
+    /// Each imported clover's author gets a seat id no typed name can
+    /// produce (and two imports by the same name stay distinct).
     pub fn writer(&self) -> u32 {
-        seat_id(&format!("\u{1}{}", self.name))
+        self.writer
     }
 
     /// Format: name, then four clues, then one card per line as `a|b|c|d`
-    /// (at least four cards). Returns false (and keeps nothing) if malformed.
+    /// (at least four cards). Several clovers may be loaded; they're guessed
+    /// in load order. Returns false (and keeps nothing) if malformed.
     pub fn load(text: &str) -> bool {
         let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
         let Some(name) = lines.next() else { return false };
@@ -215,13 +219,19 @@ impl Custom {
         if clues.len() < NSLOTS || cards.len() < NSLOTS {
             return false;
         }
-        CUSTOM
-            .set(Custom { name: clamp_text(name, 40), clues: core::array::from_fn(|i| clues[i].clone()), cards })
-            .is_ok()
+        let mut all = CUSTOMS.lock().unwrap();
+        let name = clamp_text(name, 40);
+        let writer = seat_id(&format!("\u{1}{}#{}", name, all.len()));
+        all.push(Box::leak(Box::new(Custom { name, clues: core::array::from_fn(|i| clues[i].clone()), cards, writer })));
+        true
     }
 
-    pub fn get() -> Option<&'static Custom> {
-        CUSTOM.get()
+    pub fn all() -> Vec<&'static Custom> {
+        CUSTOMS.lock().unwrap().clone()
+    }
+
+    pub fn by_writer(w: u32) -> Option<&'static Custom> {
+        Self::all().into_iter().find(|c| c.writer == w)
     }
 }
 
@@ -394,7 +404,7 @@ impl Shared {
         for k in (1..MAX_CARDS).rev() {
             home.swap(k, rng.below(k + 1));
         }
-        if let Some(c) = Custom::get().filter(|c| self.round.custom == 1 && c.writer() == writer) {
+        if let Some(c) = Custom::by_writer(writer).filter(|_| self.round.custom == 1) {
             // The imported answer is exactly as it was laid out: no rotation.
             return Deal {
                 words: core::array::from_fn(|i| c.cards.get(i).copied().unwrap_or(CARDS[cards[i]])),
@@ -409,6 +419,22 @@ impl Shared {
             home,
             home_rot: core::array::from_fn(|_| rng.below(4) as u8),
         }
+    }
+
+    /// The clover `w` as it sits solved: clues, then the answer cards for
+    /// spots 0..4 with words clockwise from the top as they sit, then decoys.
+    /// This is exactly `Custom::load`'s format, so boards can be shared.
+    pub fn export_board(&self, w: u32, name: &str) -> Option<String> {
+        let sub = self.effective(w)?;
+        let d = self.deal(w);
+        let mut lines = vec![name.to_string()];
+        lines.extend(sub.clues.iter().cloned());
+        for (i, words) in d.words.iter().enumerate().take(self.ncards(w)) {
+            let r = if i < NSLOTS { d.sol_rot[i] as usize } else { 0 };
+            let sat: Vec<&str> = (0..4).map(|dir| words[(dir + 4 - r) % 4]).collect();
+            lines.push(sat.join("|"));
+        }
+        Some(lines.join("\n"))
     }
 
     /// A writer's latest clues (while writing).
@@ -845,7 +871,7 @@ impl<'a> Reader<'a> {
             T_CHECK => {
                 let w = self.u32()?;
                 let stamp = self.stamp()?;
-                let attempts = self.lt(3)?;
+                let attempts = self.u8()?;
                 let mask = self.lt(16)?;
                 Body::Check(w, Check { attempts, mask, stamp })
             }

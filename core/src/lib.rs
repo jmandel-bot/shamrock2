@@ -169,6 +169,12 @@ pub extern "C" fn palette() -> u32 {
     to_scratch(App::palette_json())
 }
 
+/// Shareable text for this round's clovers selected by `mask` → scratch.
+#[no_mangle]
+pub extern "C" fn export_boards(mask: u32) -> u32 {
+    to_scratch(g().app.export_boards(mask))
+}
+
 /// An imported clover (text in the inbox; see `model::Custom::load`).
 /// Returns 1 if accepted.
 #[no_mangle]
@@ -258,6 +264,12 @@ pub extern "C" fn probe_petal(d: u32) {
 #[no_mangle]
 pub extern "C" fn probe_hub() {
     probe2(g().app.hub_screen());
+}
+
+/// How many cards are shaking (booted by a guess) right now.
+#[no_mangle]
+pub extern "C" fn probe_shaking() -> u32 {
+    g().app.shaking() as u32
 }
 
 #[no_mangle]

@@ -239,6 +239,11 @@ pub struct App {
     /// Soft glow on the leaves after a clover is completed (1 → 0).
     glow: f32,
     last_done: Option<(u32, bool)>,
+    /// (writer, guesses) last seen, to spot a guess made anywhere.
+    last_guess: Option<(u32, u8)>,
+    /// Cards booted by the last guess: when their shake started.
+    shakes: BTreeMap<(u32, u8), f64>,
+    solved_at: f64,
     pub now: f64,
     pub outbox: Vec<u8>,
     pub cmds: Vec<f32>,
@@ -277,6 +282,9 @@ impl App {
             custom_room: false,
             glow: 0.0,
             last_done: None,
+            last_guess: None,
+            shakes: BTreeMap::new(),
+            solved_at: f64::NEG_INFINITY,
             now: 0.0,
             outbox: Vec::new(),
             cmds: Vec::new(),
@@ -947,8 +955,9 @@ impl App {
             return self.status("Join the table first.");
         }
         // A room with an imported clover opens by guessing it.
-        if let Some(c) = Custom::get().filter(|_| self.custom_room && self.shared.round.n == 0) {
-            return self.start_custom(c, players);
+        let customs = Custom::all();
+        if self.custom_room && self.shared.round.n == 0 && !customs.is_empty() {
+            return self.start_custom(customs, players);
         }
         let prev = self.shared.round;
         // Draw down the deck: this round deals after the cards the last one used.
@@ -961,24 +970,40 @@ impl App {
         self.send(&[Msg::Op(op)]);
     }
 
-    /// Round 1 of a room with an imported clover: straight to guessing it.
-    fn start_custom(&mut self, c: &'static Custom, mut players: Vec<u32>) {
-        let w = c.writer();
-        players.insert(0, w);
+    /// Round 1 of a room with imported clovers: straight to guessing them.
+    fn start_custom(&mut self, customs: Vec<&'static Custom>, players: Vec<u32>) {
+        let mut seats: Vec<u32> = customs.iter().map(|c| c.writer()).collect();
+        seats.extend(players);
         let round =
-            Round { seed: self.rng.next() as u32, n: 1, stamp: self.stamp(), custom: 1, ..Round::default() }.with_players(&players);
+            Round { seed: self.rng.next() as u32, n: 1, stamp: self.stamp(), custom: 1, ..Round::default() }.with_players(&seats);
         let op = Op { game: self.shared.game, round, body: Body::None };
         self.shared.apply(&op);
         self.new_round_local();
         self.send(&[Msg::Op(op)]);
-        // Its author isn't at the table: an inactive seat just carries the name.
-        let stamp = self.stamp();
-        self.commit(Body::Seat(w, Seat { name: c.name.clone(), active: false, stamp }));
-        let stamp = self.stamp();
-        let sub = Sub { clues: c.clues.clone(), decoys: (c.cards.len() - NSLOTS) as u8, ready: true, stamp };
-        self.commit(Body::Sub(w, sub));
+        for c in customs {
+            let w = c.writer();
+            // Their authors aren't at the table: an inactive seat carries the name.
+            let stamp = self.stamp();
+            self.commit(Body::Seat(w, Seat { name: c.name.clone(), active: false, stamp }));
+            let stamp = self.stamp();
+            let sub = Sub { clues: c.clues.clone(), decoys: (c.cards.len() - NSLOTS) as u8, ready: true, stamp };
+            self.commit(Body::Sub(w, sub));
+        }
         let s = self.stamp();
         self.commit(Body::Start(s));
+    }
+
+    /// This round's clovers, each as a shareable board (see `Custom::load`),
+    /// for those whose bit is set in `mask`, separated by blank lines.
+    pub fn export_boards(&self, mask: u32) -> String {
+        let s = &self.shared;
+        s.puzzles()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| mask & (1 << i) != 0)
+            .filter_map(|(_, &w)| s.export_board(w, &self.name_of(w)))
+            .collect::<Vec<_>>()
+            .join("\n\n")
     }
 
     /// Fresh scores and seats: everyone here now is dealt in.
@@ -1008,6 +1033,8 @@ impl App {
         }
     }
 
+    /// Guess: wrong cards are booted back to the tray, right ones stay and
+    /// lock. No scoring and no limit: keep guessing until all four are right.
     fn check(&mut self) {
         if !self.can_check() {
             return;
@@ -1015,7 +1042,8 @@ impl App {
         let sc = self.scene();
         let w = sc.writer.unwrap();
         let d = self.shared.deal(w);
-        let mut mask = 0u8;
+        let prev = self.shared.check(w);
+        let mut mask = prev.mask;
         for s in 0..NSLOTS {
             let k = sc.claim[s].unwrap();
             // Orientation is judged relative to the board.
@@ -1023,32 +1051,18 @@ impl App {
                 mask |= 1 << s;
             }
         }
-        let prev = self.shared.check(w);
         let stamp = self.stamp();
-        let check = Check { attempts: prev.attempts + 1, mask, stamp };
-        if !check.done() {
-            // Wrong cards go back to the tray for the second try.
-            let n = sc.cards.len();
-            for s in 0..NSLOTS {
-                if mask & (1 << s) == 0 {
-                    let k = sc.claim[s].unwrap();
-                    let h = self.shared.home_card(&d, n, k);
-                    self.set_card(w, k, h.loc, h.rot, 0);
-                }
+        let check = Check { attempts: prev.attempts.saturating_add(1), mask, stamp };
+        let n = sc.cards.len();
+        for s in 0..NSLOTS {
+            if mask & (1 << s) == 0 {
+                let k = sc.claim[s].unwrap();
+                let h = self.shared.home_card(&d, n, k);
+                self.set_card(w, k, h.loc, h.rot, 0);
             }
         }
         self.commit(Body::Check(w, check));
-        if check.done() {
-            let (n, s) = (self.shared.round.n, self.stamp());
-            self.commit(Body::Ledger(n, w, check.score(), s));
-        }
         self.flush_cards();
-        let msg = match (check.done(), check.score()) {
-            (true, PERFECT_SCORE) => "Perfect clover! +6".to_string(),
-            (true, s) => format!("{s} of 4 right: +{s}"),
-            (false, s) => format!("{s} of 4 right. Wrong cards went back to the tray; one more try."),
-        };
-        self.status(&msg);
     }
 
     // ---- frame --------------------------------------------------------------
@@ -1078,8 +1092,26 @@ impl App {
         if let (Some((w, true)), Some((pw, false))) = (done_now, self.last_done) {
             if w == pw {
                 self.glow = 1.0;
+                self.solved_at = now;
             }
         }
+        // A guess was made (here or by anyone): cards that just left the
+        // board for the tray were booted, so give them a shake on the way.
+        if let Phase::Guessing(k) = phase {
+            let w = self.shared.puzzles()[k];
+            let g = self.shared.check(w).attempts;
+            if self.last_guess.is_some_and(|(pw, pg)| pw == w && g > pg) {
+                let sc = self.scene();
+                for (i, c) in sc.cards.iter().enumerate() {
+                    let was_on_board = self.poses.get(&(w, i as u8)).is_some_and(|p| p.board);
+                    if matches!(c.loc, Loc::Table { .. }) && was_on_board {
+                        self.shakes.insert((w, i as u8), now);
+                    }
+                }
+            }
+            self.last_guess = Some((w, g));
+        }
+        self.shakes.retain(|_, t| now - *t < 600.0);
         self.last_done = done_now;
         self.glow = (self.glow - self.dt / 1.8).max(0.0);
         if phase != self.last_phase {
@@ -1273,7 +1305,22 @@ impl App {
         for i in self.draw_order(&sc.cards) {
             let c = sc.cards[i];
             let pose = self.poses.get(&(w, i as u8)).copied().unwrap_or_else(|| Self::target_pose(&c));
-            let f = self.pose_m(&pose);
+            let mut f = self.pose_m(&pose);
+            if self.motion {
+                // Booted: a quick, decaying shake as it heads back.
+                if let Some(t0) = self.shakes.get(&(w, i as u8)) {
+                    let t = ((self.now - t0) / 1000.0) as f32;
+                    let dx = (t * 48.0).sin() * 9.0 * (1.0 - t / 0.6).max(0.0);
+                    f = M::t(dx, 0.0).then(f);
+                }
+                // Solved: one gentle pulse.
+                let t = ((self.now - self.solved_at) / 1000.0) as f32;
+                if (0.0..0.6).contains(&t) && matches!(c.loc, Loc::Slot(_)) {
+                    let k = 1.0 + 0.07 * (t / 0.6 * PI).sin();
+                    let (cx, cy) = f.apply(0.0, 0.0);
+                    f = M::t(cx, cy).then(M::s(k)).then(M::t(-cx, -cy)).then(f);
+                }
+            }
             if c.held != 0 || Some(i) == dragging {
                 self.xform(M::t(5.0, 8.0).then(f));
                 self.rrect(-HALF, -HALF, CARD, CARD, 18.0, 0x00000055, 0, 0.0);
@@ -1342,12 +1389,11 @@ impl App {
                     _ => "",
                 };
                 format!(
-                    "{{\"id\":{p},\"name\":{},\"color\":\"#{:06x}\",\"you\":{},\"away\":{},\"status\":\"{status}\",\"score\":{}}}",
+                    "{{\"id\":{p},\"name\":{},\"color\":\"#{:06x}\",\"you\":{},\"away\":{},\"status\":\"{status}\"}}",
                     json_str(&self.name_of(p)),
                     self.color_of(p) >> 8,
                     self.seat == Some(p),
                     !present.contains(&p),
-                    s.seat_score(p),
                 )
             })
             .collect();
@@ -1371,6 +1417,11 @@ impl App {
                 )
             })
             .collect();
+        let boards: Vec<String> = s
+            .puzzles()
+            .iter()
+            .map(|&w| format!("{{\"name\":{},\"solved\":{}}}", json_str(&self.name_of(w)), s.check(w).done()))
+            .collect();
         let deal_names: Vec<String> = self.dealable().iter().map(|p| json_str(&self.name_of(*p))).collect();
         let sub = self.my_sub();
         let check = writer.map(|w| s.check(w)).unwrap_or_default();
@@ -1380,7 +1431,7 @@ impl App {
             "{{\"phase\":\"{pname}\",\"seat\":{},\"seated\":{seated},\"name\":{},\"players\":[{}],\"watchers\":{},\
              \"inRound\":{in_round},\"ready\":{},\"canReady\":{},\"filled\":{},\"decoys\":{},\"progress\":[{}],\"readyCount\":{},\"dealable\":[{}],\
              \"k\":{k},\"n\":{n},\"writerName\":{},\"writerDecoys\":{},\"isWriter\":{},\"attempts\":{},\"done\":{},\
-             \"canCheck\":{},\"claimed\":{},\"round\":{},\"roundScore\":{},\"gameScore\":{}}}",
+             \"canCheck\":{},\"claimed\":{},\"round\":{},\"boards\":[{}]}}",
             self.seat.map_or("null".into(), |x| x.to_string()),
             self.seat.map_or("null".into(), |x| json_str(&self.name_of(x))),
             rows.join(","),
@@ -1400,8 +1451,7 @@ impl App {
             self.can_check(),
             sc.claim.iter().filter(|c| c.is_some()).count(),
             s.round.n,
-            s.round_score(s.round.n),
-            s.game_score(),
+            boards.join(","),
         )
     }
 
@@ -1447,6 +1497,10 @@ impl App {
 
     pub fn hub_screen(&self) -> (f32, f32) {
         self.layout().bc
+    }
+
+    pub fn shaking(&self) -> usize {
+        self.shakes.len()
     }
 
     /// Displayed (animated) on-screen angle of card `i`.

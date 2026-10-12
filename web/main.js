@@ -190,18 +190,61 @@ new ResizeObserver(() => {
 
 const nameKey = `shamrock:${roomId}:name`;
 
-// A room can open with an imported clover: web/puzzles/<room>.json, listed
-// in web/puzzles/index.json (so ordinary rooms don't probe for a file).
-let customName = null;
+// A room can open with clovers brought in from elsewhere: a shared-boards
+// link (?b=…, made by "Share boards"), or web/puzzles/<room>.json listed in
+// web/puzzles/index.json (e.g. read off a screenshot). Everyone opening the
+// same link loads the same boards.
+const b64url = {
+  enc: (text) => btoa(String.fromCharCode(...enc.encode(text))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: (s) => dec.decode(Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))),
+};
+const customNames = [];
+const loadBoard = (text) => { if (X.load_custom(writeText(text))) customNames.push(text.split('\n')[0]); };
 try {
+  if (params.get('b')) b64url.dec(params.get('b')).split('\n\n').forEach(loadBoard);
   const listed = await fetch('puzzles/index.json').then((r) => (r.ok ? r.json() : []));
   const r = listed.includes(roomId) ? await fetch(`puzzles/${encodeURIComponent(roomId)}.json`) : null;
   if (r?.ok) {
     const p = await r.json();
-    const text = [p.name, ...p.clues, ...p.cards.map((c) => c.join('|'))].join('\n');
-    if (X.load_custom(writeText(text))) customName = p.name;
+    loadBoard([p.name, ...p.clues, ...p.cards.map((c) => c.join('|'))].join('\n'));
   }
 } catch {}
+
+// "Share boards": pick clovers from this round → a link that opens a fresh
+// table guessing them (answers included, for people who weren't here).
+function shareLink(mask) {
+  const len = X.export_boards(mask);
+  const text = dec.decode(bytes(X.scratch_ptr(), len));
+  const room = Math.random().toString(36).slice(2, 8);
+  return `${location.origin}${location.pathname}?b=${b64url.enc(text)}#${room}`;
+}
+function openShare() {
+  const s = ui();
+  const list = $('shareList');
+  list.replaceChildren(...s.boards.map((b, i) => {
+    const row = document.createElement('label');
+    row.className = 'item';
+    row.innerHTML = `<input type="checkbox" checked data-i="${i}"> <span class="grow"></span>`;
+    row.querySelector('span').textContent = `${b.name}'s clover`;
+    return row;
+  }));
+  const update = () => {
+    let mask = 0;
+    list.querySelectorAll('input:checked').forEach((c) => (mask |= 1 << +c.dataset.i));
+    $('shareText').textContent = mask ? shareLink(mask) : '';
+    $('shareCopy').disabled = !mask;
+  };
+  list.onchange = update;
+  update();
+  closeSheets();
+  $('shareSheet').classList.add('open');
+}
+$('shareCopy').onclick = async () => {
+  try { await navigator.clipboard.writeText($('shareText').textContent); toast('Link copied'); }
+  catch { getSelection().selectAllChildren($('shareText')); toast('Select the link above and copy it'); }
+};
+$('shareClose').onclick = () => closeSheets();
+$('shareMenuBtn').onclick = openShare;
 function joinAs(name) {
   name = name.trim();
   if (!name) return;
@@ -291,12 +334,12 @@ function renderUi(force = false) {
   $('roster').replaceChildren(...s.players.map((p) => {
     const chip = document.createElement('span');
     chip.className = `chip${p.you ? ' you' : ''}${p.status === 'writer' ? ' writer' : ''}${p.away ? ' away' : ''}`;
-    chip.innerHTML = `<i style="background:${p.color}"></i>${esc(p.name)} ${mark[p.status] ?? ''}${p.score ? ` <small>${p.score}</small>` : ''}`;
+    chip.innerHTML = `<i style="background:${p.color}"></i>${esc(p.name)} ${mark[p.status] ?? ''}`;
     chip.title = p.away ? `${p.name} is away` : p.name;
     return chip;
   }), ...(s.watchers ? [Object.assign(document.createElement('span'), { className: 'chip', textContent: `👀 ${s.watchers}` })] : []));
 
-  let hint = '', go = null, alt = null;
+  let hint = '', go = null, alt = null, side = null;
   const decoys = s.phase === 'writing' && s.inRound;
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   const dealLine = s.dealable.length ? `Deals in ${esc(names(s.dealable))}; anyone who joins later is dealt in next round.` : '';
@@ -306,8 +349,9 @@ function renderUi(force = false) {
     go = ['Join the game', true, openJoin];
   } else switch (s.phase) {
     case 'lobby':
-      if (customName && s.round === 0) {
-        hint = `This table opens with <b>${esc(customName)}</b>'s clover. Send the invite link (⋯ menu), then start guessing together.`;
+      if (customNames.length && s.round === 0) {
+        const whose = names(customNames.map((n) => `<b>${esc(n)}</b>'s`));
+        hint = `This table opens with ${whose} clover${customNames.length > 1 ? 's' : ''}. Send the invite link (⋯ menu), then start guessing together.`;
         go = ['Start guessing', s.dealable.length > 0, () => act(1)];
         break;
       }
@@ -335,19 +379,20 @@ function renderUi(force = false) {
       const what = `<b>${esc(s.writerName)}</b>'s clover · ${s.k + 1} of ${s.n} · ${plural(s.writerDecoys, 'decoy')}`;
       if (s.done) {
         hint = `${what} · done`;
-        go = [s.k + 1 < s.n ? 'Next clover' : 'See scores', true, () => act(4)];
+        go = [s.k + 1 < s.n ? 'Next clover' : 'Finish round', true, () => act(4)];
       } else if (s.isWriter) {
         hint = `${what}. It's yours: no hints while they guess!`;
         go = ['Guessing…', false];
       } else {
-        hint = `${what}. Drag cards anywhere; they snap when close to a spot. Tap a card to turn it. ${s.claimed}/4 spots filled.`;
-        go = [s.attempts ? 'Check (last try)' : 'Check', s.canCheck, () => act(3)];
+        hint = `${what}. Drag cards anywhere; they snap when close to a spot. Tap a card to turn it. Fill all four spots to guess.`;
+        go = ['Guess', s.canCheck, () => act(3)];
       }
       break;
     }
     case 'end':
-      hint = `Round ${s.round}: <b>+${s.roundScore}</b> · game total <b>${s.gameScore}</b>. ${dealLine}`;
+      hint = `Round ${s.round} is done. ${dealLine}`;
       go = [`Next round with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
+      side = ['Share boards', openShare];
       break;
   }
   // Submission progress, building up to guessing.
@@ -371,6 +416,10 @@ function renderUi(force = false) {
   goBtn.disabled = !go?.[1];
   goBtn.onclick = go?.[2] ?? null;
   goBtn.classList.toggle('on', go?.[3] === 'on');
+  const sideBtn = $('side');
+  sideBtn.hidden = !side;
+  if (side) { sideBtn.textContent = side[0]; sideBtn.onclick = side[1]; }
+  $('shareMenuBtn').hidden = !s.boards.length;
   const altBtn = $('alt');
   altBtn.hidden = !alt;
   if (alt) { altBtn.textContent = alt[0]; altBtn.onclick = alt[1]; }

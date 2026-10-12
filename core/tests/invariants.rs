@@ -223,22 +223,22 @@ fn full_game_two_rounds_three_players() {
             t.pump();
             t.apps[g].action(3);
             t.pump();
-            assert_eq!(t.apps[0].shared.check(w).score(), 4);
+            let c = t.apps[0].shared.check(w);
+            assert_eq!((c.attempts, c.done()), (2, true), "keep guessing until solved");
         } else {
-            assert_eq!(c.score(), PERFECT_SCORE);
+            assert_eq!((c.attempts, c.done()), (1, true));
         }
         assert!(t.digests_equal());
         t.apps[wi].action(4);
         t.pump();
     }
     assert_eq!(t.apps[1].shared.phase(), Phase::End);
-    assert_eq!(t.apps[2].shared.game_score(), 16);
-    // Next round keeps the table and the running score.
+    assert_eq!(t.apps[2].shared.game_score(), 0, "nothing is scored");
+    // Next round keeps the table.
     t.apps[2].action(1);
     t.pump();
     let s = &t.apps[0].shared;
-    assert_eq!((s.phase(), s.round.n, s.players().len(), s.game_score()), (Phase::Writing, 2, 3, 16));
-    assert_eq!(s.round_score(2), 0);
+    assert_eq!((s.phase(), s.round.n, s.players().len()), (Phase::Writing, 2, 3));
 }
 
 #[test]
@@ -487,14 +487,14 @@ fn watchers_cant_move_cards_and_dont_block() {
 }
 
 #[test]
-fn new_game_resets_scores_and_keeps_whoever_is_here() {
+fn new_game_starts_over_with_whoever_is_here() {
     let mut t = table_in_guessing(3);
     let w = t.writer_now();
     let g = t.guesser_for(w);
     solve(&mut t, g, false);
     t.apps[g].action(3);
     t.pump();
-    assert_eq!(t.apps[0].shared.game_score(), 6);
+    assert!(t.apps[0].shared.check(w).done());
     let gone = t.apps.pop().unwrap();
     for a in t.apps.iter_mut() {
         a.on_link_lost(3);
@@ -503,7 +503,7 @@ fn new_game_resets_scores_and_keeps_whoever_is_here() {
     t.apps[0].action(7);
     t.pump();
     let s = &t.apps[1].shared;
-    assert_eq!((s.game_score(), s.phase(), s.round.n), (0, Phase::Lobby, 0));
+    assert_eq!((s.phase(), s.round.n), (Phase::Lobby, 0));
     assert_eq!(s.players().len(), 2);
     assert!(!s.players().contains(&gone.seat.unwrap()));
     assert!(t.digests_equal());
@@ -964,35 +964,90 @@ fn card_size_is_local_and_hit_testing_follows_it() {
 }
 
 #[test]
-fn an_imported_clover_is_guessed_first_and_scores_against_its_layout() {
+fn guessing_boots_wrong_cards_silently_and_never_runs_out() {
+    let mut t = table_in_guessing(2);
+    let w = t.writer_now();
+    let g = t.guesser_for(w);
+    for round in 0..3 {
+        solve(&mut t, g, true); // a decoy in spot 0 every time
+        t.pump();
+        drain(&mut t.apps[g]);
+        t.apps[g].action(3);
+        let (net, ev) = drain(&mut t.apps[g]);
+        assert!(ev.iter().all(|(k, _)| *k != cloverleaf::app::EV_STATUS), "no commentary");
+        for p in &net {
+            for k in (0..t.apps.len()).filter(|&k| k != g) {
+                t.apps[k].on_packet(p, g as u32 + 1);
+            }
+        }
+        t.pump();
+        let c = t.apps[0].shared.check(w);
+        assert_eq!((c.attempts, c.mask, c.done()), (round + 1, 0b1110, false));
+        assert!(matches!(t.apps[0].shared.layout(w).0[NSLOTS].loc, Loc::Table { .. }), "booted");
+    }
+    solve(&mut t, g, false);
+    t.apps[g].action(3);
+    t.pump();
+    assert!(t.apps[1].shared.check(w).done());
+}
+
+/// One test owns the process-wide imported-clover registry.
+#[test]
+fn imported_and_shared_boards_are_guessed_first_and_check_against_their_layout() {
+    // A board read off a screenshot.
     assert!(Custom::load(
         "Josh's old phone\nsnake\nlink\nhorse\ngrappling\n\
          tube|berry|throne|spy\nanimal|map|waiter|fool\nbasket|weak|knight|toy\npond|firefight|sheep|climbing\n\
          tattoo|doe|clothing|banana"
     ));
+    // Boards shared from a finished round of a real game.
+    let mut src = table_in_guessing(3);
+    let n = src.apps[0].shared.puzzles().len();
+    let shared = src.apps[0].export_boards(0b101);
+    let boards: Vec<&str> = shared.split("\n\n").collect();
+    assert_eq!(boards.len(), 2, "two of {n} selected");
+    for b in &boards {
+        assert!(Custom::load(b));
+    }
+    let picked: Vec<u32> = [0, 2].iter().map(|&i| src.apps[0].shared.puzzles()[i]).collect();
+    let _ = &mut src;
+
     let mut t = Table::new(2);
     for a in t.apps.iter_mut() {
-        a.custom_room = true; // as if both loaded this room's file
+        a.custom_room = true; // as if both opened the same link
     }
     t.apps[0].action(1);
     t.pump();
     let s = &t.apps[1].shared;
     assert_eq!(s.phase(), Phase::Guessing(0), "straight to guessing");
-    let w = s.puzzles()[0];
+    let ws = s.puzzles();
+    assert_eq!(ws.len(), 3);
+    let w = ws[0];
     assert_eq!(s.seats[&w].name, "Josh's old phone");
     assert_eq!(s.effective(w).unwrap().clues[3], "grappling");
     assert_eq!(s.ncards(w), 5);
     assert_eq!(s.deal(w).words[2], ["basket", "weak", "knight", "toy"]);
-    // Both players can guess; placing it as imported is a perfect clover.
-    let g = 1;
-    solve(&mut t, g, false);
-    t.apps[g].action(3);
-    t.pump();
-    assert_eq!(t.apps[0].shared.check(w).score(), PERFECT_SCORE);
-    assert!(t.digests_equal());
+    // The shared boards keep their writers' names, clues and decoy counts.
+    for (k, &orig) in picked.iter().enumerate() {
+        let (a, b) = (&src.apps[0].shared, &t.apps[0].shared);
+        let w2 = ws[k + 1];
+        assert_eq!(b.seats[&w2].name, src.apps[0].name_of(orig));
+        assert_eq!(b.effective(w2).unwrap().clues, a.effective(orig).unwrap().clues);
+        assert_eq!(b.ncards(w2), a.ncards(orig));
+    }
+    // Each is solved on the first guess by placing it as it was laid out.
+    for k in 0..3 {
+        let w = t.writer_now();
+        solve(&mut t, 1, false);
+        t.apps[1].action(3);
+        t.pump();
+        assert_eq!(t.apps[0].shared.check(w).attempts, 1);
+        assert!(t.apps[0].shared.check(w).done(), "board {k}");
+        assert!(t.digests_equal());
+        t.apps[0].action(4);
+        t.pump();
+    }
     // The next round is an ordinary deal.
-    t.apps[0].action(4);
-    t.pump();
     t.apps[0].action(1);
     t.pump();
     assert_eq!(t.apps[0].shared.phase(), Phase::Writing);

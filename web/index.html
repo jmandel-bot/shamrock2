@@ -27,7 +27,9 @@
   /* A game surface, not a document: no text selection, callouts or tap flashes
      (they trigger dictionary lookups on mobile). Inputs stay selectable. */
   body { display: flex; flex-direction: column; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
-  input, #linkText { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+  .item input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--go); }
+  #shareText { max-height: 5em; overflow: hidden; display: block; }
+  input, #linkText, #shareText { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
   button { font: inherit; font-weight: 600; color: inherit; border: 0; border-radius: 999px; background: var(--chip); padding: 9px 16px; min-height: 44px; cursor: pointer; touch-action: manipulation; transition: transform .12s ease, background .2s; }
   button:active:not(:disabled) { transform: scale(.96); }
   button:disabled { opacity: .5; cursor: default; }
@@ -140,6 +142,7 @@
   <div id="dockBtns">
     <span class="stepper" id="size" hidden title="Card size on your screen only"><button id="sizeDown" aria-label="Smaller cards">−</button><span>Cards</span><button id="sizeUp" aria-label="Bigger cards">+</button></span>
     <span class="stepper" id="decoys" hidden><button id="decDown" aria-label="Fewer decoy cards">−</button><span id="decLabel"></span><button id="decUp" aria-label="More decoy cards">+</button></span>
+    <button id="side" hidden></button>
     <button id="go" class="go"></button>
   </div>
 </div>
@@ -166,10 +169,20 @@
     <code id="linkText"></code>
     <button class="menuBtn" id="switchBtn">Switch player / join as someone else</button>
     <button class="menuBtn" id="watchMenuBtn">Watch instead of playing</button>
-    <button class="menuBtn" id="redealBtn">Deal new cards (new round, keep scores)</button>
-    <button class="menuBtn danger" id="newGameBtn">New game: reset scores, keep who's here</button>
+    <button class="menuBtn" id="shareMenuBtn" hidden>Share boards from this round…</button>
+    <button class="menuBtn" id="redealBtn">Deal new cards (new round)</button>
+    <button class="menuBtn danger" id="newGameBtn">New game with whoever is here</button>
     <div class="list" id="playerList"></div>
     <button id="closeMenu">Close</button>
+  </div>
+</div>
+<div class="overlay" id="shareSheet">
+  <div class="sheet">
+    <h2>Share boards</h2>
+    <p>Pick clovers from this round. The link opens a fresh table where anyone can guess them together. It includes the answers, so send it to people who weren't here.</p>
+    <div class="list" id="shareList"></div>
+    <code id="shareText"></code>
+    <div class="row"><button class="go grow" id="shareCopy">Copy link</button><button id="shareClose">Close</button></div>
   </div>
 </div>
 <script type="module" src="main.js"></script>
