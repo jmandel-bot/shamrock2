@@ -991,6 +991,31 @@ fn guessing_boots_wrong_cards_silently_and_never_runs_out() {
     assert!(t.apps[1].shared.check(w).done());
 }
 
+/// A miss shakes the booted cards on every screen, however the guess's
+/// packets are spread across frames on arrival.
+#[test]
+fn a_miss_shakes_booted_cards_on_other_screens() {
+    let mut t = table_in_guessing(3);
+    let w = t.writer_now();
+    let g = t.guesser_for(w);
+    let k = (0..t.apps.len()).find(|&k| k != g && k != w as usize % t.apps.len()).unwrap_or((g + 1) % t.apps.len());
+    solve(&mut t, g, true);
+    t.pump();
+    drain(&mut t.apps[g]);
+    t.apps[g].action(3);
+    let (net, _) = drain(&mut t.apps[g]);
+    // One packet per frame, as a slow link would deliver them.
+    let mut shook = 0;
+    for p in &net {
+        t.t += 16.0;
+        t.apps[k].on_packet(p, g as u32 + 1);
+        t.apps[k].frame(t.t);
+        shook = shook.max(t.apps[k].shaking());
+    }
+    assert!(matches!(t.apps[k].shared.layout(w).0[NSLOTS].loc, Loc::Table { .. }), "booted");
+    assert!(shook > 0, "the booted card shakes on another screen ({} packets)", net.len());
+}
+
 /// One test owns the process-wide imported-clover registry.
 #[test]
 fn imported_and_shared_boards_are_guessed_first_and_check_against_their_layout() {

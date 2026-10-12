@@ -337,14 +337,18 @@ impl App {
     }
 
     fn flush_cards(&mut self) {
-        if self.dirty_cards.is_empty() {
-            return;
+        if !self.dirty_cards.is_empty() {
+            let msgs = self.card_msgs();
+            self.send(&msgs);
         }
-        let msgs: Vec<Msg> = std::mem::take(&mut self.dirty_cards)
+    }
+
+    /// Ops for every card written since the last broadcast.
+    fn card_msgs(&mut self) -> Vec<Msg> {
+        std::mem::take(&mut self.dirty_cards)
             .into_iter()
             .filter_map(|k| self.shared.cards.get(&k).map(|c| Msg::Op(self.op(Body::Card(k.0, k.1, *c)))))
-            .collect();
-        self.send(&msgs);
+            .collect()
     }
 
     fn hello(&mut self) {
@@ -1067,8 +1071,14 @@ impl App {
                 self.set_card(w, k, h.loc, h.rot, 0);
             }
         }
-        self.commit(Body::Check(w, check));
-        self.flush_cards();
+        // The boots and the check travel in one packet, cards first, so every
+        // screen sees the guess and the booted cards in the same frame (and
+        // shakes them on their way back).
+        let op = self.op(Body::Check(w, check));
+        self.shared.apply(&op);
+        let mut msgs = self.card_msgs();
+        msgs.push(Msg::Op(op));
+        self.send(&msgs);
     }
 
     // ---- frame --------------------------------------------------------------

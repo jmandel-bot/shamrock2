@@ -376,12 +376,15 @@ try {
   // First try with a decoy in spot 0, then fix it.
   await solve(G, { decoyInSpot0: true });
   await G.waitGoEnabled();
+  // Record shakes on another screen as they happen (they last 0.6 s).
+  await H.ev(() => { window.__shook = 0; const t = () => { window.__shook = Math.max(window.__shook, window.__cl.X.probe_shaking());
+    if (window.__shook === 0) requestAnimationFrame(t); }; requestAnimationFrame(t); });
   await G.go();
   await until(all, (d) => d.puzzles[0].attempts === 1);
   const c1 = cur(await B.digest());
   gate('a miss boots the wrong card to the tray; right ones stay', c1.mask === 0b1110 && c1.cards[4][0] === 'table', `mask ${c1.mask}`);
   gate('a miss comes with no commentary', !(await H.page.$eval('#toast', (t) => t.classList.contains('show'))) && (await H.page.textContent('#go')) === 'Guess');
-  const shook = await H.ev(() => new Promise((r) => requestAnimationFrame(() => r(window.__cl.X.probe_shaking ? window.__cl.X.probe_shaking() : -1))));
+  const shook = await H.page.waitForFunction(() => window.__shook > 0, null, { timeout: 3000 }).then(() => H.ev(() => window.__shook), () => 0);
   gate('booted cards shake on every screen (simple motion for a miss)', shook > 0, `shaking ${shook}`);
   await solve(H);
   await H.waitGoEnabled();
