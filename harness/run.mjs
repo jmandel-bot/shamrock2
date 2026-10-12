@@ -172,7 +172,7 @@ try {
         return [20, 48, 31];
       };
       const hex = (c) => '#' + c.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
-      return ['#hint', '#go', '#progLabel', '#logo', '.chip', '#decLabel']
+      return ['#hint', '#go', '#progLabel', '#decLabel']
         .map((sel) => document.querySelector(sel))
         .filter((el) => el && el.offsetParent)
         .map((el) => [el.id || el.className, hex(rgb(getComputedStyle(el).color)), hex(opaqueBg(el)), parseFloat(getComputedStyle(el).fontSize)]);
@@ -244,7 +244,9 @@ try {
     .then(() => gate('the progress bar fills as people submit (4 of 5)', true), () => gate('the progress bar fills as people submit (4 of 5)', false));
   const label = await A.page.textContent('#progLabel');
   const proceed = await A.page.textContent('#alt');
-  gate('progress names who is left; override reads "Proceed with 4 of 5"', label.includes('Eve') && proceed === 'Proceed with 4 of 5' && await E.page.waitForFunction(() => document.getElementById('alt').textContent === 'Proceed · 4/5', null, { timeout: 3000 }).then(() => true, () => false), `${label} | ${proceed}`);
+  const ePhone = await E.page.waitForFunction(() => document.getElementById('alt').textContent === 'Proceed · 4/5', null, { timeout: 3000 }).then(() => true, () => false);
+  const eAlt = await E.page.evaluate(() => { const a = document.getElementById('alt'); return `${a.hidden ? 'hidden' : 'shown'}:${a.textContent}:${JSON.stringify(window.__cl.ui().progress.map((p) => p.ready))}:${window.__cl.ui().readyCount}`; });
+  gate('progress names who is left; override reads "Proceed with 4 of 5"', label.includes('Eve') && proceed === 'Proceed with 4 of 5' && ePhone, `${label} | ${proceed} | phone ${eAlt}`);
   // Submitted players can still edit.
   await A.settle();
   await A.tap((await A.petal(2)).slice(0, 2));

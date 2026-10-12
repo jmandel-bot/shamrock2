@@ -358,12 +358,12 @@ function renderUi(force = false) {
 
   const mark = { writing: '✎', ready: '✓', writer: '★' };
   $('roster').replaceChildren(...s.players.map((p) => {
-    const chip = document.createElement('span');
-    chip.className = `chip${p.you ? ' you' : ''}${p.status === 'writer' ? ' writer' : ''}${p.away ? ' away' : ''}`;
-    chip.innerHTML = `<i style="background:${p.color}"></i>${esc(p.name)} ${mark[p.status] ?? ''}`;
-    chip.title = p.away ? `${p.name} is away` : p.name;
-    return chip;
-  }), ...(s.watchers ? [Object.assign(document.createElement('span'), { className: 'chip', textContent: `👀 ${s.watchers}` })] : []));
+    const dot = document.createElement('i');
+    dot.className = `dot${p.you ? ' you' : ''}${p.status === 'writer' ? ' writer' : ''}${p.away ? ' away' : ''}`;
+    dot.style.background = p.color;
+    dot.title = `${p.name}${p.away ? ' (away)' : ''} ${mark[p.status] ?? ''}`.trim();
+    return dot;
+  }), ...(s.watchers ? [Object.assign(document.createElement('span'), { className: 'watching', textContent: `👀 ${s.watchers}` })] : []));
 
   let hint = '', go = null, alt = null, side = null;
   const decoys = s.phase === 'writing' && s.inRound;

@@ -62,7 +62,8 @@ pub const WORD_SIZE: f32 = 26.0;
 pub const WORD_INSET: f32 = 86.0;
 pub const WORD_MAX_W: f32 = 2.0 * (WORD_INSET - WORD_SIZE / 2.0);
 /// Tray depth (short axis) in board units: two rows of cards plus air.
-const TRAY_UNITS: f32 = 480.0;
+/// Gap between loose cards in the tray, CSS px.
+const TRAY_GAP: f32 = 6.0;
 const PAD: f32 = 8.0;
 /// Per-device card size range. Up to `ZOOM_TOUCH` cards in neighbouring
 /// spots don't overlap; beyond it they may, if a player wants them that big.
@@ -544,16 +545,28 @@ impl App {
             let k = ((w - 2.0 * PAD).min(h - 2.0 * PAD) / ext).max(0.05);
             return Layout { k, bc: (w / 2.0, h / 2.0), tray: None };
         }
+        // The tray holds every card of the clover without overlap, three to a
+        // row (portrait) or column (landscape) at this device's card size; the
+        // board shrinks only as far as that needs.
+        let n = match self.shared.phase() {
+            Phase::Guessing(i) => self.shared.ncards(self.shared.puzzles()[i]),
+            _ => NSLOTS,
+        };
+        let lines = n.div_ceil(TRAY_PER_LINE).max(1) as f32;
+        let card = CARD * self.zoom;
+        // Tray length for `lines` cards of `k`: matches `tray_px`'s margins.
+        let tray_len = |k: f32| lines * (card * k + TRAY_GAP) + 8.0 - TRAY_GAP;
+        let fixed = lines * TRAY_GAP + 8.0 - TRAY_GAP;
         if h >= w {
-            let k = ((w - 2.0 * PAD) / ext).min((h - 3.0 * PAD) / (ext + TRAY_UNITS)).max(0.05);
+            let k = ((w - 2.0 * PAD) / ext).min((h - 3.0 * PAD - fixed) / (ext + lines * card)).max(0.05);
             let bh = ext * k;
             let tray_y = PAD + bh + PAD;
             Layout { k, bc: (w / 2.0, PAD + bh / 2.0), tray: Some((PAD, tray_y, w - 2.0 * PAD, h - tray_y - PAD, true)) }
         } else {
-            let k = ((h - 2.0 * PAD) / ext).min((w - 3.0 * PAD) / (ext + TRAY_UNITS)).max(0.05);
+            let k = ((h - 2.0 * PAD) / ext).min((w - 3.0 * PAD - fixed) / (ext + lines * card)).max(0.05);
             let bw = ext * k;
-            // Keep the group centred; the tray gets at most ~3 card widths.
-            let tray_w = (w - bw - 3.0 * PAD).min(3.2 * CARD * k).max(TRAY_UNITS * k);
+            // Keep the group centred; spare width goes to the margins.
+            let tray_w = tray_len(k).max(w - bw - 3.0 * PAD).min(tray_len(k) + card * k);
             let left = ((w - bw - tray_w - PAD) / 2.0).max(PAD);
             Layout {
                 k,

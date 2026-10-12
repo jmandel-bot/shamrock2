@@ -38,19 +38,16 @@
   .go:disabled { background: var(--chip); color: var(--fg); opacity: .65; }
   .go.on { background: var(--on); color: var(--on-fg); }
 
-  #top { display: flex; align-items: center; gap: 10px; padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px 12px; background: var(--bar); }
-  #logo { display: inline-flex; align-items: center; gap: 7px; font: 600 21px var(--serif); letter-spacing: .02em; white-space: nowrap; color: var(--fg); }
-  #logo svg { width: 24px; height: 24px; }
-  @media (max-width: 480px) { #logo span { display: none; } }
-  #roster { flex: 1; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
-  #roster::-webkit-scrollbar { display: none; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px 5px 8px; border-radius: 999px; background: var(--chip); font-size: 15px; font-weight: 600; white-space: nowrap; flex: none; }
-  .chip i { width: 11px; height: 11px; border-radius: 50%; flex: none; }
-  .chip.you { box-shadow: 0 0 0 2px var(--fg) inset; }
-  .chip.writer { box-shadow: 0 0 0 2px var(--go) inset; }
-  .chip.away { opacity: .5; }
-  .chip small { color: var(--dim); font-size: 14px; }
-  #menuBtn { min-width: 44px; padding: 8px 10px; font-size: 20px; line-height: 1; }
+  /* No header bar: the table menu and who's here sit in the board's empty
+     top-left corner (empty in portrait and landscape alike). */
+  #top { position: absolute; top: 8px; left: 8px; display: flex; flex-direction: column; align-items: center; gap: 6px; z-index: 2; pointer-events: none; }
+  #roster { display: grid; grid-template-columns: repeat(3, 12px); gap: 4px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.you { box-shadow: 0 0 0 2px var(--felt), 0 0 0 4px var(--fg); }
+  .dot.writer { box-shadow: 0 0 0 2px var(--felt), 0 0 0 4px var(--go); }
+  .dot.away { opacity: .4; }
+  .watching { grid-column: 1 / -1; font-size: 13px; color: var(--dim); white-space: nowrap; }
+  #menuBtn { min-width: 44px; padding: 8px 10px; font-size: 20px; line-height: 1; pointer-events: auto; background: var(--bar); }
 
   #stage { position: relative; flex: 1; min-height: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
@@ -128,13 +125,12 @@
     <rect class="lf" x="10" y="33" width="34" height="34" rx="9" transform="rotate(45 27 50)" fill="var(--go)"/>
   </symbol>
 </svg>
-<div id="top">
-  <span id="logo"><svg><use href="#mark"/></svg><span>shamrock</span></span>
-  <div id="roster"></div>
-  <button id="menuBtn" aria-label="Menu">⋯</button>
-</div>
 <div id="stage">
   <canvas id="c"></canvas>
+  <div id="top">
+    <button id="menuBtn" aria-label="Menu">⋯</button>
+    <div id="roster"></div>
+  </div>
   <input id="clue" maxlength="40" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="next" aria-label="Clue">
   <div id="toast" role="status"></div>
 </div>

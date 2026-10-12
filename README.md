@@ -50,6 +50,8 @@ node harness/serve.mjs # prints a URL
 
 **Turning the board** is local to each player: tap ⟳ or the clover's round centre, or drag around it. Tapping a leaf never turns the board: while writing, it opens that leaf's editor upright on screen, and each leaf shows its two keywords ("ocean & storm"). Cards on the board turn with it; cards in the tray stay put. Card turns, moves and board turns all animate. Each clover starts upright.
 
+**No header bar.** The ⋯ menu and a dot per player (ringed: you, and the writer) sit in the board's empty top-left corner; names are in the menu. The **tray** fits every card of the current clover without overlap, three to a row (a column in landscape) at your card size. A 5–6 card clover gets two rows at full size; only a clover that really has 7–8 cards takes a third row and shrinks its board to make room.
+
 **Card size** is per device: − / + in the bottom bar (narrow screens start larger). Positions on the board are shared; bigger cards just overlap more on your screen. At the largest size, cards in neighbouring spots touch edge to edge.
 
 **Presence** follows the WebRTC connections, not a heartbeat, so a phone that locks its screen or a backgrounded tab still counts as at the table.

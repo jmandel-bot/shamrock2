@@ -335,10 +335,13 @@ pub fn deck_card(game: Stamp, pos: u32) -> usize {
     perm[at]
 }
 
+/// Loose cards per tray row (portrait) or column (landscape).
+pub const TRAY_PER_LINE: usize = 3;
+
 /// Tray spot `k` of `n`: rows of up to three along the tray's long axis,
 /// so loose cards don't cover each other's words even on a phone.
 pub fn tray_spot(k: usize, n: usize) -> (f32, f32) {
-    const PER_ROW: usize = 3;
+    const PER_ROW: usize = TRAY_PER_LINE;
     let rows = n.div_ceil(PER_ROW).max(1);
     let (row, col) = (k / PER_ROW, k % PER_ROW);
     let in_row = (n - row * PER_ROW).min(PER_ROW);
