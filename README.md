@@ -40,10 +40,14 @@ node harness/serve.mjs # prints a URL
 
 `web/` is fully static, so any static host works. Anyone with the same `#room` joins the table.
 
-**Controls:** drag cards on or off the board. Tap a card to rotate it. Tap a
-petal to write a clue. Use ⟲/⟳ (or Q/E) to rotate your own view. To play, a clue
-writer arranges 4 cards, writes clues, clicks **Save answer**, then **Scramble**.
-Everyone else solves it and clicks **Check**.
+**How a game goes** (So Clover! rules, everyone at once):
+
+1. **Start game:** one press by anyone.
+2. **Write.** Everyone gets a private clover: 4 locked cards in random rotations. Tap a leaf, type a clue that links the two words facing it, then press Enter. The board turns so the next empty leaf faces you. After the 4th leaf, press **Submit** (optionally choose 0–4 extra decoy cards first).
+3. **Guessing starts by itself** once every connected player has submitted. Clovers are guessed one at a time. Everyone except the writer shares one board: drag cards on, tap a card to turn it, and press **Check**. Correct cards lock and wrong ones go back for one more try. A perfect first try is worth 6 points; otherwise you get 1 point per correct card.
+4. **Next clover**, then **Play again**.
+
+**Turning the board** is local to each player: tap ⟳ at the board's center, tap any empty part of the board, drag around it, or press Q/E. Cards on the board turn with it; cards off the board stay put. Each clover starts upright.
 
 ## Harness
 
@@ -52,19 +56,17 @@ Everyone else solves it and clicks **Check**.
 node harness/run.mjs                # 23 browser gates + metrics → harness/out/scorecard.json
 ```
 
-Latest scorecard (headless Chromium, 3–5 tabs, WebRTC over loopback):
+The browser harness plays a whole 5-player game, including one phone-sized player. Latest scorecard (headless Chromium, WebRTC over loopback):
 
 | metric | value |
 |---|---|
-| gates | 23/23 |
-| wasm size / JS imports | 108 KB / 0 |
-| drop → visible on peers (p50 / p95) | 31 / 33 ms |
-| clue sync | 29 ms |
+| gates | 28/28 |
+| presses to write + submit a clover | 6 (tap leaf, 4× Enter, Submit) |
+| last submit → guessing starts | ~30 ms |
+| card drop visible to 4 peers (p50 / p95) | 5 / 12 ms |
 | late joiner gets full state | ~300 ms |
-| bytes per drag update | 23 B |
-| frame CPU, wasm + Canvas2D (p95) | 0.6 ms |
-| card word size, desktop / phone | 19.4 / 10.4 px |
+| frame CPU, wasm + Canvas2D (p95) | 0.3 ms |
+| wasm size / JS imports | 169 KB / 0 |
+| card word size, desktop / phone | 17.6 / 10.4 px |
 
-The phone legibility gate failed at first (words were 6.8 px). Fixing it is the
-one real hill-climb in this run. Portrait screens now show the whole table turned
-a quarter turn, which is presentation-only and leaves shared coordinates alone.
+Bugs the harness caught in this iteration: Chrome fires a late `blur` on a hidden input, which closed the next leaf after Enter. The phone roster re-wrapping resized the canvas and closed the editor mid-word. Player IDs came back as signed i32 across the wasm boundary. And writing left the board turned, so guessing began at whatever angle writing ended on.

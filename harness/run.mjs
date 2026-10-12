@@ -1,8 +1,9 @@
 // Browser harness: real Chromium tabs, real WebRTC data channels (signaled via
-// a local relay), real pointer events. Prints a scorecard and writes
-// harness/out/scorecard.json + screenshots. Exit code 1 if any gate fails.
+// a local relay), real pointer and keyboard events, five players playing a
+// whole game. Prints a scorecard and writes harness/out/scorecard.json +
+// screenshots. Exit code 1 if any gate fails.
 import { chromium } from 'playwright';
-import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { serve } from './serve.mjs';
 
@@ -24,6 +25,7 @@ const metric = (name, value, unit = '') => {
 };
 const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const near = (a, b, tol = 1.5) => Math.abs(a[0] - b[0]) < tol && Math.abs(a[1] - b[1]) < tol;
 
 await mkdir(OUT, { recursive: true });
 const server = await serve({ port: PORT, relayPort: RELAY, quiet: true });
@@ -33,43 +35,49 @@ const browser = await chromium.launch({
 });
 const errors = [];
 
-async function player(name, viewport = { width: 1280, height: 800 }) {
+async function player(name, viewport = { width: 1280, height: 860 }) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1 });
   const page = await ctx.newPage();
   page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
   page.on('console', (m) => m.type() === 'error' && errors.push(`${name}: ${m.text()}`));
   await page.goto(url);
   await page.waitForFunction(() => window.__cl);
-  const origin = await page.evaluate(() => { const r = document.getElementById('c').getBoundingClientRect(); return [r.left, r.top]; });
   const P = {
     name, page, ctx,
+    me: await page.evaluate(() => window.__cl.me),
     ev: (fn, arg) => page.evaluate(fn, arg),
     digest: () => page.evaluate(() => window.__cl.digest()),
+    ui: () => page.evaluate(() => window.__cl.ui()),
     card: (i) => page.evaluate((i) => window.__cl.card(i), i),
     slot: (s) => page.evaluate((s) => window.__cl.slot(s), s),
     petal: (d) => page.evaluate((d) => window.__cl.petal(d), d),
+    hub: () => page.evaluate(() => window.__cl.hub()),
+    quarter: () => page.evaluate(() => window.__cl.quarter()),
     settle: () => page.evaluate(() => window.__cl.settle()),
-    peers: () => page.evaluate(() => window.__cl.peers.size),
-    async drag(from, to, { steps = 12, holdMidway } = {}) {
-      const m = page.mouse;
-      await m.move(origin[0] + from[0], origin[1] + from[1]);
+    presses: () => page.evaluate(() => window.__cl.stats.presses),
+    async origin() {
+      return page.evaluate(() => { const r = document.getElementById('c').getBoundingClientRect(); return [r.left, r.top]; });
+    },
+    async drag(from, to, { steps = 12 } = {}) {
+      const o = await P.origin(), m = page.mouse;
+      await m.move(o[0] + from[0], o[1] + from[1]);
       await m.down();
       for (let k = 1; k <= steps; k++) {
         const t = k / steps;
-        await m.move(origin[0] + from[0] + (to[0] - from[0]) * t, origin[1] + from[1] + (to[1] - from[1]) * t);
-        if (holdMidway && k === steps >> 1) await holdMidway();
+        await m.move(o[0] + from[0] + (to[0] - from[0]) * t, o[1] + from[1] + (to[1] - from[1]) * t);
       }
       await m.up();
     },
-    async click(at) {
-      await page.mouse.click(origin[0] + at[0], origin[1] + at[1]);
+    async tap(at) {
+      const o = await P.origin();
+      await page.mouse.click(o[0] + at[0], o[1] + at[1]);
     },
   };
   return P;
 }
 
-/** Wait until `pred(digest)` holds on every given page; returns ms elapsed. */
-async function until(players, pred, timeout = 5000) {
+/** Wait until `pred(digest)` holds on every page; returns ms elapsed. */
+async function until(players, pred, timeout = 8000) {
   const t0 = performance.now();
   await Promise.all(players.map((p) => p.page.waitForFunction(
     ([src]) => new Function('d', `return (${src})(d)`)(window.__cl.digest()), [pred.toString()], { timeout, polling: 'raf' })));
@@ -79,7 +87,25 @@ const same = async (players) => {
   const ds = await Promise.all(players.map((p) => p.digest()));
   return ds.every((d) => JSON.stringify(d) === JSON.stringify(ds[0]));
 };
-const near = (a, b, tol = 1.5) => Math.abs(a[0] - b[0]) < tol && Math.abs(a[1] - b[1]) < tol;
+const cur = (d) => d.puzzles[+d.phase.split(':')[1]];
+
+/** A guesser places card s in slot s and turns it right (or a decoy into slot 0). */
+async function solve(p, { decoyInSlot0 = false } = {}) {
+  await p.settle();
+  for (let s = 0; s < 4; s++) {
+    const d = cur(await p.digest());
+    if (d.mask & (1 << s)) continue;
+    const card = decoyInSlot0 && s === 0 ? 4 : s;
+    await p.drag((await p.card(card)).slice(0, 2), (await p.slot(s)).slice(0, 2));
+    if (card !== s) continue;
+    const want = await p.ev((s) => window.__cl.answerRot(s), s);
+    for (let k = 0; k < 4; k++) {
+      const c = cur(await p.digest()).cards[s];
+      if (c[0] === 'slot' && c[2] === want) break;
+      await p.tap((await p.card(s)).slice(0, 2));
+    }
+  }
+}
 
 try {
   // ---- static properties -------------------------------------------------------
@@ -87,174 +113,202 @@ try {
   const wasm = await readFile(here('../web/core.wasm'));
   const mod = await WebAssembly.compile(wasm);
   metric('wasm_bytes', wasm.length, ' B');
-  metric('wasm_imports', WebAssembly.Module.imports(mod).length);
   const shim = (await readFile(here('../web/main.js'), 'utf8')).split('\n').filter((l) => l.trim() && !l.trim().startsWith('//')).length;
   metric('js_shim_loc', shim);
   gate('wasm has zero JS imports (no bindgen glue)', WebAssembly.Module.imports(mod).length === 0);
 
-  // ---- connect --------------------------------------------------------------------
-  console.log('\n# connect (3 players, WebRTC)');
+  // ---- connect ------------------------------------------------------------------
+  console.log('\n# connect (5 players, WebRTC mesh)');
   let t0 = performance.now();
-  const [A, B, C] = await Promise.all(['A', 'B', 'C'].map((n) => player(n)));
-  await Promise.all([A, B, C].map((p) => p.page.waitForFunction(() => window.__cl.peers.size === 2, null, { timeout: 20000 })));
-  metric('connect_3_players_ms', performance.now() - t0, ' ms');
-  gate('all 3 players mesh-connected', true);
-  gate('initial state identical', await same([A, B, C]));
+  const players = await Promise.all([
+    ...['A', 'B', 'C', 'D'].map((n) => player(n)),
+    player('E-phone', { width: 390, height: 844 }),
+  ]);
+  const [A, B, C, D, E] = players;
+  await Promise.all(players.map((p) => p.page.waitForFunction(() => window.__cl.ui().players.length === 5, null, { timeout: 30000 })));
+  metric('connect_5_players_ms', performance.now() - t0, ' ms');
+  gate('5 players see each other in the roster', true);
 
-  // ---- drag sync latency --------------------------------------------------------------
-  console.log('\n# drag → remote sync');
+  // ---- writing ----------------------------------------------------------------------
+  console.log('\n# writing (everyone at once)');
+  await A.page.click('#go');
+  await until(players, (d) => d.phase === 'writing');
+  gate('one press starts the game for everyone', true);
+  await A.page.screenshot({ path: `${OUT}1-writing.png` });
+
+  const pressCounts = [];
+  const words = ['ocean', 'storm', 'royal', 'kitchen'];
+  let lastSubmit = 0;
+  await Promise.all(players.map(async (p, k) => {
+    await p.settle();
+    const p0 = await p.presses();
+    await p.tap((await p.petal(0)).slice(0, 2));
+    for (const w of words) {
+      await p.page.waitForSelector('#clue', { state: 'visible' });
+      await p.page.keyboard.type(`${w}${k}`);
+      await p.page.keyboard.press('Enter');
+    }
+    await p.page.waitForFunction(() => !document.getElementById('go').disabled);
+    await p.page.click('#go');
+    lastSubmit = performance.now();
+    pressCounts.push((await p.presses()) - p0);
+  }));
+  metric('presses_to_write_and_submit_max', Math.max(...pressCounts));
+  gate('writing a clover takes ≤ 6 presses (tap leaf, 4× Enter, Submit)', Math.max(...pressCounts) <= 6, pressCounts.join(','));
+  const toGuess = await until(players, (d) => d.phase === 'guessing:0', 10000).then(() => performance.now() - lastSubmit);
+  metric('last_submit_to_guessing_ms', toGuess, ' ms');
+  gate('guessing starts by itself once everyone submitted', true);
+  gate('all 5 clovers queued for guessing', (await A.digest()).puzzles.length === 5);
+  const subs = (await A.digest()).subs;
+  gate('clues typed via Enter-to-next-leaf arrive intact', subs.every((s) => s.slice(2).every((c, d) => c.startsWith(words[d]))));
+
+  // ---- guessing clover 0 -------------------------------------------------------------
+  console.log('\n# guessing');
+  const byId = (id) => players.find((p) => p.me === id);
+  const writerOf = async () => byId(cur(await A.digest()).writer);
+  let W = await writerOf();
+  let guessers = players.filter((p) => p !== W);
+  const [G, H] = guessers.filter((p) => p !== E);
+
+  const wd = JSON.stringify(await W.digest());
+  await W.settle();
+  await W.drag((await W.card(0)).slice(0, 2), (await W.slot(0)).slice(0, 2));
+  gate("the clover's writer cannot move cards", JSON.stringify(await W.digest()) === wd);
+
+  // Live sync of a guesser's drop.
   const lat = [];
-  for (let k = 0; k < 10; k++) {
+  for (let k = 0; k < 6; k++) {
+    await G.settle();
     const s = k % 4;
-    const card = 0;
-    const from = (await A.card(card)).slice(0, 2);
-    const to = (await A.slot(s)).slice(0, 2);
-    await A.drag(from, to);
+    await G.drag((await G.card(0)).slice(0, 2), (await G.slot(s)).slice(0, 2));
     const t = performance.now();
-    await until([B, C], new Function('d', `return d.cards[0][0]==='slot' && d.cards[0][1]===${s} && d.cards[0][3]===0`));
+    await until(players.filter((p) => p !== G), new Function('d', `const c=d.puzzles[0].cards[0];return c[0]==='slot'&&c[1]===${s}&&c[3]===0`));
     lat.push(performance.now() - t);
   }
   metric('sync_latency_p50_ms', pct(lat, 0.5), ' ms');
   metric('sync_latency_p95_ms', pct(lat, 0.95), ' ms');
-  gate('drop visible on peers p95 < 150 ms', pct(lat, 0.95) < 150);
+  gate('a drop shows up for all 4 others, p95 < 150 ms', pct(lat, 0.95) < 150);
 
-  const before = await A.ev(() => ({ ...window.__cl.stats, frameMs: undefined }));
-  let sawHeld = false;
-  {
-    const from = (await A.card(1)).slice(0, 2);
-    await A.drag(from, [1000, 200], {
-      steps: 30,
-      holdMidway: async () => {
-        await sleep(100);
-        const d = await B.digest();
-        sawHeld = d.cards[1][d.cards[1][0] === 'slot' ? 3 : 4] !== 0;
-      },
-    });
-  }
-  const after = await A.ev(() => ({ ...window.__cl.stats, frameMs: undefined }));
-  gate('peers see a card mid-drag (held by someone)', sawHeld);
-  metric('bytes_per_drag_packet', (after.sentBytes - before.sentBytes) / Math.max(1, after.sentPackets - before.sentPackets), ' B');
-  await until([A, B, C], (d) => d.cards[1][0] === 'table' && d.cards[1][4] === 0);
-
-  // ---- per-player rotation ---------------------------------------------------------
-  console.log('\n# per-player board rotation');
-  const shot0 = await B.page.screenshot({ path: `${OUT}B-before-rotate.png` });
-  const dBefore = await B.digest();
-  const scrB = await Promise.all([0, 1, 2, 3, 4].map((i) => B.card(i)));
-  const scrA = await Promise.all([0, 1, 2, 3, 4].map((i) => A.card(i)));
-  await B.page.click('#rotr');
-  await B.settle();
-  const scrB2 = await Promise.all([0, 1, 2, 3, 4].map((i) => B.card(i)));
-  const scrA2 = await Promise.all([0, 1, 2, 3, 4].map((i) => A.card(i)));
-  const [cx, cy] = await B.ev(() => { const b = window.__cl; const s = [0, 1, 2, 3].map(b.slot); return [s.reduce((a, p) => a + p[0], 0) / 4, s.reduce((a, p) => a + p[1], 0) / 4]; });
+  // Turning the board: tap the hub. Local only; slotted cards turn, table cards stay.
+  await G.settle();
+  const n = cur(await G.digest()).cards.length;
+  const before = await Promise.all([...Array(n).keys()].map((i) => G.card(i)));
+  const otherBefore = await Promise.all([...Array(n).keys()].map((i) => H.card(i)));
+  const dBefore = JSON.stringify(await G.digest());
+  gate('the board starts each clover upright', (await G.quarter()) % 4 === 0, `q=${await G.quarter()}`);
+  const q0 = await G.quarter();
+  const [cx, cy] = await G.hub();
+  await G.tap([cx, cy]);
+  await G.settle();
+  const after = await Promise.all([...Array(n).keys()].map((i) => G.card(i)));
+  const d0 = await G.digest();
   let boardOk = true, tableOk = true;
-  dBefore.cards.forEach((c, i) => {
-    const [x, y] = scrB[i];
-    if (c[0] === 'slot') boardOk &&= near(scrB2[i], [cx - (y - cy), cy + (x - cx)]);
-    else tableOk &&= near(scrB2[i], scrB[i]);
+  cur(d0).cards.forEach((c, i) => {
+    const [x, y] = before[i];
+    if (c[0] === 'slot') boardOk &&= near(after[i], [cx - (y - cy), cy + (x - cx)]);
+    else tableOk &&= near(after[i], before[i]);
   });
-  gate('rotating my view turns on-board cards 90° about board centre', boardOk);
-  gate('rotating my view leaves off-board cards where they were', tableOk);
-  gate("rotating B's view does not move anything on A's screen", scrA.every((p, i) => near(p, scrA2[i])));
+  gate('tapping ⟳ on the board turns my view a quarter', (await G.quarter()) === q0 + 1);
+  gate('cards on the board turn with it', boardOk);
+  gate('cards off the board stay put', tableOk);
   await sleep(150);
-  gate('view rotation is local (shared state unchanged everywhere)', JSON.stringify(await A.digest()) === JSON.stringify(dBefore) && await same([A, B, C]));
-  await B.page.screenshot({ path: `${OUT}B-after-rotate.png` });
+  const otherAfter = await Promise.all([...Array(n).keys()].map((i) => H.card(i)));
+  gate("turning my board doesn't move anything on other screens", otherBefore.every((p, i) => near(p, otherAfter[i])));
+  gate('board rotation is not shared state', JSON.stringify(await H.digest()) === dBefore);
+  await G.page.screenshot({ path: `${OUT}2-guessing-turned.png` });
 
-  // B drops a card onto the slot that is top-left on B's (rotated) screen.
-  const slotsB = await Promise.all([0, 1, 2, 3].map((s) => B.slot(s)));
-  const topLeft = slotsB.map((p, s) => [p[0] + p[1], s]).sort((a, b) => a[0] - b[0])[0][1];
-  await B.drag((await B.card(2)).slice(0, 2), slotsB[topLeft].slice(0, 2));
-  await until([A, C], new Function('d', `return d.cards[2][0]==='slot' && d.cards[2][1]===${topLeft}`));
-  const onA = await A.card(2), slotsA = await Promise.all([0, 1, 2, 3].map((s) => A.slot(s)));
-  gate('a drop in a rotated view lands in the right board slot for everyone', topLeft === 3 && near(onA, slotsA[3]), `B top-left = board slot ${topLeft}`);
+  // A drop in my turned view lands in the right board slot for everyone.
+  const slotsG = await Promise.all([0, 1, 2, 3].map((s) => G.slot(s)));
+  const topLeft = slotsG.map((p, s) => [p[0] + p[1], s]).sort((a, b) => a[0] - b[0])[0][1];
+  await G.drag((await G.card(2)).slice(0, 2), slotsG[topLeft].slice(0, 2));
+  await until(players, new Function('d', `const c=d.puzzles[0].cards[2];return c[0]==='slot'&&c[1]===${topLeft}`));
+  gate('a drop in a turned view lands in the right slot for all', topLeft === (((-(q0 + 1)) % 4) + 4) % 4, `top-left = slot ${topLeft}`);
 
-  // ---- tap to rotate card ---------------------------------------------------------------
-  const rotBefore = (await A.digest()).cards[3][3];
-  await A.click((await A.card(3)).slice(0, 2));
-  await until([B, C], new Function('d', `return d.cards[3][3]===${(rotBefore + 1) % 4}`));
-  gate('tap rotates a card for everyone', true);
+  // Two guessers drop different cards on one slot at the same moment.
+  await H.settle();
+  const [fg, fh] = [(await G.card(1)).slice(0, 2), (await H.card(3)).slice(0, 2)];
+  const [tg, th] = [(await G.slot(1)).slice(0, 2), (await H.slot(1)).slice(0, 2)];
+  await Promise.all([G.drag(fg, tg), H.drag(fh, th)]);
+  await sleep(400);
+  const dc = cur(await A.digest());
+  gate('simultaneous drops on one slot converge to one winner', (await same(players)) && dc.cards.filter((c) => c[0] === 'slot' && c[1] === 1).length === 1);
 
-  // ---- concurrent conflict ------------------------------------------------------------------
-  console.log('\n# conflicts');
-  const [fa, fc] = [(await A.card(4)).slice(0, 2), (await C.card(3)).slice(0, 2)];
-  const [ta, tc] = [(await A.slot(1)).slice(0, 2), (await C.slot(1)).slice(0, 2)];
-  await Promise.all([A.drag(fa, ta), C.drag(fc, tc)]);
-  await sleep(300);
-  const conflictConverged = await same([A, B, C]);
-  const dc = await A.digest();
-  const inSlot1 = dc.cards.filter((c) => c[0] === 'slot' && c[1] === 1).length;
-  gate('simultaneous drops on one slot converge, one winner', conflictConverged && inSlot1 === 1);
+  // First try with a decoy in slot 0, then fix it.
+  await solve(G, { decoyInSlot0: true });
+  await G.page.waitForFunction(() => !document.getElementById('go').disabled);
+  await G.page.click('#go');
+  await until(players, (d) => d.puzzles[0].attempts === 1);
+  const c1 = cur(await B.digest());
+  gate('check 1: 3 right are locked, the wrong card goes back', c1.mask === 0b1110 && c1.cards[4][0] === 'table', `mask ${c1.mask}`);
+  await solve(H);
+  await H.page.waitForFunction(() => !document.getElementById('go').disabled);
+  await H.page.click('#go');
+  await until(players, (d) => d.puzzles[0].attempts === 2);
+  gate('check 2 completes the clover for everyone (+4)', (await A.ui()).players.find((p) => p.id === W.me).score === 4);
+  await G.page.screenshot({ path: `${OUT}3-clover-done.png` });
 
-  // ---- clue editing ---------------------------------------------------------------------------
-  console.log('\n# clues');
-  await A.click((await A.petal(0)).slice(0, 2));
-  const inputShown = await A.page.isVisible('#clue');
-  await A.page.keyboard.type('fruit salad');
-  await A.page.keyboard.press('Enter');
-  const clueMs = await until([B, C], (d) => d.clues[0] === 'fruit salad');
-  gate('tapping a petal opens an in-place editor', inputShown);
-  gate('clue text syncs to peers', true);
-  metric('clue_sync_ms', clueMs, ' ms');
+  // ---- remaining clovers: first-try perfect ------------------------------------------
+  for (let k = 1; k < 5; k++) {
+    await guessers[0].page.click('#go'); // Next clover
+    await until(players, new Function('d', `return d.phase==='guessing:${k}'`));
+    W = await writerOf();
+    const g = players.find((p) => p !== W && p !== E);
+    await solve(g);
+    await g.page.waitForFunction(() => !document.getElementById('go').disabled);
+    await g.page.click('#go');
+    await until(players, new Function('d', `return d.puzzles[${k}].attempts===1`));
+    guessers = players.filter((p) => p !== W);
+  }
+  await E.page.screenshot({ path: `${OUT}4-phone-guessing.png` });
+  await A.page.click('#go'); // See results
+  await until(players, (d) => d.phase === 'end');
+  const total = (await A.digest()).score;
+  gate('final score agrees everywhere (4 + 4×6 = 28)', total === 28 && (await same(players)), `score ${total}`);
+  await A.page.screenshot({ path: `${OUT}5-end.png` });
 
-  // ---- late joiner -----------------------------------------------------------------------------
+  // ---- late join / leave ---------------------------------------------------------------
   console.log('\n# late join / leave');
   t0 = performance.now();
-  const D = await player('D');
+  const F = await player('F');
   const target = JSON.stringify(await A.digest());
-  await D.page.waitForFunction((t) => JSON.stringify(window.__cl.digest()) === t, target, { timeout: 20000 });
+  await F.page.waitForFunction((t) => JSON.stringify(window.__cl.digest()) === t, target, { timeout: 30000 });
   metric('late_join_state_ms', performance.now() - t0, ' ms');
-  gate('late joiner receives the full table state', true);
-  await C.ctx.close();
+  gate('late joiner receives the full game state', true);
+  await F.ctx.close();
+  await D.ctx.close();
   let leaveOk = true;
-  try { await A.page.waitForFunction(() => window.__cl.peers.size === 2, null, { timeout: 15000 }); } catch { leaveOk = false; }
-  gate('peer leave is noticed', leaveOk);
+  try { await A.page.waitForFunction(() => window.__cl.ui().players.filter((p) => !p.away).length === 4, null, { timeout: 15000 }); } catch { leaveOk = false; }
+  gate('players who leave are shown as away', leaveOk);
+  await A.page.click('#go'); // Play again
+  await until([A, B, C, E], (d) => d.phase === 'writing' && d.subs.length === 0);
+  gate('Play again starts a fresh round for everyone', true);
 
-  // ---- answer flow ------------------------------------------------------------------------------
-  await A.page.click('[data-act="1"]');
-  await until([B, D], (d) => d.cards.every((c) => c[0] === 'table'));
-  for (let s = 0; s < 4; s++) await A.drag((await A.card(s)).slice(0, 2), (await A.slot(s)).slice(0, 2));
-  await A.page.click('[data-act="2"]');
-  await until([B, D], (d) => d.answer);
-  await A.page.click('[data-act="3"]');
-  await until([B, D], (d) => d.cards.every((c) => c[0] === 'table'));
-  await B.settle();
-  // B places cards in its own rotated view; rotations are whatever the scramble left.
-  for (let s = 0; s < 4; s++) await B.drag((await B.card(s)).slice(0, 2), (await B.slot(s)).slice(0, 2));
-  const status = async () => (await B.page.textContent('#status')).trim();
-  await B.page.click('[data-act="4"]');
-  await B.page.waitForFunction(() => /correct/.test(document.getElementById('status').textContent), null, { timeout: 2000 }).catch(() => {});
-  const firstCheck = await status();
-  gate('check reports a score', /correct/.test(firstCheck), firstCheck);
-  await B.page.screenshot({ path: `${OUT}B-check.png` });
-
-  // ---- perf ----------------------------------------------------------------------------------------
+  // ---- perf + legibility ----------------------------------------------------------------
   console.log('\n# perf + legibility');
   await sleep(1500);
   const fms = await A.ev(() => window.__cl.stats.frameMs.slice(-300));
   metric('frame_cpu_p50_ms', pct(fms, 0.5), ' ms');
   metric('frame_cpu_p95_ms', pct(fms, 0.95), ' ms');
   gate('frame CPU (wasm + paint) p95 < 4 ms', pct(fms, 0.95) < 4);
-
-  const wordPx = (p) => p.ev(() => window.__cl.wordPx());
-  const cardPx = (p) => p.ev(() => window.__cl.cardPx());
-  const desk = await wordPx(A);
-  metric('word_px_desktop_1280x800', desk, ' px');
-  gate('card words legible on desktop (>= 12 px)', desk >= 12);
-  const phone = await player('phone', { width: 390, height: 844 });
-  const ph = await wordPx(phone);
+  const desk = await A.ev(() => window.__cl.wordPx());
+  const ph = await E.ev(() => window.__cl.wordPx());
+  metric('word_px_desktop_1280x860', desk, ' px');
   metric('word_px_phone_390x844', ph, ' px');
-  metric('card_px_phone_390x844', await cardPx(phone), ' px');
+  metric('card_px_phone_390x844', await E.ev(() => window.__cl.cardPx()), ' px');
+  gate('card words legible on desktop (>= 14 px)', desk >= 14);
   gate('card words legible on phone (>= 10 px)', ph >= 10);
-  gate('cards are touch-sized on phone (>= 44 px)', (await cardPx(phone)) >= 44);
-  // The phone player is in the same room: its portrait view must not disturb shared state.
-  await phone.page.waitForFunction((t) => JSON.stringify(window.__cl.digest()) === t, JSON.stringify(await A.digest()), { timeout: 10000 })
-    .then(() => gate('portrait player converges with everyone else', true), () => gate('portrait player converges with everyone else', false));
-  await phone.page.screenshot({ path: `${OUT}phone.png` });
-  await A.page.screenshot({ path: `${OUT}A-final.png` });
-
+  gate('cards are touch-sized on phone (>= 44 px)', (await E.ev(() => window.__cl.cardPx())) >= 44);
   gate('no page errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 } catch (e) {
   gate('harness completed', false, e.stack?.split('\n').slice(0, 3).join(' '));
+  // Leave evidence for whoever (or whatever) debugs this next.
+  for (const ctx of browser.contexts()) {
+    for (const [k, pg] of ctx.pages().entries()) {
+      const st = await pg.evaluate(() => ({ ui: window.__cl?.ui(), clue: document.getElementById('clue').style.display, active: document.activeElement?.id })).catch((x) => String(x));
+      console.log('  state', JSON.stringify(st).slice(0, 400));
+      await pg.screenshot({ path: `${OUT}fail-${browser.contexts().indexOf(ctx)}-${k}.png` }).catch(() => {});
+    }
+  }
 } finally {
   await browser.close();
   await server.close();

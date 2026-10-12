@@ -2,17 +2,31 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>Cloverleaf</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #1f3b2d; color: #eaf5ec; font: 14px system-ui, sans-serif; overflow: hidden; }
-  body { display: flex; flex-direction: column; }
-  #bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 12px; background: #183025; }
-  #bar button { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid #3f8f4f; background: #24493a; color: inherit; cursor: pointer; min-height: 32px; }
-  #bar button:hover { background: #2f5f4a; }
-  #bar .sep { flex: 1; }
-  #net { opacity: .85; }
-  #status { min-height: 1.2em; padding: 0 12px 6px; background: #183025; color: #ffe08a; }
+  :root { --bg: #1f3b2d; --bar: #183025; --line: #3f8f4f; --btn: #24493a; --btn-hi: #2f5f4a; --fg: #eaf5ec; --dim: #a9c7b2; --hint: #ffe08a; --go: #f2c14e; --go-fg: #23200f; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px system-ui, sans-serif; overflow: hidden; }
+  body { display: flex; flex-direction: column; padding-top: env(safe-area-inset-top, 0px); box-sizing: border-box; }
+  header { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 12px 4px; background: var(--bar); }
+  header b { font-size: 15px; letter-spacing: .02em; }
+  #net { color: var(--dim); font-size: 12px; }
+  .sp { flex: 1; }
+  button, select { font: inherit; color: inherit; border-radius: 8px; border: 1px solid var(--line); background: var(--btn); padding: 6px 10px; min-height: 34px; cursor: pointer; }
+  button:hover:not(:disabled) { background: var(--btn-hi); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--hint); outline-offset: 1px; }
+  #go { background: var(--go); color: var(--go-fg); border-color: var(--go); font-weight: 650; min-width: 9em; }
+  #go:disabled { background: var(--btn); color: var(--fg); border-color: var(--line); }
+  #roster { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 12px; background: var(--bar); }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 6px; border-radius: 999px; background: #ffffff10; font-size: 13px; white-space: nowrap; }
+  .chip i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .chip.away { opacity: .45; }
+  .chip.writer { background: #ffffff26; box-shadow: 0 0 0 1px var(--go) inset; }
+  .chip input { font: inherit; color: inherit; background: transparent; border: 0; border-bottom: 1px dashed var(--dim); width: 9em; padding: 0; }
+  #actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 12px 8px; background: var(--bar); }
+  #hint { flex: 1 1 16em; color: var(--hint); min-width: 0; }
+  #decoysWrap { display: none; align-items: center; gap: 6px; color: var(--dim); }
   #wrap { position: relative; flex: 1; min-height: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
   #clue { position: absolute; display: none; transform-origin: center; text-align: center; font: 600 18px system-ui, sans-serif;
@@ -20,19 +34,20 @@
 </style>
 </head>
 <body>
-<div id="bar">
-  <button id="rotl" title="Rotate my view left (Q)">⟲ Rotate</button>
-  <button id="rotr" title="Rotate my view right (E)">Rotate ⟳</button>
-  <button data-act="1" title="Deal 5 new cards for everyone">New deal</button>
-  <button data-act="2" title="Remember the current board as the answer">Save answer</button>
-  <button data-act="3" title="Move every card off the board in random order and rotation">Scramble</button>
-  <button data-act="4" title="Compare the board to the saved answer">Check</button>
-  <span class="sep"></span>
+<header>
+  <b>☘ Cloverleaf</b>
   <span id="net">connecting…</span>
+  <span class="sp"></span>
   <button id="copy" title="Copy a link others can use to join this table">Copy invite link</button>
+</header>
+<div id="roster"></div>
+<div id="actions">
+  <span id="hint"></span>
+  <label id="decoysWrap" for="decoys">Extra cards <select id="decoys"><option>0</option><option selected>1</option><option>2</option><option>3</option><option>4</option></select></label>
+  <button id="alt" hidden></button>
+  <button id="go"></button>
 </div>
-<div id="status">Drag cards onto the board, tap a card to rotate it, tap a petal to write a clue.</div>
-<div id="wrap"><canvas id="c"></canvas><input id="clue" maxlength="40" autocomplete="off"></div>
+<div id="wrap"><canvas id="c"></canvas><input id="clue" maxlength="40" autocomplete="off" enterkeyhint="next"></div>
 <script type="module" src="main.js"></script>
 </body>
 </html>

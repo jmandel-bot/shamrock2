@@ -120,10 +120,31 @@ pub extern "C" fn action(code: u32) {
     g().app.action(code);
 }
 
+/// Clue text is in the inbox. `advance` != 0 opens the next empty leaf.
 #[no_mangle]
-pub extern "C" fn set_clue(idx: u32, len: u32) {
+pub extern "C" fn set_clue(idx: u32, len: u32, advance: u32) {
     let s = inbox_str(len as usize);
-    g().app.set_clue(idx as u8, &s);
+    g().app.set_clue(idx as u8, &s, advance != 0);
+}
+
+/// Display name is in the inbox.
+#[no_mangle]
+pub extern "C" fn set_name(len: u32) {
+    let s = inbox_str(len as usize);
+    g().app.set_name(&s);
+}
+
+#[no_mangle]
+pub extern "C" fn set_decoys(n: u32) {
+    g().app.decoys = (n as u8).min(model::MAX_DECOYS);
+}
+
+/// Writes the UI state (JSON) to scratch; returns its length.
+#[no_mangle]
+pub extern "C" fn ui() -> u32 {
+    let d = g().app.ui_json();
+    g().scratch = d.into_bytes();
+    g().scratch.len() as u32
 }
 
 // ---- harness probes --------------------------------------------------------
@@ -144,8 +165,14 @@ pub extern "C" fn probe_ptr() -> *const f32 {
 }
 
 #[no_mangle]
+pub extern "C" fn probe_hub() {
+    let (x, y) = g().app.hub_screen();
+    g().probe = [x, y, 0.0, 0.0];
+}
+
+#[no_mangle]
 pub extern "C" fn probe_card(i: u32) {
-    let (x, y, a) = g().app.card_screen((i as usize).min(model::NCARDS - 1));
+    let (x, y, a) = g().app.card_screen(i as usize);
     g().probe = [x, y, a, 0.0];
 }
 
@@ -184,4 +211,24 @@ pub extern "C" fn digest() -> u32 {
 #[no_mangle]
 pub extern "C" fn scratch_ptr() -> *const u8 {
     g().scratch.as_ptr()
+}
+
+/// Harness only: correct rotation for slot `s` of the clover being guessed
+/// (255 if none). Players could already dig this out of devtools, since
+/// submissions are shared; the game is played on trust.
+#[no_mangle]
+pub extern "C" fn answer_rot(s: u32) -> u32 {
+    let a = &g().app;
+    match a.scene().writer {
+        Some(w) if matches!(a.shared.phase(), model::Phase::Guessing(_)) => {
+            model::deal(a.shared.round.seed, w).sol_rot[(s as usize) % model::NSLOTS] as u32
+        }
+        _ => 255,
+    }
+}
+
+/// Re-send the clue editor geometry for leaf `d` (after a resize).
+#[no_mangle]
+pub extern "C" fn edit_clue(d: u32) {
+    g().app.edit_clue((d % 4) as u8);
 }
