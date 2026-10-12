@@ -1,4 +1,4 @@
-//! The Shamrock deck: 220 cards, four words each (top, right, bottom, left).
+//! The deck: 220 cards, four words each (top, right, bottom, left).
 //! Generated from `shamrock.json` (from jmandel/shamrock) by `build.sh`; edit the JSON, not this file.
 
 pub const CARDS: [[&str; 4]; 220] = [

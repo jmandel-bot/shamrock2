@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 python3 - <<'PY'
 import json
 cards = json.load(open('core/src/shamrock.json'))
-lines = ["//! The Shamrock deck: %d cards, four words each (top, right, bottom, left)." % len(cards),
+lines = ["//! The deck: %d cards, four words each (top, right, bottom, left)." % len(cards),
          "//! Generated from `shamrock.json` (from jmandel/shamrock) by `build.sh`; edit the JSON, not this file.", "",
          "pub const CARDS: [[&str; 4]; %d] = [" % len(cards)]
 lines += ["    [" + ", ".join(json.dumps(w) for w in c) + "]," for c in cards]

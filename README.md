@@ -1,6 +1,6 @@
 # Shamrock: a peer-to-peer clover clue game in Rust → wasm
 
-A So Clover!-style word game, dealt from the 220-card Shamrock deck (`core/src/shamrock.json`, from jmandel/shamrock). Cards are dealt whole from a draw-down deck, so none repeats until the deck runs out. Browsers connect directly over WebRTC: there is no
+A So Clover!-style word game, dealt from a 220-card deck (`core/src/shamrock.json`). Cards are dealt whole from a draw-down deck, so none repeats until the deck runs out. Browsers connect directly over WebRTC: there is no
 game server, and signaling goes through public Nostr relays via
 [Trystero](https://github.com/dmotz/trystero). Each player rotates the board
 in their own view, while card placement is shared. Cards on the board turn
@@ -82,4 +82,4 @@ Bugs the harness caught this iteration: dropping onto an occupied spot stacked c
 
 ## Look and feel
 
-Green felt, paper cards, one warm accent. The board is a four-leaf clover: a heart-shaped leaf on each side carries its clue in Fraunces, and the card spots sit in the round centre. Card words are in Figtree. Motion is understated: cards deal in from the centre with a short stagger, and turns, moves and board spins ease. The leaves glow softly when a clover is finished, sheets slide up, and buttons give a little on press. All of it is switched off under `prefers-reduced-motion`. Text can't be selected outside inputs, so a long press on mobile doesn't open dictionary lookups. Every canvas text colour pair is checked for WCAG AA contrast in both test suites.
+The mark is four rounded cards set as a clover, one of them gold (the decoy). The palette is green felt, paper cards and that one warm gold accent. The board is a four-leaf clover: a heart-shaped leaf on each side carries its clue in Fraunces, and the card spots sit in the round centre. Card words are in Figtree. Motion is understated: cards deal in from the centre with a short stagger, and turns, moves and board spins ease. The leaves glow softly when a clover is finished, sheets slide up, and buttons give a little on press. All of it is switched off under `prefers-reduced-motion`. Text can't be selected outside inputs, so a long press on mobile doesn't open dictionary lookups. Every canvas text colour pair is checked for WCAG AA contrast in both test suites.
