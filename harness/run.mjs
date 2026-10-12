@@ -426,6 +426,7 @@ try {
   await A.page.screenshot({ path: `${OUT}7-share.png` });
   await A.page.click('#shareClose');
   metric('share_link_chars', link.length);
+  gate('a four-clover share link stays under 1,200 characters (compressed)', link.length < 1200, `${link.length}`);
   const sharedUrl = link.replace(/^https?:\/\/[^/]+\//, `http://localhost:${PORT}/`).replace('#', `&signal=ws://localhost:${RELAY}#`);
   const friends = [];
   for (const nm of ['Fay', 'Gus']) {

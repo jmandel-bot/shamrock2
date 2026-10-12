@@ -223,16 +223,23 @@ function unscramble({ n, c, k, a }) {
   const decoys = k.filter((_, i) => !a.some(([j]) => j === i));
   return [n, ...c, ...[...answer, ...decoys].map((w) => w.join('|'))].join('\n');
 }
+// Compressed before encrypting (ciphertext doesn't compress). Plaintext
+// starting with byte 1 is deflate-raw; anything else is a v1 link's plain
+// JSON, which still opens.
+const squeeze = async (u8, mode) => new Uint8Array(await new Response(
+  new Blob([u8]).stream().pipeThrough(mode === 'in' ? new CompressionStream('deflate-raw') : new DecompressionStream('deflate-raw'))).arrayBuffer());
 async function seal(boards, room) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const data = enc.encode(JSON.stringify(boards.map(scramble)));
+  const json = enc.encode(JSON.stringify(boards.map(scramble)));
+  const data = new Uint8Array([1, ...(await squeeze(json, 'in'))]);
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await shareKey(room), data));
   return b64.enc(new Uint8Array([...iv, ...ct]));
 }
 async function unseal(payload, room) {
   const raw = b64.dec(payload);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, await shareKey(room), raw.slice(12));
-  return JSON.parse(dec.decode(pt)).map(unscramble);
+  const pt = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, await shareKey(room), raw.slice(12)));
+  const json = pt[0] === 1 ? await squeeze(pt.slice(1), 'out') : pt;
+  return JSON.parse(dec.decode(json)).map(unscramble);
 }
 
 const customNames = [];
