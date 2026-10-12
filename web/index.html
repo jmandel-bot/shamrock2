@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#102719">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>Shamrock</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect x='33' y='10' width='34' height='34' rx='9' transform='rotate%2845 50 27%29' fill='%239fd8ad'/%3E%3Crect x='56' y='33' width='34' height='34' rx='9' transform='rotate%2845 73 50%29' fill='%239fd8ad'/%3E%3Crect x='33' y='56' width='34' height='34' rx='9' transform='rotate%2845 50 73%29' fill='%239fd8ad'/%3E%3Crect x='10' y='33' width='34' height='34' rx='9' transform='rotate%2845 27 50%29' fill='%23f2c14e'/%3E%3C/svg%3E">
 <link rel="preload" href="fonts/figtree-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
@@ -58,29 +62,24 @@
            padding: 10px 16px; border-radius: 14px; font-size: 16px; font-weight: 600; pointer-events: none; opacity: 0; transition: opacity .25s, transform .25s; text-align: center; box-shadow: 0 6px 20px #0008; }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
-  #dock { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bar); }
-  #progress { flex: 1 1 100%; display: flex; align-items: center; gap: 10px; }
-  #progMain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-  #segs { display: flex; gap: 5px; height: 12px; }
-  #segs i { flex: 1; border-radius: 6px; border: 2px solid currentColor; opacity: .7; transition: background .35s ease, opacity .35s; }
-  #segs i.done { opacity: 1; background: currentColor; }
-  #segs i.away { border-style: dashed; }
-  #progLabel { font-size: 15px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #alt { white-space: nowrap; font-size: 16px; }
-  #hint { flex: 1 1 14em; min-width: 0; color: var(--hint); font-size: 16px; }
+  /* The dock is one thin strip: a one-line status, the controls this moment
+     needs, and the main button. Everything else lives in the ⋯ menu. */
+  #dock { position: relative; display: flex; align-items: center; gap: 8px; padding: 6px 10px calc(6px + env(safe-area-inset-bottom, 0px)) 12px; background: var(--bar); }
+  #segs { position: absolute; left: 0; right: 0; top: 0; display: flex; gap: 3px; height: 5px; }
+  #segs i { flex: 1; opacity: .35; background: currentColor; transition: opacity .35s ease; }
+  #segs i.done { opacity: 1; }
+  #segs i.away { opacity: .15; }
+  #hint { flex: 1; min-width: 0; color: var(--hint); font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #hint b { color: var(--fg); }
-  #dockBtns { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
-  #go { white-space: nowrap; }
+  #dockBtns { display: flex; align-items: center; gap: 6px; flex: none; }
+  #go, #alt, #side { white-space: nowrap; }
+  #alt, #side { padding: 9px 12px; }
   .stepper { display: inline-flex; align-items: center; gap: 2px; background: var(--chip); border-radius: 999px; padding: 2px; font-size: 15px; font-weight: 600; }
-  .stepper button { min-height: 40px; min-width: 40px; padding: 0; background: transparent; font-size: 22px; }
-  .stepper span { padding: 0 4px; white-space: nowrap; }
-  @media (max-width: 480px) {
-    #hint { flex-basis: 100%; font-size: 15px; }
-    #dockBtns { width: 100%; justify-content: space-between; gap: 6px; }
-    .stepper { font-size: 14px; }
-    .stepper button { min-width: 34px; }
-    .go { padding: 10px 16px; }
-  }
+  .stepper button { min-height: 40px; min-width: 38px; padding: 0; background: transparent; font-size: 22px; }
+  .stepper span { padding: 0 2px; white-space: nowrap; }
+  @media (max-width: 480px) { .go { padding: 10px 16px; } #hint { font-size: 15px; } }
+  .prefs { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .prefs .grow { flex: 1; }
 
   .overlay { position: fixed; inset: 0; background: #000a; display: flex; align-items: flex-end; justify-content: center; z-index: 5;
              opacity: 0; pointer-events: none; transition: opacity .25s; }
@@ -109,7 +108,8 @@
   .danger { color: #ffc2b8; }
   code { font-size: 14px; color: var(--dim); word-break: break-all; }
   /* Solo play from a share link: no table, so no roster or table menu. */
-  body.solo #roster, body.solo #menuBtn { visibility: hidden; }
+  body.solo #roster, body.solo #tableItems { display: none; }
+  .tip { color: var(--dim); font-size: 15px; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition: none !important; animation: none !important; }
   }
@@ -135,10 +135,10 @@
   <div id="toast" role="status"></div>
 </div>
 <div id="dock">
-  <div id="progress" hidden><div id="progMain"><div id="segs"></div><span id="progLabel"></span></div><button id="alt" hidden></button></div>
+  <div id="segs" hidden></div>
   <div id="hint"></div>
   <div id="dockBtns">
-    <span class="stepper" id="size" hidden title="Card size on your screen only"><button id="sizeDown" aria-label="Smaller cards">−</button><span>Cards</span><button id="sizeUp" aria-label="Bigger cards">+</button></span>
+    <button id="alt" hidden></button>
     <span class="stepper" id="decoys" hidden><button id="decDown" aria-label="Fewer decoy cards">−</button><span id="decLabel"></span><button id="decUp" aria-label="More decoy cards">+</button></span>
     <button id="side" hidden></button>
     <button id="go" class="go"></button>
@@ -162,6 +162,12 @@
 
 <div class="overlay" id="menuSheet">
   <div class="sheet">
+    <div class="prefs">
+      <span class="stepper" id="size" title="Card size on your screen only"><button id="sizeDown" aria-label="Smaller cards">−</button><span>Card size</span><button id="sizeUp" aria-label="Bigger cards">+</button></span>
+      <button id="fullBtn" hidden>Full screen</button>
+    </div>
+    <div id="tipText" class="tip"></div>
+    <div id="tableItems">
     <h2>Table</h2>
     <div class="row"><button class="menuBtn" id="copyLink">Copy invite link</button></div>
     <code id="linkText"></code>
@@ -171,6 +177,7 @@
     <button class="menuBtn" id="redealBtn">Deal new cards (new round)</button>
     <button class="menuBtn danger" id="newGameBtn">New game with whoever is here</button>
     <div class="list" id="playerList"></div>
+    </div>
     <button id="closeMenu">Close</button>
   </div>
 </div>

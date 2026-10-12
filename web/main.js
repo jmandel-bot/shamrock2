@@ -336,6 +336,18 @@ $('newGameBtn').onclick = () => { closeSheets(); act(7); };
 const zoomKey = 'shamrock:zoom';
 let zoom = X.set_zoom(+(recall(zoomKey) ?? (Math.min(innerWidth, innerHeight) < 520 ? 1.25 : 1)));
 const setZoom = (z) => { stats.presses++; zoom = X.set_zoom(z); remember(zoomKey, zoom); };
+// Full screen where the browser allows it (Android, desktop; not iPhone,
+// where "Add to Home Screen" gives the same via the manifest).
+const fullBtn = $('fullBtn');
+const fsEl = document.documentElement;
+fullBtn.hidden = !(document.fullscreenEnabled && fsEl.requestFullscreen);
+const syncFull = () => { fullBtn.textContent = document.fullscreenElement ? 'Exit full screen' : 'Full screen'; };
+document.addEventListener('fullscreenchange', syncFull);
+fullBtn.onclick = () => {
+  closeSheets();
+  (document.fullscreenElement ? document.exitFullscreen() : fsEl.requestFullscreen({ navigationUI: 'hide' })).catch(() => {});
+};
+syncFull();
 $('sizeDown').onclick = () => setZoom(zoom - 0.15);
 $('sizeUp').onclick = () => setZoom(zoom + 0.15);
 
@@ -365,89 +377,87 @@ function renderUi(force = false) {
     return dot;
   }), ...(s.watchers ? [Object.assign(document.createElement('span'), { className: 'watching', textContent: `👀 ${s.watchers}` })] : []));
 
-  let hint = '', go = null, alt = null, side = null;
-  const decoys = s.phase === 'writing' && s.inRound;
+  // One short line of status; how-to tips show once per device (see `tip`).
+  let hint = '', go = null, alt = null, side = null, decoys = false;
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
-  const dealLine = s.dealable.length ? `Deals in ${esc(names(s.dealable))}; anyone who joins later is dealt in next round.` : '';
+  const narrow = innerWidth < 480;
+  const clover = s.n ? `<b>${esc(s.writerName ?? '')}</b> · ${s.k + 1}/${s.n} · ${plural(s.writerDecoys, 'decoy')}` : '';
+  if (s.phase === 'guessing' && !(s.isWriter && !s.done) && (solo || s.seated)) tip('guess');
   if (solo) {
-    const what = s.n ? `<b>${esc(s.writerName ?? '')}</b>'s clover · ${s.k + 1} of ${s.n} · ${plural(s.writerDecoys, 'decoy')}` : '';
     if (s.phase === 'guessing' && s.done) {
-      hint = `${what} · solved`;
+      hint = `<b>${esc(s.writerName ?? '')}</b> · solved`;
       go = [s.k + 1 < s.n ? 'Next clover' : 'Done', true, () => act(4)];
     } else if (s.phase === 'guessing') {
-      hint = `${what}. Drag cards onto the spots, tap a card to turn it, then Guess.`;
+      hint = clover;
       go = ['Guess', s.canCheck, () => act(3)];
     } else {
-      hint = customNames.length ? "That's every clover in this link." : "This link didn't contain any clovers.";
+      hint = customNames.length ? 'All done' : 'No clovers in this link';
       go = ['Start your own table', true, ownTable];
     }
   } else if (!s.seated) {
-    hint = !s.players.length ? 'Nobody is playing yet. Join to start a table.'
-      : `Watching${s.phase === 'guessing' ? ` <b>${esc(s.writerName ?? '')}</b>'s clover` : ''}.`;
-    go = ['Join the game', true, openJoin];
+    hint = !s.players.length ? "No one's playing yet"
+      : s.phase === 'guessing' ? `Watching ${clover}` : 'Watching';
+    go = ['Join', true, openJoin];
   } else switch (s.phase) {
     case 'lobby':
       if (customNames.length && s.round === 0) {
-        const whose = names(customNames.map((n) => `<b>${esc(n)}</b>'s`));
-        hint = `This table opens with ${whose} clover${customNames.length > 1 ? 's' : ''}. Send the invite link (⋯ menu), then start guessing together.`;
+        hint = `Opens with ${names(customNames.map((n) => `<b>${esc(n)}</b>`))}`;
         go = ['Start guessing', s.dealable.length > 0, () => act(1)];
         break;
       }
-      hint = `Send the invite link (⋯ menu). ${dealLine}`;
+      hint = s.dealable.length < 2 ? 'Invite friends: ⋯ menu' : esc(names(s.dealable));
       go = [`Start with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
       break;
-    case 'writing':
+    case 'writing': {
+      const left = s.progress.filter((p) => !p.ready).map((p) => p.name);
+      const waiting = `${s.readyCount}/${s.progress.length} in${left.length && left.length <= 2 ? ` · waiting for ${esc(names(left))}` : ''}`;
       if (!s.inRound) {
-        hint = "You joined after the deal, so you're in next round. You'll help guess this round's clovers.";
+        hint = `Next round for you · ${waiting}`;
       } else if (!s.ready) {
-        hint = s.filled < 4
-          ? `<b>Your secret clover.</b> Tap a leaf and write a clue linking the two words facing it (${s.filled}/4). Enter jumps to the next leaf.`
-          : 'Choose how many decoy cards to mix in, then <b>Submit</b>.';
+        tip('write');
+        hint = s.filled < 4 ? `Your clover · clues ${s.filled}/4` : 'Decoys?';
+        decoys = s.filled >= 4;
         go = ['Submit', s.canReady, () => act(2)];
       } else {
-        hint = 'Submitted. You can still change clues or decoys until guessing starts.';
-        go = ['Submitted ✓', true, () => act(2), 'on'];
+        hint = waiting;
+        go = [narrow ? '✓' : 'Submitted ✓', true, () => act(2), 'on'];
       }
-      if (s.readyCount > 0 && s.readyCount < s.progress.length) {
-        const label = innerWidth < 480 ? `Proceed · ${s.readyCount}/${s.progress.length}` : `Proceed with ${s.readyCount} of ${s.progress.length}`;
-        alt = [label, () => act(5)];
-      }
-      break;
-    case 'guessing': {
-      const what = `<b>${esc(s.writerName)}</b>'s clover · ${s.k + 1} of ${s.n} · ${plural(s.writerDecoys, 'decoy')}`;
-      if (s.done) {
-        hint = `${what} · done`;
-        go = [s.k + 1 < s.n ? 'Next clover' : 'Finish round', true, () => act(4)];
-      } else if (s.isWriter) {
-        hint = `${what}. It's yours: no hints while they guess!`;
-        go = ['Guessing…', false];
-      } else {
-        hint = `${what}. Drag cards anywhere; they snap when close to a spot. Tap a card to turn it. Fill all four spots to guess.`;
-        go = ['Guess', s.canCheck, () => act(3)];
+      if ((s.ready || !s.inRound) && s.readyCount > 0 && s.readyCount < s.progress.length) {
+        alt = [narrow ? `Proceed · ${s.readyCount}/${s.progress.length}` : `Proceed with ${s.readyCount} of ${s.progress.length}`, () => act(5)];
       }
       break;
     }
+    case 'guessing':
+      if (s.done) {
+        hint = `<b>${esc(s.writerName)}</b> · solved`;
+        go = [s.k + 1 < s.n ? 'Next clover' : 'Finish round', true, () => act(4)];
+      } else if (s.isWriter) {
+        hint = 'Your clover · no hints!';
+      } else {
+        hint = clover;
+        go = ['Guess', s.canCheck, () => act(3)];
+      }
+      break;
     case 'end':
-      hint = `Round ${s.round} is done. ${dealLine}`;
-      go = [`Next round with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
-      side = ['Share boards', openShare];
+      hint = `Round ${s.round} done`;
+      go = [narrow ? `Next round (${s.dealable.length})` : `Next round with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
+      side = ['Share', openShare];
       break;
   }
-  // Submission progress, building up to guessing.
-  const prog = $('progress');
-  prog.hidden = s.phase !== 'writing';
-  if (!prog.hidden) {
-    $('segs').replaceChildren(...s.progress.map((p) => {
+  // Submission progress: a thin bar along the top of the strip.
+  const segs = $('segs');
+  segs.hidden = s.phase !== 'writing';
+  if (!segs.hidden) {
+    segs.replaceChildren(...s.progress.map((p) => {
       const seg = document.createElement('i');
       seg.className = `${p.ready ? 'done' : ''}${p.away ? ' away' : ''}`;
       seg.style.color = p.color;
       seg.title = `${p.name}: ${p.ready ? 'submitted' : 'writing'}${p.away ? ' (away)' : ''}`;
       return seg;
     }));
-    const left = s.progress.filter((p) => !p.ready).map((p) => p.name + (p.away ? ' (away)' : ''));
-    $('progLabel').textContent = `${s.readyCount} of ${s.progress.length} submitted${left.length && left.length <= 2 ? ` · waiting for ${names(left)}` : ''}`;
   }
   $('hint').innerHTML = hint;
+  $('hint').title = $('hint').textContent;
   const goBtn = $('go');
   goBtn.textContent = go?.[0] ?? '';
   goBtn.hidden = !go;
@@ -462,9 +472,23 @@ function renderUi(force = false) {
   altBtn.hidden = !alt;
   if (alt) { altBtn.textContent = alt[0]; altBtn.onclick = alt[1]; }
   $('decoys').hidden = !decoys;
-  $('size').hidden = !(s.phase === 'guessing' || (s.phase === 'writing' && s.seated));
   $('decLabel').textContent = `${s.decoys} decoy${s.decoys === 1 ? '' : 's'}`;
 }
+
+// How-to tips: shown once per device as a toast that the next touch on the
+// board dismisses, and kept in the ⋯ menu.
+function tip(kind) {
+  const TIPS = {
+    write: 'Tap a leaf and write a clue linking the two words facing it. Enter jumps to the next leaf. Then choose decoys and Submit.',
+    guess: 'Drag cards onto the spots (they snap when close), tap a card to turn it, then Guess. Wrong cards bounce back.',
+  };
+  $('tipText').textContent = TIPS[kind];
+  const key = `shamrock:tip:${kind}`;
+  if (recall(key)) return;
+  remember(key, '1');
+  setTimeout(() => toast(TIPS[kind], 9000), 300);
+}
+canvas.addEventListener('pointerdown', () => $('toast').classList.remove('show'));
 
 // ---- network ----------------------------------------------------------------
 

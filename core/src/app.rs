@@ -778,9 +778,10 @@ impl App {
         let cur = sc.cards[i];
         let in_board_frame = !matches!(cur.loc, Loc::Table { .. });
         let (bx, by) = self.board_m().inv().apply(cx, cy);
-        let tray_hit =
-            self.layout().tray.is_some_and(|(x, y, tw, th, _)| cx >= x && cx <= x + tw && cy >= y && cy <= y + th);
-        let to_board = !tray_hit && bx.abs() <= EXTENT && by.abs() <= EXTENT;
+        // Only the tray takes cards off the board: a drop anywhere else (even
+        // off the board's edge, e.g. at the top of the screen) stays on it.
+        let to_board =
+            !self.layout().tray.is_some_and(|(x, y, tw, th, _)| cx >= x && cx <= x + tw && cy >= y && cy <= y + th);
         // Keep the card's on-screen orientation when it changes frame.
         let rot = match (in_board_frame, to_board) {
             (false, true) => quarter(cur.rot as i32 - self.q),

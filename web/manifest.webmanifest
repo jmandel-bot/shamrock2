@@ -1,0 +1,10 @@
+{
+  "name": "Shamrock",
+  "short_name": "Shamrock",
+  "description": "Clue your clover. Guess your friends'.",
+  "start_url": "./",
+  "display": "fullscreen",
+  "background_color": "#14301f",
+  "theme_color": "#102719",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

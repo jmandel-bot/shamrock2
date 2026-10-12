@@ -1016,6 +1016,23 @@ fn a_miss_shakes_booted_cards_on_other_screens() {
     assert!(shook > 0, "the booted card shakes on another screen ({} packets)", net.len());
 }
 
+/// Dragging a card above the board (top of the screen) keeps it on the
+/// board at the edge; only the tray takes cards off.
+#[test]
+fn a_card_dropped_above_the_board_stays_on_the_board() {
+    let mut t = table_in_guessing(2);
+    let w = t.writer_now();
+    let g = t.guesser_for(w);
+    let a = &mut t.apps[g];
+    let from = card_at(a, NSLOTS);
+    assert!(matches!(a.shared.layout(w).0[NSLOTS].loc, Loc::Table { .. }));
+    drag(a, from, (a.w / 2.0, 1.0));
+    match a.shared.layout(w).0[NSLOTS].loc {
+        Loc::Float { y, .. } => assert!(y < -EXTENT / 2.0, "at the board's top edge, got y {y}"),
+        l => panic!("left the board: {l:?}"),
+    }
+}
+
 /// One test owns the process-wide imported-clover registry.
 #[test]
 fn imported_and_shared_boards_are_guessed_first_and_check_against_their_layout() {

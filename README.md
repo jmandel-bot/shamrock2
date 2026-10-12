@@ -52,7 +52,9 @@ node harness/serve.mjs # prints a URL
 
 **No header bar.** The ⋯ menu and a dot per player (ringed: you, and the writer) sit in the board's empty top-left corner; names are in the menu. The **tray** fits every card of the current clover without overlap, three to a row (a column in landscape) at your card size. A 5–6 card clover gets two rows at full size; only a clover that really has 7–8 cards takes a third row and shrinks its board to make room.
 
-**Card size** is per device: − / + in the bottom bar (narrow screens start larger). Positions on the board are shared; bigger cards just overlap more on your screen. At the largest size, cards in neighbouring spots touch edge to edge.
+**The bottom bar is one thin strip**: a one-line status (whose clover, how many are in), the controls the moment needs and the main button; while writing, a thin coloured bar along its top fills as players submit. How-to tips show once per device (the next touch on the board dismisses them) and stay in the ⋯ menu. The menu also has **Full screen** where the browser supports it (Android, desktop); on iPhone, Add to Home Screen opens it full screen via the web manifest.
+
+**Card size** is per device: − / + in the ⋯ menu (narrow screens start larger). Positions on the board are shared; bigger cards just overlap more on your screen. At the largest size, cards in neighbouring spots touch edge to edge.
 
 **Presence** follows the WebRTC connections, not a heartbeat, so a phone that locks its screen or a backgrounded tab still counts as at the table.
 

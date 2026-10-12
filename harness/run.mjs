@@ -172,7 +172,7 @@ try {
         return [20, 48, 31];
       };
       const hex = (c) => '#' + c.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
-      return ['#hint', '#go', '#progLabel', '#decLabel']
+      return ['#hint', '#go', '#decLabel']
         .map((sel) => document.querySelector(sel))
         .filter((el) => el && el.offsetParent)
         .map((el) => [el.id || el.className, hex(rgb(getComputedStyle(el).color)), hex(opaqueBg(el)), parseFloat(getComputedStyle(el).fontSize)]);
@@ -242,11 +242,11 @@ try {
   gate('guessing waits until everyone has submitted', (await A.digest()).phase === 'writing');
   await A.page.waitForFunction(() => document.querySelectorAll('#segs i.done').length === 4, null, { timeout: 3000 })
     .then(() => gate('the progress bar fills as people submit (4 of 5)', true), () => gate('the progress bar fills as people submit (4 of 5)', false));
-  const label = await A.page.textContent('#progLabel');
+  await A.page.waitForFunction(() => document.getElementById('hint').textContent.includes('Eve'), null, { timeout: 3000 }).catch(() => {});
+  const label = await A.page.textContent('#hint');
   const proceed = await A.page.textContent('#alt');
-  const ePhone = await E.page.waitForFunction(() => document.getElementById('alt').textContent === 'Proceed · 4/5', null, { timeout: 3000 }).then(() => true, () => false);
-  const eAlt = await E.page.evaluate(() => { const a = document.getElementById('alt'); return `${a.hidden ? 'hidden' : 'shown'}:${a.textContent}:${JSON.stringify(window.__cl.ui().progress.map((p) => p.ready))}:${window.__cl.ui().readyCount}`; });
-  gate('progress names who is left; override reads "Proceed with 4 of 5"', label.includes('Eve') && proceed === 'Proceed with 4 of 5' && ePhone, `${label} | ${proceed} | phone ${eAlt}`);
+  const eAlt = await E.page.evaluate(() => document.getElementById('alt').hidden);
+  gate('progress names who is left; override reads "Proceed with 4 of 5"', label.includes('4/5') && label.includes('Eve') && proceed === 'Proceed with 4 of 5' && eAlt, `${label} | ${proceed} | Eve's own Proceed hidden: ${eAlt}`);
   // Submitted players can still edit.
   await A.settle();
   await A.tap((await A.petal(2)).slice(0, 2));
@@ -295,7 +295,10 @@ try {
   {
     const d0 = JSON.stringify(await E.digest());
     const w0 = await E.ev(() => window.__cl.wordPx());
+    await E.page.click('#menuBtn');
+    await E.page.waitForSelector('#menuSheet.open');
     for (let k = 0; k < 4; k++) await E.page.click('#sizeUp');
+    await E.page.click('#closeMenu');
     const w1 = await E.ev(() => window.__cl.wordPx());
     metric('word_px_phone_max_size', w1, ' px');
     await sleep(200);
@@ -385,7 +388,9 @@ try {
   await until(all, (d) => d.puzzles[0].attempts === 1);
   const c1 = cur(await B.digest());
   gate('a miss boots the wrong card to the tray; right ones stay', c1.mask === 0b1110 && c1.cards[4][0] === 'table', `mask ${c1.mask}`);
-  gate('a miss comes with no commentary', !(await H.page.$eval('#toast', (t) => t.classList.contains('show'))) && (await H.page.textContent('#go')) === 'Guess');
+  // (The one-time how-to tip may still be up from when guessing began; nothing else.)
+  const toastNow = await H.page.$eval('#toast', (t) => t.classList.contains('show') ? t.textContent : '');
+  gate('a miss comes with no commentary', (!toastNow || toastNow === (await H.page.textContent('#tipText'))) && (await H.page.textContent('#go')) === 'Guess', toastNow);
   const shook = await H.page.waitForFunction(() => window.__shook > 0, null, { timeout: 3000 }).then(() => H.ev(() => window.__shook), () => 0);
   gate('booted cards shake on every screen (simple motion for a miss)', shook > 0, `shaking ${shook}`);
   await solve(H);
@@ -442,7 +447,7 @@ try {
   await sleep(1200);
   const fd = await solo.evaluate(() => window.__cl.digest());
   const soloUi = await solo.evaluate(() => ({ join: document.getElementById('joinSheet').classList.contains('open'),
-    roster: getComputedStyle(document.getElementById('roster')).visibility, go: document.getElementById('go').textContent,
+    roster: document.getElementById('roster').offsetParent ? 'shown' : 'hidden', go: document.getElementById('go').textContent,
     remote: location.search.includes('signal') }));
   const srcClues = r1.subs.filter((x) => r1.puzzles.some((p, i) => i !== 1 && p.writer === x[0])).map((x) => x.slice(3).join('/'));
   const gotClues = fd.subs.map((x) => x.slice(3).join('/'));
