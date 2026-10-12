@@ -993,17 +993,23 @@ impl App {
         self.commit(Body::Start(s));
     }
 
-    /// This round's clovers, each as a shareable board (see `Custom::load`),
-    /// for those whose bit is set in `mask`, separated by blank lines.
-    pub fn export_boards(&self, mask: u32) -> String {
-        let s = &self.shared;
-        s.puzzles()
+    /// This round's clovers selected by `mask`, each as a scrambled,
+    /// shareable board (see `model::scramble`), separated by blank lines.
+    pub fn export_boards(&mut self, mask: u32) -> String {
+        let boards: Vec<String> = self
+            .shared
+            .puzzles()
             .iter()
             .enumerate()
             .filter(|(i, _)| mask & (1 << i) != 0)
-            .filter_map(|(_, &w)| s.export_board(w, &self.name_of(w)))
-            .collect::<Vec<_>>()
-            .join("\n\n")
+            .filter_map(|(_, &w)| self.shared.export_board(w, &self.name_of(w)))
+            .collect();
+        boards.iter().map(|b| scramble(b, &mut self.rng)).collect::<Vec<_>>().join("\n\n")
+    }
+
+    /// Scramble boards given in answer order (e.g. typed in from a screenshot).
+    pub fn scramble_boards(&mut self, text: &str) -> String {
+        text.split("\n\n").map(|b| scramble(b.trim(), &mut self.rng)).collect::<Vec<_>>().join("\n\n")
     }
 
     /// Fresh scores and seats: everyone here now is dealt in.

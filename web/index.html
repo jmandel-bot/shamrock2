@@ -111,6 +111,8 @@
   .menuBtn { text-align: left; border-radius: 14px; background: #ffffff10; width: 100%; }
   .danger { color: #ffc2b8; }
   code { font-size: 14px; color: var(--dim); word-break: break-all; }
+  /* Solo play from a share link: no table, so no roster or table menu. */
+  body.solo #roster, body.solo #menuBtn { visibility: hidden; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition: none !important; animation: none !important; }
   }

@@ -427,41 +427,38 @@ try {
   await A.page.click('#shareClose');
   metric('share_link_chars', link.length);
   gate('a four-clover share link stays under 1,200 characters (compressed)', link.length < 1200, `${link.length}`);
-  const sharedUrl = link.replace(/^https?:\/\/[^/]+\//, `http://localhost:${PORT}/`).replace('#', `&signal=ws://localhost:${RELAY}#`);
-  const friends = [];
-  for (const nm of ['Fay', 'Gus']) {
-    const ctx = await browser.newContext({ viewport: { width: 1280, height: 860 } });
-    const page = await ctx.newPage();
-    page.on('pageerror', (e) => errors.push(`${nm}: ${e.message}`));
-    await page.goto(sharedUrl);
-    await page.waitForSelector('#joinSheet.open');
-    await page.fill('#nameInput', nm);
-    await page.click('#joinBtn');
-    friends.push(page);
-  }
-  await friends[0].waitForFunction(() => window.__cl.ui().players.length === 2, null, { timeout: 30000 });
-  const startLabel2 = await friends[0].textContent('#go');
-  await friends[0].click('#go');
-  await friends[1].waitForFunction(() => window.__cl.digest().phase === 'guessing:0', null, { timeout: 10000 });
-  const fd = await friends[1].evaluate(() => window.__cl.digest());
+  // A share link is solo play: no room, no name, no peers; straight into the clovers.
+  const sharedUrl = link.replace(/^https?:\/\/[^/]+\//, `http://localhost:${PORT}/`);
+  const soloCtx = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  const solo = await soloCtx.newPage();
+  solo.on('pageerror', (e) => errors.push(`solo: ${e.message}`));
+  await solo.goto(sharedUrl);
+  await solo.waitForFunction(() => window.__cl?.digest?.().phase === 'guessing:0', null, { timeout: 10000 });
+  await sleep(1200);
+  const fd = await solo.evaluate(() => window.__cl.digest());
+  const soloUi = await solo.evaluate(() => ({ join: document.getElementById('joinSheet').classList.contains('open'),
+    roster: getComputedStyle(document.getElementById('roster')).visibility, go: document.getElementById('go').textContent,
+    remote: location.search.includes('signal') }));
   const srcClues = r1.subs.filter((x) => r1.puzzles.some((p, i) => i !== 1 && p.writer === x[0])).map((x) => x.slice(3).join('/'));
   const gotClues = fd.subs.map((x) => x.slice(3).join('/'));
-  gate('a share link opens a fresh table straight into the chosen clovers', startLabel2 === 'Start guessing' && fd.puzzles.length === 4
-    && srcClues.every((c) => gotClues.includes(c)), `${fd.puzzles.length} boards`);
+  gate('a share link opens solo, straight into the chosen clovers (no room, no name)',
+    !soloUi.join && soloUi.roster === 'hidden' && soloUi.go === 'Guess' && fd.puzzles.length === 4
+    && srcClues.every((c) => gotClues.includes(c)), `${fd.puzzles.length} boards, join=${soloUi.join}, go=${soloUi.go}`);
   // Placing a shared board as its writer laid it out solves it first time.
-  const Fr = { page: friends[1], ev: (fn, a) => friends[1].evaluate(fn, a), digest: () => friends[1].evaluate(() => window.__cl.digest()),
-    card: (i) => friends[1].evaluate((i) => window.__cl.card(i), i), slot: (s) => friends[1].evaluate((s) => window.__cl.slot(s), s),
-    settle: () => friends[1].evaluate(() => window.__cl.settle()),
-    origin: () => friends[1].evaluate(() => { const r = document.getElementById('c').getBoundingClientRect(); return [r.left, r.top]; }) };
-  Fr.drag = async (from, to) => { const o = await Fr.origin(), m = friends[1].mouse; await m.move(o[0] + from[0], o[1] + from[1]); await m.down();
+  const Fr = { page: solo, ev: (fn, a) => solo.evaluate(fn, a), digest: () => solo.evaluate(() => window.__cl.digest()),
+    card: (i) => solo.evaluate((i) => window.__cl.card(i), i), slot: (s) => solo.evaluate((s) => window.__cl.slot(s), s),
+    settle: () => solo.evaluate(() => window.__cl.settle()),
+    origin: () => solo.evaluate(() => { const r = document.getElementById('c').getBoundingClientRect(); return [r.left, r.top]; }) };
+  Fr.drag = async (from, to) => { const o = await Fr.origin(), m = solo.mouse; await m.move(o[0] + from[0], o[1] + from[1]); await m.down();
     for (let k = 1; k <= 12; k++) await m.move(o[0] + from[0] + (to[0] - from[0]) * k / 12, o[1] + from[1] + (to[1] - from[1]) * k / 12); await m.up(); };
-  Fr.tap = async (at) => { const o = await Fr.origin(); await friends[1].mouse.click(o[0] + at[0], o[1] + at[1]); };
+  Fr.tap = async (at) => { const o = await Fr.origin(); await solo.mouse.click(o[0] + at[0], o[1] + at[1]); };
   await solve(Fr);
-  await friends[1].waitForFunction(() => !document.getElementById('go').disabled);
-  await friends[1].click('#go');
-  await friends[0].waitForFunction(() => window.__cl.digest().puzzles[0].attempts === 1, null, { timeout: 8000 });
-  gate("a shared board checks against its writer's answer", (await friends[0].evaluate(() => window.__cl.digest())).puzzles[0].mask === 15);
-  for (const p of friends) await p.context().close();
+  await solo.waitForFunction(() => !document.getElementById('go').disabled);
+  await solo.click('#go');
+  await solo.waitForFunction(() => window.__cl.digest().puzzles[0].attempts === 1, null, { timeout: 8000 });
+  gate("a shared board checks against its writer's answer", (await solo.evaluate(() => window.__cl.digest())).puzzles[0].mask === 15);
+  await solo.screenshot({ path: `${OUT}8-solo.png` });
+  await soloCtx.close();
 
   // ---- next round keeps the table and the score -----------------------------------------
   console.log('\n# rounds and games');

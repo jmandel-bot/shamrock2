@@ -1053,3 +1053,32 @@ fn imported_and_shared_boards_are_guessed_first_and_check_against_their_layout()
     assert_eq!(t.apps[0].shared.phase(), Phase::Writing);
     assert_eq!(t.apps[0].shared.round.custom, 0);
 }
+
+#[test]
+fn scrambled_boards_hide_the_layout_and_round_trip_exactly() {
+    let board = "Josh\nsnake\nlink\nhorse\ngrappling\n\
+                 tube|berry|throne|spy\nanimal|map|waiter|fool\nbasket|weak|knight|toy\npond|firefight|sheep|climbing\n\
+                 tattoo|doe|clothing|banana";
+    let mut rng = Rng::new(7);
+    let mut differs = 0;
+    for _ in 0..50 {
+        let s = scramble(board, &mut rng);
+        assert!(s.lines().last().unwrap().starts_with('@'), "answer kept apart");
+        // The answer comes back exactly; decoys keep a random turn (their
+        // orientation means nothing, and turning every card hides which are decoys).
+        let back = unscramble(&s).unwrap();
+        let (b, o): (Vec<&str>, Vec<&str>) = (back.lines().collect(), board.lines().collect());
+        assert_eq!(b[..9], o[..9], "answer round trips exactly");
+        let decoy: [&str; 4] = b[9].split('|').collect::<Vec<_>>().try_into().unwrap();
+        assert!((0..4).any(|r| turn_words(decoy, r).join("|") == o[9]), "decoy is the same card");
+        // The listed cards (as words) aren't simply the answer in order.
+        let listed: Vec<&str> = s.lines().skip(5).take(5).collect();
+        let answer: Vec<&str> = board.lines().skip(5).collect();
+        differs += (listed != answer) as u32;
+    }
+    assert!(differs >= 48, "scrambling actually scrambles ({differs}/50)");
+    // Malformed answer lines are rejected, not trusted.
+    assert!(unscramble("x\na\nb\nc\nd\n1|2|3|4\n1|2|3|4\n1|2|3|4\n1|2|3|4\n@ 0 0 0 0 1 0 2 0").is_none(), "card used twice");
+    assert!(unscramble("x\na\nb\nc\nd\n1|2|3|4\n1|2|3|4\n1|2|3|4\n1|2|3|4\n@ 9 0 1 0 2 0 3 0").is_none(), "out of range");
+    assert_eq!(turn_words(["t", "r", "b", "l"], 1), ["l", "t", "r", "b"], "a quarter turn moves the top word right");
+}

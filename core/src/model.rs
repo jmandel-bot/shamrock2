@@ -206,6 +206,7 @@ impl Custom {
     /// (at least four cards). Several clovers may be loaded; they're guessed
     /// in load order. Returns false (and keeps nothing) if malformed.
     pub fn load(text: &str) -> bool {
+        let Some(text) = unscramble(text) else { return false };
         let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
         let Some(name) = lines.next() else { return false };
         let clues: Vec<String> = lines.by_ref().take(NSLOTS).map(|c| clamp_text(c, MAX_TEXT)).collect();
@@ -233,6 +234,71 @@ impl Custom {
     pub fn by_writer(w: u32) -> Option<&'static Custom> {
         Self::all().into_iter().find(|c| c.writer == w)
     }
+}
+
+/// A card's words (clockwise from the top) after `r` clockwise quarter turns.
+pub fn turn_words<T: Copy>(w: [T; 4], r: u8) -> [T; 4] {
+    core::array::from_fn(|d| w[(d + 4 - r as usize % 4) % 4])
+}
+
+/// Board text in answer order: name, four clues (top, right, bottom, left),
+/// the answer cards for spots 0..4 as they sit, then decoys.
+pub fn board_text(name: &str, clues: &[String; NSLOTS], cards: &[[&str; 4]]) -> String {
+    let mut lines = vec![name.to_string()];
+    lines.extend(clues.iter().cloned());
+    lines.extend(cards.iter().map(|c| c.join("|")));
+    lines.join("\n")
+}
+
+/// Make board text safe to pass around: cards shuffled and each randomly
+/// turned, with the answer kept on a separate last line, `@ i r i r i r i r`
+/// (for spots 0..4: which listed card, and how far it was turned).
+pub fn scramble(text: &str, rng: &mut Rng) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() < 1 + NSLOTS + NSLOTS {
+        return text.to_string();
+    }
+    let cards: Vec<[&str; 4]> =
+        lines[1 + NSLOTS..].iter().filter_map(|l| l.split('|').collect::<Vec<_>>().try_into().ok()).collect();
+    let mut order: Vec<usize> = (0..cards.len()).collect();
+    for k in (1..order.len()).rev() {
+        order.swap(k, rng.below(k + 1));
+    }
+    let turns: Vec<u8> = cards.iter().map(|_| rng.below(4) as u8).collect();
+    let mut out: Vec<String> = lines[..1 + NSLOTS].iter().map(|l| l.to_string()).collect();
+    out.extend(order.iter().map(|&i| turn_words(cards[i], turns[i]).join("|")));
+    let answer: Vec<String> = (0..NSLOTS)
+        .map(|spot| format!("{} {}", order.iter().position(|&i| i == spot).unwrap(), turns[spot]))
+        .collect();
+    out.push(format!("@ {}", answer.join(" ")));
+    out.join("\n")
+}
+
+/// Undo `scramble` (text without an `@` line is already in answer order).
+pub fn unscramble(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let Some(last) = lines.last().and_then(|l| l.strip_prefix('@')) else { return Some(text.to_string()) };
+    let nums: Vec<usize> = last.split_whitespace().map(|x| x.parse().ok()).collect::<Option<_>>()?;
+    if nums.len() != 2 * NSLOTS || lines.len() < 2 + NSLOTS + NSLOTS {
+        return None;
+    }
+    let cards: Vec<[&str; 4]> = lines[1 + NSLOTS..lines.len() - 1]
+        .iter()
+        .map(|l| l.split('|').collect::<Vec<_>>().try_into().ok())
+        .collect::<Option<_>>()?;
+    let mut used = vec![false; cards.len()];
+    let mut solved = Vec::new();
+    for s in 0..NSLOTS {
+        let (i, r) = (nums[2 * s], nums[2 * s + 1] as u8);
+        if *used.get(i)? || r > 3 {
+            return None;
+        }
+        used[i] = true;
+        solved.push(turn_words(cards[i], (4 - r) % 4));
+    }
+    solved.extend(cards.iter().zip(&used).filter(|(_, u)| !**u).map(|(c, _)| *c));
+    let clues: [String; NSLOTS] = core::array::from_fn(|i| lines[1 + i].to_string());
+    Some(board_text(lines[0], &clues, &solved))
 }
 
 /// Seat id for a display name: names are identities, so choosing an
@@ -427,14 +493,10 @@ impl Shared {
     pub fn export_board(&self, w: u32, name: &str) -> Option<String> {
         let sub = self.effective(w)?;
         let d = self.deal(w);
-        let mut lines = vec![name.to_string()];
-        lines.extend(sub.clues.iter().cloned());
-        for (i, words) in d.words.iter().enumerate().take(self.ncards(w)) {
-            let r = if i < NSLOTS { d.sol_rot[i] as usize } else { 0 };
-            let sat: Vec<&str> = (0..4).map(|dir| words[(dir + 4 - r) % 4]).collect();
-            lines.push(sat.join("|"));
-        }
-        Some(lines.join("\n"))
+        let solved: Vec<[&str; 4]> = (0..self.ncards(w))
+            .map(|i| if i < NSLOTS { turn_words(d.words[i], d.sol_rot[i]) } else { d.words[i] })
+            .collect();
+        Some(board_text(name, &sub.clues, &solved))
     }
 
     /// A writer's latest clues (while writing).

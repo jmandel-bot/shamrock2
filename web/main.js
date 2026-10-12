@@ -190,74 +190,59 @@ new ResizeObserver(() => {
 
 const nameKey = `shamrock:${roomId}:name`;
 
-// Shared boards travel inside the link (?b=…, made by "Share boards") so a
-// fresh table can guess them. Links must not give answers away by accident:
-// each board's cards are shuffled and randomly turned, the answer is kept
-// as a separate (card, turn) map, and the whole thing is AES-GCM encrypted
-// under a key derived from the room name. Every player's device has to
-// decode it to play, so this stops accidental peeking, not determined
-// devtools digging.
+// Shared boards travel inside the link (?b=…, made by "Share boards") and
+// open as solo play on whatever device follows it: no room, no name, no
+// connection. Links must not give answers away by accident: Rust scrambles
+// each board (cards shuffled and randomly turned, the answer on a separate
+// line); here that text is only compressed and AES-GCM encrypted under a key
+// derived from the link's #fragment. Every device has to decode it to play,
+// so this stops accidental peeking, not determined devtools digging.
+const solo = params.has('b');
 const b64 = {
   enc: (u8) => btoa(String.fromCharCode(...u8)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
   dec: (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
 };
-const shareKey = async (room) => crypto.subtle.importKey(
-  'raw', await crypto.subtle.digest('SHA-256', enc.encode(`shamrock-share-v1:${room}`)), 'AES-GCM', false, ['encrypt', 'decrypt']);
-const rand = (n) => crypto.getRandomValues(new Uint32Array(1))[0] % n;
-// Words clockwise from the top; turning a card r quarter-turns clockwise.
-const turnCard = (w, r) => w.map((_, d) => w[(d - r + 4) % 4]);
-
-/** Board text (name, 4 clues, answer cards in spot order, decoys) → sealed form. */
-function scramble(text) {
-  const [name, ...rest] = text.split('\n');
-  const clues = rest.slice(0, 4), cards = rest.slice(4).map((l) => l.split('|'));
-  const order = cards.map((_, i) => i);
-  for (let i = order.length - 1; i > 0; i--) { const j = rand(i + 1); [order[i], order[j]] = [order[j], order[i]]; }
-  const turns = cards.map(() => rand(4));
-  const k = order.map((i) => turnCard(cards[i], turns[i]));
-  const a = [0, 1, 2, 3].map((spot) => [order.indexOf(spot), turns[spot]]);
-  return { n: name, c: clues, k, a };
-}
-function unscramble({ n, c, k, a }) {
-  const answer = a.map(([i, r]) => turnCard(k[i], (4 - r) % 4));
-  const decoys = k.filter((_, i) => !a.some(([j]) => j === i));
-  return [n, ...c, ...[...answer, ...decoys].map((w) => w.join('|'))].join('\n');
-}
-// Compressed before encrypting (ciphertext doesn't compress). Plaintext
-// starting with byte 1 is deflate-raw; anything else is a v1 link's plain
-// JSON, which still opens.
+const shareKey = async (salt) => crypto.subtle.importKey(
+  'raw', await crypto.subtle.digest('SHA-256', enc.encode(`shamrock-share-v1:${salt}`)), 'AES-GCM', false, ['encrypt', 'decrypt']);
 const squeeze = async (u8, mode) => new Uint8Array(await new Response(
   new Blob([u8]).stream().pipeThrough(mode === 'in' ? new CompressionStream('deflate-raw') : new DecompressionStream('deflate-raw'))).arrayBuffer());
-async function seal(boards, room) {
+const scratchText = (len) => dec.decode(bytes(X.scratch_ptr(), len));
+
+/** Scrambled board text (from Rust) → link payload. Byte 2 = deflated text. */
+async function seal(text, salt) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const json = enc.encode(JSON.stringify(boards.map(scramble)));
-  const data = new Uint8Array([1, ...(await squeeze(json, 'in'))]);
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await shareKey(room), data));
+  const data = new Uint8Array([2, ...(await squeeze(enc.encode(text), 'in'))]);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await shareKey(salt), data));
   return b64.enc(new Uint8Array([...iv, ...ct]));
 }
-async function unseal(payload, room) {
+/** Link payload → scrambled board texts, for Rust to load. Older links (JSON,
+ *  plain or deflated) are rewritten into the same scrambled text form. */
+async function unseal(payload, salt) {
   const raw = b64.dec(payload);
-  const pt = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, await shareKey(room), raw.slice(12)));
+  const pt = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, await shareKey(salt), raw.slice(12)));
+  if (pt[0] === 2) return dec.decode(await squeeze(pt.slice(1), 'out')).split('\n\n');
   const json = pt[0] === 1 ? await squeeze(pt.slice(1), 'out') : pt;
-  return JSON.parse(dec.decode(json)).map(unscramble);
+  return JSON.parse(dec.decode(json)).map(({ n, c, k, a }) => [n, ...c, ...k.map((w) => w.join('|')), `@ ${a.flat().join(' ')}`].join('\n'));
 }
 
 const customNames = [];
 const loadBoard = (text) => { if (X.load_custom(writeText(text))) customNames.push(text.split('\n')[0]); };
-if (params.get('b')) {
+if (solo) {
   try { (await unseal(params.get('b'), roomId)).forEach(loadBoard); }
   catch { setTimeout(() => toast("This shared-boards link is damaged; check it was copied in full.", 8000), 500); }
 }
 
-/** A link opening a fresh table that guesses `boards` (board texts). */
+/** A link that plays `boards` (texts in answer order, e.g. from a screenshot). */
 async function shareFromText(boards) {
-  const room = Math.random().toString(36).slice(2, 8);
-  return `${location.origin}${location.pathname}?b=${await seal(boards, room)}#${room}`;
+  const scrambled = scratchText(X.scramble_boards(writeText(boards.join('\n\n'))));
+  return linkFor(scrambled);
 }
-async function shareLink(mask) {
-  const len = X.export_boards(mask);
-  return shareFromText(dec.decode(bytes(X.scratch_ptr(), len)).split('\n\n'));
+async function linkFor(scrambled) {
+  const salt = Math.random().toString(36).slice(2, 8);
+  return `${location.origin}${location.pathname}?b=${await seal(scrambled, salt)}#${salt}`;
 }
+const shareLink = async (mask) => linkFor(scratchText(X.export_boards(mask)));
+const ownTable = () => { location.href = `${location.origin}${location.pathname}#${Math.random().toString(36).slice(2, 8)}`; };
 function openShare() {
   const s = ui();
   const list = $('shareList');
@@ -384,7 +369,19 @@ function renderUi(force = false) {
   const decoys = s.phase === 'writing' && s.inRound;
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   const dealLine = s.dealable.length ? `Deals in ${esc(names(s.dealable))}; anyone who joins later is dealt in next round.` : '';
-  if (!s.seated) {
+  if (solo) {
+    const what = s.n ? `<b>${esc(s.writerName ?? '')}</b>'s clover · ${s.k + 1} of ${s.n} · ${plural(s.writerDecoys, 'decoy')}` : '';
+    if (s.phase === 'guessing' && s.done) {
+      hint = `${what} · solved`;
+      go = [s.k + 1 < s.n ? 'Next clover' : 'Done', true, () => act(4)];
+    } else if (s.phase === 'guessing') {
+      hint = `${what}. Drag cards onto the spots, tap a card to turn it, then Guess.`;
+      go = ['Guess', s.canCheck, () => act(3)];
+    } else {
+      hint = customNames.length ? "That's every clover in this link." : "This link didn't contain any clovers.";
+      go = ['Start your own table', true, ownTable];
+    }
+  } else if (!s.seated) {
     hint = !s.players.length ? 'Nobody is playing yet. Join to start a table.'
       : `Watching${s.phase === 'guessing' ? ` <b>${esc(s.writerName ?? '')}</b>'s clover` : ''}.`;
     go = ['Join the game', true, openJoin];
@@ -504,13 +501,22 @@ async function connect() {
   return { send: (u8) => peers.size && action.send(u8) };
 }
 
-connect().then((n) => { net = n; }, (e) => toast(`Can't connect: ${e.message}`, 10000));
+// Solo play (a share link) never connects to anyone.
+if (!solo) connect().then((n) => { net = n; }, (e) => toast(`Can't connect: ${e.message}`, 10000));
 
 // Returning to this room re-takes your seat; a first visit asks. Wait a
 // moment first so we've heard the table's state (and existing names).
-const saved = params.has('fresh') ? null : recall(nameKey);
-if (saved) setTimeout(() => joinAs(saved), 1500);
-else if (saved === null) setTimeout(() => { if (!ui().seated) openJoin(); }, 900);
+if (solo) {
+  // Just play: an anonymous local seat, straight into the shared clovers.
+  document.body.classList.add('solo');
+  X.join(writeText('You'));
+  if (customNames.length) X.action(1);
+  drainOutbox();
+} else {
+  const saved = params.has('fresh') ? null : recall(nameKey);
+  if (saved) setTimeout(() => joinAs(saved), 1500);
+  else if (saved === null) setTimeout(() => { if (!ui().seated) openJoin(); }, 900);
+}
 
 // ---- frame loop ---------------------------------------------------------------
 

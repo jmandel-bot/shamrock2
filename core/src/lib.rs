@@ -169,7 +169,14 @@ pub extern "C" fn palette() -> u32 {
     to_scratch(App::palette_json())
 }
 
-/// Shareable text for this round's clovers selected by `mask` → scratch.
+/// Boards given in answer order (inbox text) → scrambled form → scratch.
+#[no_mangle]
+pub extern "C" fn scramble_boards(len: u32) -> u32 {
+    let t = inbox_str(len);
+    to_scratch(g().app.scramble_boards(&t))
+}
+
+/// Shareable (scrambled) text for this round's clovers selected by `mask` → scratch.
 #[no_mangle]
 pub extern "C" fn export_boards(mask: u32) -> u32 {
     to_scratch(g().app.export_boards(mask))
