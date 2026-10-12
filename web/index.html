@@ -42,9 +42,25 @@
   #toast.show { opacity: 1; }
 
   #dock { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px)); background: var(--bar); }
+  #progress { flex: 1 1 100%; display: flex; align-items: center; gap: 10px; }
+  #progMain { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  #segs { display: flex; gap: 4px; height: 10px; }
+  #alt { white-space: nowrap; min-height: 34px; padding: 6px 12px; font-size: 14px; }
+  #segs i { flex: 1; border-radius: 5px; border: 1.5px solid currentColor; opacity: .55; transition: background .3s, opacity .3s; }
+  #segs i.done { opacity: 1; background: currentColor; }
+  #segs i.away { border-style: dashed; }
+  #progLabel { font-size: 13px; color: var(--dim); white-space: nowrap; }
   #hint { flex: 1 1 14em; min-width: 0; color: var(--hint); font-size: 14px; }
   #hint b { color: var(--fg); }
-  #dockBtns { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+  #dockBtns { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; justify-content: flex-end; }
+  #go { white-space: nowrap; }
+  @media (max-width: 480px) {
+    #hint { flex-basis: 100%; }
+    #dockBtns { width: 100%; justify-content: space-between; gap: 6px; }
+    .stepper { font-size: 12px; }
+    .stepper button { min-width: 30px; }
+    .go { padding: 10px 16px; }
+  }
   .stepper { display: inline-flex; align-items: center; gap: 2px; background: var(--chip); border-radius: 999px; padding: 2px; font-size: 13px; }
   .stepper button { min-height: 34px; min-width: 34px; padding: 0; background: transparent; font-size: 18px; }
   .stepper span { padding: 0 4px; white-space: nowrap; }
@@ -80,11 +96,11 @@
   <div id="toast"></div>
 </div>
 <div id="dock">
+  <div id="progress" hidden><div id="progMain"><div id="segs"></div><span id="progLabel"></span></div><button id="alt" hidden></button></div>
   <div id="hint"></div>
   <div id="dockBtns">
     <span class="stepper" id="size" hidden title="Card size on your screen only"><button id="sizeDown" aria-label="Smaller cards">−</button><span>Cards</span><button id="sizeUp" aria-label="Bigger cards">+</button></span>
     <span class="stepper" id="decoys" hidden><button id="decDown" aria-label="Fewer extra cards">−</button><span id="decLabel"></span><button id="decUp" aria-label="More extra cards">+</button></span>
-    <button id="alt" hidden></button>
     <button id="go" class="go"></button>
   </div>
 </div>

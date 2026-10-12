@@ -258,30 +258,34 @@ function renderUi(force = false) {
   }), ...(s.watchers ? [Object.assign(document.createElement('span'), { className: 'chip', textContent: `👀 ${s.watchers}` })] : []));
 
   let hint = '', go = null, alt = null;
-  const decoys = s.phase === 'writing' && s.seated && !s.ready;
+  const decoys = s.phase === 'writing' && s.inRound;
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const dealLine = s.dealable.length ? `Deals in ${esc(names(s.dealable))}; anyone who joins later is dealt in next round.` : '';
   if (!s.seated) {
     hint = !s.players.length ? 'Nobody is playing yet. Join to start a table.'
       : `Watching${s.phase === 'guessing' ? ` <b>${esc(s.writerName ?? '')}</b>'s clover` : ''}.`;
     go = ['Join the game', true, openJoin];
   } else switch (s.phase) {
     case 'lobby':
-      hint = 'Send the invite link (⋯ menu), then deal when everyone is in. People can join later too.';
-      go = ['Deal cards', true, () => act(1)];
+      hint = `Send the invite link (⋯ menu). ${dealLine}`;
+      go = [`Start with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
       break;
     case 'writing':
-      if (!s.ready) {
+      if (!s.inRound) {
+        hint = "You joined after the deal, so you're in next round. You'll help guess this round's clovers.";
+      } else if (!s.ready) {
         hint = s.filled < 4
           ? `<b>Your secret clover.</b> Tap a leaf and write a clue linking the two words facing it (${s.filled}/4). Enter jumps to the next leaf.`
-          : 'Choose how many decoy cards to mix in, then tap <b>Ready</b>.';
-        go = ['Ready', s.canReady, () => act(2)];
+          : 'Choose how many decoy cards to mix in, then <b>Submit</b>.';
+        go = ['Submit', s.canReady, () => act(2)];
       } else {
-        hint = s.waiting.length ? `Waiting for ${esc(names(s.waiting))}…` : 'Everyone is ready. Starting…';
-        go = ['Ready ✓', true, () => act(2), 'on'];
-        if (s.waiting.length) alt = ['Start without them', () => act(5)];
+        hint = 'Submitted. You can still change clues or decoys until guessing starts.';
+        go = ['Submitted ✓', true, () => act(2), 'on'];
       }
+      if (s.readyCount > 0 && s.readyCount < s.progress.length) alt = [`Proceed with ${s.readyCount} of ${s.progress.length}`, () => act(5)];
       break;
     case 'guessing': {
-      const what = `<b>${esc(s.writerName)}</b>'s clover · ${s.k + 1} of ${s.n} · ${s.writerDecoys} decoy${s.writerDecoys === 1 ? '' : 's'}`;
+      const what = `<b>${esc(s.writerName)}</b>'s clover · ${s.k + 1} of ${s.n} · ${plural(s.writerDecoys, 'decoy')}`;
       if (s.done) {
         hint = `${what} · done`;
         go = [s.k + 1 < s.n ? 'Next clover' : 'See scores', true, () => act(4)];
@@ -295,9 +299,23 @@ function renderUi(force = false) {
       break;
     }
     case 'end':
-      hint = `Round ${s.round}: <b>+${s.roundScore}</b> · game total <b>${s.gameScore}</b>. A perfect first try scores 6.`;
-      go = ['Next round', true, () => act(1)];
+      hint = `Round ${s.round}: <b>+${s.roundScore}</b> · game total <b>${s.gameScore}</b>. ${dealLine}`;
+      go = [`Next round with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
       break;
+  }
+  // Submission progress, building up to guessing.
+  const prog = $('progress');
+  prog.hidden = s.phase !== 'writing';
+  if (!prog.hidden) {
+    $('segs').replaceChildren(...s.progress.map((p) => {
+      const seg = document.createElement('i');
+      seg.className = `${p.ready ? 'done' : ''}${p.away ? ' away' : ''}`;
+      seg.style.color = p.color;
+      seg.title = `${p.name}: ${p.ready ? 'submitted' : 'writing'}${p.away ? ' (away)' : ''}`;
+      return seg;
+    }));
+    const left = s.progress.filter((p) => !p.ready).map((p) => p.name + (p.away ? ' (away)' : ''));
+    $('progLabel').textContent = `${s.readyCount} of ${s.progress.length} submitted${left.length && left.length <= 2 ? ` · waiting for ${names(left)}` : ''}`;
   }
   $('hint').innerHTML = hint;
   const goBtn = $('go');

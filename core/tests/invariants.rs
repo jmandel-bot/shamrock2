@@ -159,7 +159,7 @@ fn solve(t: &mut Table, k: usize, decoy_in_spot0: bool) {
 fn wire_roundtrip() {
     let s = Stamp { clock: 99, peer: 7 };
     let game = Stamp { clock: 1, peer: 2 };
-    let round = Round { seed: 42, n: 3, stamp: Stamp { clock: 3, peer: 1 } };
+    let round = Round { seed: 42, n: 3, stamp: Stamp { clock: 3, peer: 1 }, ..Round::default() }.with_players(&[9, 4, 7]);
     let op = |body| Msg::Op(Op { game, round, body });
     let msgs = vec![
         op(Body::None),
@@ -260,15 +260,113 @@ fn guessing_waits_for_an_explicit_ready() {
 }
 
 #[test]
-fn editing_a_clue_unreadies() {
+fn submitted_players_can_keep_editing_until_guessing_starts() {
     let mut t = Table::new(2);
     t.apps[0].action(1);
     t.pump();
+    let me = t.apps[0].seat.unwrap();
     write_and_ready(&mut t.apps[0]);
     t.pump();
     t.apps[0].set_clue(2, "changed", false);
+    t.apps[0].set_decoys(3);
     t.pump();
-    assert!(!t.apps[1].shared.subs[&t.apps[0].seat.unwrap()].ready);
+    let s = &t.apps[1].shared;
+    assert!(s.is_ready(me), "editing keeps you submitted");
+    assert_eq!(s.latest(me).unwrap().clues[2], "changed");
+    // Clearing a clue does un-submit (it can't be guessed half-empty).
+    t.apps[0].set_clue(1, "", false);
+    t.pump();
+    assert!(!t.apps[1].shared.is_ready(me));
+    t.apps[0].set_clue(1, "back", false);
+    t.apps[0].action(2);
+    write_and_ready(&mut t.apps[1]);
+    t.pump();
+    let s = &t.apps[1].shared;
+    assert_eq!(s.phase(), Phase::Guessing(0));
+    assert_eq!(s.effective(me).unwrap().clues, ["sea".to_string(), "back".into(), "changed".into(), "dog".into()]);
+    assert_eq!(s.ncards(me), 7);
+}
+
+#[test]
+fn an_edit_racing_proceed_resolves_the_same_everywhere() {
+    let mut t = Table::new(3);
+    t.apps[0].action(1);
+    t.pump();
+    let me = t.apps[0].seat.unwrap();
+    write_and_ready(&mut t.apps[0]);
+    write_and_ready(&mut t.apps[1]);
+    t.pump();
+    // Concurrently: player 0 edits while player 1 proceeds without player 2.
+    t.apps[0].set_clue(0, "late edit", false);
+    t.apps[1].action(5);
+    let (e, p) = (drain(&mut t.apps[0]).0, drain(&mut t.apps[1]).0);
+    // Deliver in opposite orders to the third device and back.
+    for x in e.iter().chain(p.iter()) {
+        t.apps[2].on_packet(x, 9);
+    }
+    for x in p.iter() {
+        t.apps[0].on_packet(x, 2);
+    }
+    for x in e.iter() {
+        t.apps[1].on_packet(x, 1);
+    }
+    t.pump();
+    assert!(t.digests_equal());
+    let c = t.apps[0].shared.effective(me).unwrap().clues[0].clone();
+    assert!(c == "sea" || c == "late edit");
+    assert_eq!(t.apps[2].shared.puzzles().len(), 2);
+}
+
+#[test]
+fn starting_fixes_the_roster_late_joiners_wait_for_next_round() {
+    let mut t = Table::new(2);
+    t.apps[0].action(1);
+    t.pump();
+    let k = t.add(app(42));
+    t.apps[k].join("Latecomer");
+    t.pump();
+    let late = t.apps[k].seat.unwrap();
+    assert!(!t.apps[0].shared.round.players().contains(&late));
+    assert!(t.apps[k].scene().cards.is_empty(), "no clover this round");
+    assert!(t.apps[k].ui_json().contains("\"inRound\":false"));
+    write_and_ready(&mut t.apps[0]);
+    write_and_ready(&mut t.apps[1]);
+    t.pump();
+    assert_eq!(t.apps[k].shared.phase(), Phase::Guessing(0), "the latecomer doesn't block");
+    // They can guess, and they're dealt in next round.
+    let w = t.writer_now();
+    assert!(t.apps[k].scene().movable.iter().any(|m| *m) || w == late);
+    for _ in 0..2 {
+        let w = t.writer_now();
+        let g = t.guesser_for(w);
+        solve(&mut t, g, false);
+        t.apps[g].action(3);
+        t.pump();
+        t.apps[g].action(4);
+        t.pump();
+    }
+    t.apps[k].action(1);
+    t.pump();
+    assert!(t.apps[0].shared.round.players().contains(&late));
+}
+
+#[test]
+fn auto_proceed_ignores_who_is_online() {
+    let mut t = Table::new(3);
+    t.apps[0].action(1);
+    t.pump();
+    // Player 2 submits, then drops off entirely.
+    write_and_ready(&mut t.apps[2]);
+    t.pump();
+    let _gone = t.apps.pop().unwrap();
+    for a in t.apps.iter_mut() {
+        a.on_link_lost(3);
+    }
+    write_and_ready(&mut t.apps[0]);
+    write_and_ready(&mut t.apps[1]);
+    t.pump();
+    assert_eq!(t.apps[0].shared.phase(), Phase::Guessing(0), "all three submitted, offline or not");
+    assert_eq!(t.apps[0].shared.puzzles().len(), 3);
 }
 
 #[test]
@@ -311,7 +409,7 @@ fn away_players_block_until_someone_starts_without_them() {
     }
     t.pump();
     assert_eq!(t.apps[0].shared.phase(), Phase::Writing);
-    assert!(t.apps[0].ui_json().contains("(away)"), "but they're shown as away");
+    assert!(t.apps[0].ui_json().contains("\"ready\":false,\"away\":true"), "but they are shown as away");
     // ...a ready player decides.
     t.apps[0].action(5);
     t.pump();
@@ -636,12 +734,12 @@ fn late_joiner_receives_full_state() {
 fn newer_rounds_reset_round_state_but_keep_seats_and_scores() {
     let mut s = Shared::default();
     let g = Stamp { clock: 1, peer: 1 };
-    let r1 = Round { seed: 1, n: 1, stamp: Stamp { clock: 2, peer: 1 } };
+    let r1 = Round { seed: 1, n: 1, stamp: Stamp { clock: 2, peer: 1 }, ..Round::default() };
     let st = |c| Stamp { clock: c, peer: 1 };
     s.apply(&Op { game: g, round: r1, body: Body::Seat(5, Seat { name: "a".into(), active: true, stamp: st(3) }) });
     s.apply(&Op { game: g, round: r1, body: Body::Sub(5, Sub { ready: true, stamp: st(4), ..Sub::default() }) });
     s.apply(&Op { game: g, round: r1, body: Body::Ledger(1, 5, 6, st(5)) });
-    let r2 = Round { seed: 2, n: 2, stamp: st(6) };
+    let r2 = Round { seed: 2, n: 2, stamp: st(6), ..Round::default() };
     s.apply(&Op { game: g, round: r2, body: Body::None });
     assert!(s.subs.is_empty());
     assert_eq!((s.players(), s.game_score()), (vec![5], 6));

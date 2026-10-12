@@ -43,9 +43,9 @@ node harness/serve.mjs # prints a URL
 **How a game goes** (So Clover! rules, everyone at once):
 
 1. **Join.** Your first visit asks for a name: tap Join, or *Just watch*. Names are identities, so picking a name that's already at the table takes over that seat (to switch devices, or to debug). Your device remembers your name for this room.
-2. **Deal cards:** one press by anyone.
-3. **Write.** Everyone gets a private clover with 4 locked cards in random rotations. Tap a leaf, type a clue linking the two words facing it, then Enter; the board turns so the next empty leaf faces you. Bid how many decoy cards to mix in (− / +), then tap **Ready**. Tapping Ready again, or editing a clue, un-readies you. Drafts are shared state, so a takeover keeps them.
-4. **Guessing starts by itself** once every seated player is Ready. If someone has left, the ready players see "Waiting for Dee (away)" and tap *Start without them* (or remove them in the menu). Guessing never starts on its own while someone is missing: in a peer-to-peer mesh, a device that hasn't connected to a player yet can't tell "absent" from "not seen yet". Clovers are guessed one at a time on a big shared board. Drag cards **anywhere**: loose "maybe" placements stay exactly where you leave them for everyone, and a card only snaps when dropped close to a spot (pushing any card already there back to where yours came from). The card touched last sits on top. A card within reach of a spot counts for **Check**. Correct cards lock and wrong ones go back to the tray for one more try. A perfect first try scores 6; otherwise 1 per correct card.
+2. **Start with N players:** one press by anyone. The button names who will be dealt in (seated players at the table now); that roster is fixed for the round, and anyone who joins later is dealt in next round (they can help guess meanwhile).
+3. **Write.** Everyone gets a private clover with 4 locked cards in random rotations. Tap a leaf, type a clue linking the two words facing it, then Enter; the board turns so the next empty leaf faces you. Bid how many decoy cards to mix in (− / +), then **Submit**. You can keep editing clues and decoys after submitting, right up until guessing starts. Clearing a clue un-submits, and tapping *Submitted ✓* withdraws. Drafts are shared state, so a takeover keeps them.
+4. **A progress bar fills** one segment per dealt-in player as they submit. Guessing starts by itself only when **all** of them have submitted, whether they're online, offline or gone. Anyone can override with **Proceed with 3 of 5**. Every version of each player's clues is kept, so an edit that races Proceed resolves identically everywhere: whatever was in before the Proceed stamp counts. Clovers are guessed one at a time, in deal order, on a big shared board. Drag cards **anywhere**: loose "maybe" placements stay exactly where you leave them for everyone, and a card only snaps when dropped close to a spot (pushing any card already there back to where yours came from). The card touched last sits on top. A card within reach of a spot counts for **Check**. Correct cards lock and wrong ones go back to the tray for one more try. A perfect first try scores 6; otherwise 1 per correct card.
 5. **Next clover**, then **Next round**. Seats and scores carry across rounds. The ⋯ menu has the invite link, switch player, watch, *Deal new cards*, *New game* (reset scores, keep whoever is here), and *Remove* for away players.
 
 **Turning the board** is local to each player: tap ⟳ at its centre, tap empty board, or drag around it. Cards on the board turn with it; cards in the tray stay put. Card turns, moves and board turns all animate. Each clover starts upright.
@@ -67,9 +67,9 @@ The browser harness drives the real UI through a whole game: 5 players (one phon
 
 | metric | value |
 |---|---|
-| gates | 35/35 (5 consecutive runs) |
-| presses to join / write a clover + Ready | 1 / 6 |
-| last Ready → guessing starts | ~60 ms |
+| gates | 39/39 (3 consecutive runs) |
+| presses to join / write a clover + Submit | 1 / 6 |
+| last Submit → guessing starts | ~60 ms |
 | card drop visible on 6 other screens (p50 / p95) | ~18 / ~33 ms |
 | late visitor gets full state | ~300 ms |
 | frame CPU, wasm + Canvas2D (p95) | ~1.3 ms |

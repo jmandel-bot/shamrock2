@@ -409,11 +409,11 @@ impl App {
     }
 
     fn my_sub(&self) -> Sub {
-        self.seat.and_then(|s| self.shared.subs.get(&s).cloned()).unwrap_or_else(|| Sub { decoys: 1, ..Sub::default() })
+        self.seat.and_then(|s| self.shared.latest(s).cloned()).unwrap_or_else(|| Sub { decoys: 1, ..Sub::default() })
     }
 
     fn seated_writing(&self) -> Option<u32> {
-        self.seat.filter(|s| self.shared.phase() == Phase::Writing && self.shared.players().contains(s))
+        self.seat.filter(|s| self.shared.phase() == Phase::Writing && self.shared.round_players().contains(s))
     }
 
     // ---- what is on the board -------------------------------------------------
@@ -457,7 +457,7 @@ impl App {
                     writer: Some(w),
                     movable: (0..cards.len()).map(|i| can && (i >= NSLOTS || locked & (1 << i) == 0)).collect(),
                     words: d.words[..cards.len()].to_vec(),
-                    clues: s.subs.get(&w).map(|x| x.clues.clone()).unwrap_or_default(),
+                    clues: s.effective(w).map(|x| x.clues.clone()).unwrap_or_default(),
                     cards,
                     claim,
                     locked,
@@ -803,7 +803,8 @@ impl App {
     }
 
     /// Save a clue (shared, so another device can take over); with
-    /// `advance`, open the next empty leaf. Editing un-readies you.
+    /// `advance`, open the next empty leaf. Edits after submitting keep you
+    /// submitted (until guessing starts), unless a clue is left empty.
     pub fn set_clue(&mut self, d: u8, text: &str, advance: bool) {
         if d as usize >= NSLOTS || self.seated_writing().is_none() {
             return;
@@ -812,8 +813,8 @@ impl App {
         self.editing = None;
         if self.my_sub().clues[d as usize] != text {
             self.put_sub(|s| {
+                s.ready &= !text.is_empty();
                 s.clues[d as usize] = text;
-                s.ready = false;
             });
         }
         let clues = self.my_sub().clues;
@@ -860,7 +861,7 @@ impl App {
                     }
                 }
             }
-            5 if phase == Phase::Writing && self.shared.subs.values().any(|s| s.ready) => {
+            5 if phase == Phase::Writing && self.seat.is_some() && self.ready_count() > 0 => {
                 let s = self.stamp();
                 self.commit(Body::Start(s));
             }
@@ -869,11 +870,23 @@ impl App {
         }
     }
 
+    /// Who a new round would deal in: seated players at the table now.
+    pub fn dealable(&self) -> Vec<u32> {
+        let here = self.present();
+        self.shared.players().into_iter().filter(|p| here.contains(p)).collect()
+    }
+
+    fn ready_count(&self) -> usize {
+        self.shared.round_players().iter().filter(|p| self.shared.is_ready(**p)).count()
+    }
+
     fn new_round(&mut self) {
-        if self.shared.players().is_empty() {
+        let players = self.dealable();
+        if players.is_empty() {
             return self.status("Join the table first.");
         }
-        let round = Round { seed: self.rng.next() as u32, n: self.shared.round.n + 1, stamp: self.stamp() };
+        let round = Round { seed: self.rng.next() as u32, n: self.shared.round.n + 1, stamp: self.stamp(), ..Round::default() }
+            .with_players(&players);
         let op = Op { game: self.shared.game, round, body: Body::None };
         self.shared.apply(&op);
         self.new_round_local();
@@ -984,17 +997,17 @@ impl App {
         self.render();
     }
 
-    /// Guessing starts once every seated player has tapped Ready. This must
-    /// not depend on who *this* device thinks is present: in a mesh, a device
-    /// that hasn't connected to someone yet would start without them. Players
-    /// who really left are skipped explicitly ("Start without them" / Remove).
+    /// Guessing starts on its own only once everyone dealt into the round
+    /// has submitted, online or not. This must not depend on who *this*
+    /// device can see: in a mesh, a device that hasn't connected to someone
+    /// yet would start without them. Anyone can override ("Proceed with 3 of
+    /// 5").
     fn maybe_start_guessing(&mut self) {
         if self.shared.phase() != Phase::Writing {
             return;
         }
-        let players = self.shared.players();
-        let ready = |s: &u32| self.shared.subs.get(s).is_some_and(|x| x.ready);
-        if !players.is_empty() && players.iter().all(ready) {
+        let players = self.shared.round_players();
+        if !players.is_empty() && players.iter().all(|p| self.shared.is_ready(*p)) {
             let s = self.stamp();
             self.commit(Body::Start(s));
         }
@@ -1182,10 +1195,9 @@ impl App {
             .iter()
             .map(|&p| {
                 let status = match phase {
-                    Phase::Writing => match s.subs.get(&p) {
-                        Some(x) if x.ready => "ready",
-                        _ => "writing",
-                    },
+                    Phase::Writing if !s.round.players().contains(&p) => "next",
+                    Phase::Writing if s.is_ready(p) => "ready",
+                    Phase::Writing => "writing",
                     Phase::Guessing(_) if writer == Some(p) => "writer",
                     _ => "",
                 };
@@ -1205,20 +1217,28 @@ impl App {
             Phase::Guessing(k) => ("guessing", k, s.puzzles().len()),
             Phase::End => ("end", 0, s.puzzles().len()),
         };
-        let waiting: Vec<String> = players
+        // The round's progress: one entry per dealt-in player.
+        let progress: Vec<String> = s
+            .round_players()
             .iter()
-            .filter(|p| !s.subs.get(p).is_some_and(|x| x.ready))
-            .map(|p| {
-                let away = if present.contains(p) { "" } else { " (away)" };
-                json_str(&format!("{}{away}", self.name_of(*p)))
+            .map(|&p| {
+                format!(
+                    "{{\"name\":{},\"color\":\"#{:06x}\",\"ready\":{},\"away\":{}}}",
+                    json_str(&self.name_of(p)),
+                    self.color_of(p) >> 8,
+                    s.is_ready(p),
+                    !present.contains(&p)
+                )
             })
             .collect();
+        let deal_names: Vec<String> = self.dealable().iter().map(|p| json_str(&self.name_of(*p))).collect();
         let sub = self.my_sub();
         let check = writer.map(|w| s.check(w)).unwrap_or_default();
         let seated = self.seat.is_some_and(|me| players.contains(&me));
+        let in_round = self.seat.is_some_and(|me| s.round.players().contains(&me));
         format!(
             "{{\"phase\":\"{pname}\",\"seat\":{},\"seated\":{seated},\"name\":{},\"players\":[{}],\"watchers\":{},\
-             \"ready\":{},\"canReady\":{},\"filled\":{},\"decoys\":{},\"waiting\":[{}],\"anyReady\":{},\
+             \"inRound\":{in_round},\"ready\":{},\"canReady\":{},\"filled\":{},\"decoys\":{},\"progress\":[{}],\"readyCount\":{},\"dealable\":[{}],\
              \"k\":{k},\"n\":{n},\"writerName\":{},\"writerDecoys\":{},\"isWriter\":{},\"attempts\":{},\"done\":{},\
              \"canCheck\":{},\"claimed\":{},\"round\":{},\"roundScore\":{},\"gameScore\":{}}}",
             self.seat.map_or("null".into(), |x| x.to_string()),
@@ -1229,8 +1249,9 @@ impl App {
             self.can_ready(),
             sub.clues.iter().filter(|c| !c.is_empty()).count(),
             sub.decoys,
-            waiting.join(","),
-            s.subs.values().any(|x| x.ready),
+            progress.join(","),
+            self.ready_count(),
+            deal_names.join(","),
             writer.map_or("null".into(), |w| json_str(&self.name_of(w))),
             writer.map_or(0, |w| s.ncards(w) - NSLOTS),
             writer.is_some() && writer == self.seat,

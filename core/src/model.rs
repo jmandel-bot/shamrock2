@@ -32,6 +32,7 @@ pub const SNAP_R: f32 = 34.0;
 pub const CLAIM_R: f32 = 80.0;
 
 pub const MAX_TEXT: usize = 60;
+pub const MAX_PLAYERS: usize = 12;
 pub const PERFECT_SCORE: u8 = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Hash)]
@@ -67,6 +68,22 @@ pub struct Round {
     /// 1-based round number within the game (0 = no round yet).
     pub n: u16,
     pub stamp: Stamp,
+    /// Seats dealt into this round (fixed when the round starts).
+    pub seats: [u32; MAX_PLAYERS],
+    pub nseats: u8,
+}
+
+impl Round {
+    pub fn players(&self) -> &[u32] {
+        &self.seats[..(self.nseats as usize).min(MAX_PLAYERS)]
+    }
+    pub fn with_players(mut self, players: &[u32]) -> Round {
+        let n = players.len().min(MAX_PLAYERS);
+        self.seats = [0; MAX_PLAYERS];
+        self.seats[..n].copy_from_slice(&players[..n]);
+        self.nseats = n as u8;
+        self
+    }
 }
 
 #[derive(Clone, PartialEq, Debug, Default)]
@@ -144,7 +161,10 @@ pub struct Shared {
     /// (round n, writer) → (points, stamp).
     pub ledger: BTreeMap<(u16, u32), (u8, Stamp)>,
     pub round: Round,
-    pub subs: BTreeMap<u32, Sub>,
+    /// Every version of every writer's clues, keyed (writer, stamp). Keeping
+    /// versions makes "what was submitted when guessing started" well
+    /// defined even when edits and Proceed race.
+    pub subs: BTreeMap<(u32, Stamp), Sub>,
     pub start: Option<Stamp>,
     pub cards: BTreeMap<(u32, u8), Card>,
     pub checks: BTreeMap<u32, Check>,
@@ -256,11 +276,7 @@ impl Shared {
         }
         let newer = match &op.body {
             Body::Sub(w, s) => {
-                let n = self.subs.get(w).is_none_or(|c| s.stamp > c.stamp);
-                if n {
-                    self.subs.insert(*w, s.clone());
-                }
-                n
+                self.subs.insert((*w, s.stamp), s.clone()).is_none()
             }
             Body::Start(s) => {
                 let n = self.start.is_none_or(|c| *s > c);
@@ -302,7 +318,7 @@ impl Shared {
         let mut v = vec![op(Body::None)];
         v.extend(self.seats.iter().map(|(id, s)| op(Body::Seat(*id, s.clone()))));
         v.extend(self.ledger.iter().map(|((n, w), (p, s))| op(Body::Ledger(*n, *w, *p, *s))));
-        v.extend(self.subs.iter().map(|(w, s)| op(Body::Sub(*w, s.clone()))));
+        v.extend(self.subs.iter().map(|((w, _), s)| op(Body::Sub(*w, s.clone()))));
         v.extend(self.start.map(|s| op(Body::Start(s))));
         v.extend(self.cards.iter().map(|((w, i), c)| op(Body::Card(*w, *i, *c))));
         v.extend(self.checks.iter().map(|(w, c)| op(Body::Check(*w, *c))));
@@ -317,14 +333,35 @@ impl Shared {
         self.seats.iter().filter(|(_, s)| s.active).map(|(id, _)| *id).collect()
     }
 
-    /// Writers whose clovers get guessed, in order: those who were ready
-    /// when guessing started.
+    /// A writer's latest clues (while writing).
+    pub fn latest(&self, w: u32) -> Option<&Sub> {
+        self.subs.range((w, Stamp::default())..=(w, Stamp { clock: u64::MAX, peer: u32::MAX })).next_back().map(|(_, s)| s)
+    }
+
+    /// A writer's clues as they stood when guessing started (latest otherwise).
+    pub fn effective(&self, w: u32) -> Option<&Sub> {
+        match self.start {
+            Some(start) => self.subs.range((w, Stamp::default())..(w, start)).next_back().map(|(_, s)| s),
+            None => self.latest(w),
+        }
+    }
+
+    pub fn is_ready(&self, w: u32) -> bool {
+        self.effective(w).is_some_and(|s| s.ready)
+    }
+
+    /// Players in this round who are still seated.
+    pub fn round_players(&self) -> Vec<u32> {
+        self.round.players().iter().copied().filter(|p| self.seats.get(p).is_some_and(|s| s.active)).collect()
+    }
+
+    /// Writers whose clovers get guessed, in deal order: those who had
+    /// submitted when guessing started.
     pub fn puzzles(&self) -> Vec<u32> {
-        let Some(start) = self.start else { return Vec::new() };
-        let mut v: Vec<(Stamp, u32)> =
-            self.subs.iter().filter(|(_, s)| s.ready && s.stamp < start).map(|(w, s)| (s.stamp, *w)).collect();
-        v.sort();
-        v.into_iter().map(|(_, w)| w).collect()
+        if self.start.is_none() {
+            return Vec::new();
+        }
+        self.round.players().iter().copied().filter(|w| self.is_ready(*w)).collect()
     }
 
     pub fn phase(&self) -> Phase {
@@ -343,7 +380,7 @@ impl Shared {
     }
 
     pub fn ncards(&self, writer: u32) -> usize {
-        NSLOTS + self.subs.get(&writer).map_or(1, |s| s.decoys.min(MAX_DECOYS)) as usize
+        NSLOTS + self.effective(writer).map_or(1, |s| s.decoys.min(MAX_DECOYS)) as usize
     }
 
     pub fn home_card(&self, d: &Deal, n: usize, i: usize) -> Card {
@@ -416,8 +453,10 @@ impl Shared {
         let seats: Vec<String> =
             self.seats.iter().map(|(id, s)| format!("[{id},{},{}]", json_str(&s.name), s.active)).collect();
         let subs: Vec<String> = self
-            .subs
+            .round
+            .players()
             .iter()
+            .filter_map(|w| self.effective(*w).map(|s| (w, s)))
             .map(|(w, s)| {
                 let clues: Vec<String> = s.clues.iter().map(|c| json_str(c)).collect();
                 format!("[{w},{},{},{}]", s.decoys, s.ready, clues.join(","))
@@ -449,9 +488,10 @@ impl Shared {
             })
             .collect();
         format!(
-            "{{\"phase\":\"{phase}\",\"round\":{},\"seed\":{},\"seats\":[{}],\"subs\":[{}],\"puzzles\":[{}],\"roundScore\":{},\"gameScore\":{}}}",
+            "{{\"phase\":\"{phase}\",\"round\":{},\"seed\":{},\"dealt\":{:?},\"seats\":[{}],\"subs\":[{}],\"puzzles\":[{}],\"roundScore\":{},\"gameScore\":{}}}",
             self.round.n,
             self.round.seed,
+            self.round.players(),
             seats.join(","),
             subs.join(","),
             puzzles.join(","),
@@ -555,6 +595,10 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
             put_stamp(b, round.stamp);
             b.extend_from_slice(&round.seed.to_le_bytes());
             b.extend_from_slice(&round.n.to_le_bytes());
+            b.push(round.nseats);
+            for p in round.players() {
+                b.extend_from_slice(&p.to_le_bytes());
+            }
             match body {
                 Body::None => {}
                 Body::Seat(id, s) => {
@@ -675,7 +719,13 @@ impl<'a> Reader<'a> {
             return Some(Msg::Cursor { device, seat, kind, x: self.f32()?, y: self.f32()? });
         }
         let game = self.stamp()?;
-        let round = Round { stamp: self.stamp()?, seed: self.u32()?, n: self.u16()? };
+        let (stamp, seed, n) = (self.stamp()?, self.u32()?, self.u16()?);
+        let nseats = self.u8().filter(|n| (*n as usize) <= MAX_PLAYERS)?;
+        let mut seats = [0u32; MAX_PLAYERS];
+        for p in seats.iter_mut().take(nseats as usize) {
+            *p = self.u32()?;
+        }
+        let round = Round { stamp, seed, n, seats, nseats };
         let body = match tag {
             T_NONE => Body::None,
             T_SEAT => {

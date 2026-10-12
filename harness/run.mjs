@@ -152,9 +152,11 @@ try {
 
   // ---- writing ----------------------------------------------------------------------
   console.log('\n# writing (everyone at once)');
-  await A.go(); // Deal cards
-  await until([...players, W], (d) => d.phase === 'writing' && d.round === 1);
-  gate('one press deals for everyone', true);
+  const startLabel = await A.page.textContent('#go');
+  gate('starting names how many players will be dealt in', startLabel === 'Start with 5 players', startLabel);
+  await A.go(); // Start
+  await until([...players, W], (d) => d.phase === 'writing' && d.round === 1 && d.dealt.length === 5);
+  gate('one press deals everyone in, and fixes the roster', true);
   gate("watchers don't get a clover", (await W.ev(() => window.__cl.card(0)))[0] < 0);
 
   const words = ['ocean', 'storm', 'royal', 'kitchen'];
@@ -179,16 +181,27 @@ try {
   metric('presses_to_write_and_ready', Math.max(...plain));
   gate('a clover takes ≤ 6 presses (leaf, 4× Enter, Ready)', Math.max(...plain) <= 6, plain.join(','));
   await sleep(600);
-  gate('guessing waits for an explicit Ready from everyone', (await A.digest()).phase === 'writing');
-  await A.page.waitForFunction(() => document.getElementById('hint').textContent.includes('Eve'), null, { timeout: 3000 })
-    .then(() => gate('ready players see who they are waiting for', true), () => gate('ready players see who they are waiting for', false));
+  gate('guessing waits until everyone has submitted', (await A.digest()).phase === 'writing');
+  await A.page.waitForFunction(() => document.querySelectorAll('#segs i.done').length === 4, null, { timeout: 3000 })
+    .then(() => gate('the progress bar fills as people submit (4 of 5)', true), () => gate('the progress bar fills as people submit (4 of 5)', false));
+  const label = await A.page.textContent('#progLabel');
+  const proceed = await A.page.textContent('#alt');
+  gate('progress names who is left; override reads "Proceed with 4 of 5"', label.includes('Eve') && proceed === 'Proceed with 4 of 5', `${label} | ${proceed}`);
+  // Submitted players can still edit.
+  await A.settle();
+  await A.tap((await A.petal(2)).slice(0, 2));
+  await A.page.waitForSelector('#clue', { state: 'visible' });
+  await A.page.fill('#clue', 'edited after submit');
+  await A.page.keyboard.press('Enter');
+  await until([B], (d) => d.subs.some((x) => x[2] === true && x.includes('edited after submit')))
+    .then(() => gate('a submitted player can still edit; stays submitted', true), () => gate('a submitted player can still edit; stays submitted', false));
   t0 = performance.now();
   await E.go();
   await until([...players, W], (d) => d.phase === 'guessing:0', 10000);
   metric('last_ready_to_guessing_ms', performance.now() - t0, ' ms');
   const d1 = await A.digest();
   gate('all 5 clovers queued; decoy bids kept', d1.puzzles.length === 5 && d1.subs.some((s) => s[1] === 2));
-  gate('clues typed via Enter-to-next-leaf arrive intact', d1.subs.every((s) => s.slice(3).every((c, d) => c.startsWith(words[d]))));
+  gate('clues typed via Enter-to-next-leaf arrive intact', d1.subs.every((s) => s.slice(3).every((c, d) => c.startsWith(words[d]) || c === 'edited after submit')));
 
   // ---- take over a seat from another device ------------------------------------------
   console.log('\n# takeover');
@@ -334,8 +347,10 @@ try {
 
   // ---- next round keeps the table and the score -----------------------------------------
   console.log('\n# rounds and games');
+  const nextLabel = await B.page.textContent('#go');
   await B.go(); // Next round
   await until(all, (d) => d.phase === 'writing' && d.round === 2);
+  gate('next round button names the players', nextLabel === 'Next round with 5 players', nextLabel);
   const r2 = await C.digest();
   gate('next round: same players, score carries over', r2.seats.length === 5 && r2.gameScore === 28 && r2.roundScore === 0);
 
