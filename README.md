@@ -58,11 +58,11 @@ node harness/serve.mjs # prints a URL
 
 ## Sharing boards
 
-At the end of a round, **Share boards** (also in the ⋯ menu) lists the round's clovers. Pick any (one for a single board, or a set) and copy the link. Everything travels in the link (`?b=`, base64url of the boards' text: clues, cards as they sat solved, decoys), so no server or file is involved; four clovers come to about 1 KB. Opening it starts a fresh table: **Start guessing** queues those clovers under their writers' names, and Guess checks against the real answers. The link includes the answers, so it's meant for people who weren't there.
+At the end of a round, **Share boards** (also in the ⋯ menu) lists the round's clovers. Pick any (one for a single board, or a set) and copy the link. Everything travels in the link (`?b=`), so no server or file is involved; four clovers come to about 1 KB. Links don't give answers away by accident: each board's cards are shuffled and randomly turned, the answer is a separate card-and-turn map, and the payload is AES-GCM encrypted with a key derived from the room name. (Every player's device must decode it to play, so this guards against glances, not determined devtools digging.) Opening it starts a fresh table: **Start guessing** queues those clovers under their writers' names, and Guess checks against the real answers. The link includes the answers, so it's meant for people who weren't there.
 
 ## Importing an unfinished clover
 
-A room can open with a clover brought in from elsewhere, e.g. read off a screenshot of an old game. Add `web/puzzles/<room>.json` (name, four clues top/right/bottom/left, then the answer cards for spots top-left, top-right, bottom-right, bottom-left with words clockwise from the top as they sit, then any decoys). List `<room>` in `web/puzzles/index.json`. Opening `…/#<room>` and pressing **Start guessing** goes straight to guessing it; Check scores against that layout, and later rounds deal normally. Example: `web/puzzles/oldphone-x7q2.json`.
+Boards from elsewhere (e.g. read off a screenshot of an old game) become ordinary share links. Write the board as text: name, the four clues (top, right, bottom, left), then the answer cards for spots top-left, top-right, bottom-right and bottom-left (words clockwise from the top as they sit), then any decoys. Then call `window.__cl.shareFromText([text])` on any open page to get the link.
 
 ## Harness
 

@@ -412,7 +412,17 @@ try {
   await A.page.click('#side'); // Share boards
   await A.page.waitForSelector('#shareSheet.open');
   await A.page.click('#shareList .item:nth-child(2) input'); // leave one out
+  await A.page.waitForFunction(() => !document.getElementById('shareCopy').disabled && document.getElementById('shareText').textContent.includes('?b='));
   const link = (await A.page.textContent('#shareText')).trim();
+  // Nothing about the boards is readable from the link, raw or base64-decoded.
+  {
+    const payload = new URL(link).searchParams.get('b');
+    const raw = Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('latin1').toLowerCase();
+    const words = r1.subs.flatMap((x) => x.slice(3)).concat((await A.ev(() => window.__cl.X && [])) || []);
+    const cardWords = await A.ev(() => { const d = window.__cl.digest(); return d.subs.length; });
+    const leaks = words.filter((w) => w.length > 3 && (raw.includes(w.toLowerCase()) || link.toLowerCase().includes(w.toLowerCase())));
+    gate("share links don't reveal clues or answers at a glance (encrypted)", leaks.length === 0 && cardWords > 0, leaks.join(','));
+  }
   await A.page.screenshot({ path: `${OUT}7-share.png` });
   await A.page.click('#shareClose');
   metric('share_link_chars', link.length);

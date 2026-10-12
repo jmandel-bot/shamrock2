@@ -190,33 +190,66 @@ new ResizeObserver(() => {
 
 const nameKey = `shamrock:${roomId}:name`;
 
-// A room can open with clovers brought in from elsewhere: a shared-boards
-// link (?b=…, made by "Share boards"), or web/puzzles/<room>.json listed in
-// web/puzzles/index.json (e.g. read off a screenshot). Everyone opening the
-// same link loads the same boards.
-const b64url = {
-  enc: (text) => btoa(String.fromCharCode(...enc.encode(text))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
-  dec: (s) => dec.decode(Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0))),
+// Shared boards travel inside the link (?b=…, made by "Share boards") so a
+// fresh table can guess them. Links must not give answers away by accident:
+// each board's cards are shuffled and randomly turned, the answer is kept
+// as a separate (card, turn) map, and the whole thing is AES-GCM encrypted
+// under a key derived from the room name. Every player's device has to
+// decode it to play, so this stops accidental peeking, not determined
+// devtools digging.
+const b64 = {
+  enc: (u8) => btoa(String.fromCharCode(...u8)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
 };
+const shareKey = async (room) => crypto.subtle.importKey(
+  'raw', await crypto.subtle.digest('SHA-256', enc.encode(`shamrock-share-v1:${room}`)), 'AES-GCM', false, ['encrypt', 'decrypt']);
+const rand = (n) => crypto.getRandomValues(new Uint32Array(1))[0] % n;
+// Words clockwise from the top; turning a card r quarter-turns clockwise.
+const turnCard = (w, r) => w.map((_, d) => w[(d - r + 4) % 4]);
+
+/** Board text (name, 4 clues, answer cards in spot order, decoys) → sealed form. */
+function scramble(text) {
+  const [name, ...rest] = text.split('\n');
+  const clues = rest.slice(0, 4), cards = rest.slice(4).map((l) => l.split('|'));
+  const order = cards.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) { const j = rand(i + 1); [order[i], order[j]] = [order[j], order[i]]; }
+  const turns = cards.map(() => rand(4));
+  const k = order.map((i) => turnCard(cards[i], turns[i]));
+  const a = [0, 1, 2, 3].map((spot) => [order.indexOf(spot), turns[spot]]);
+  return { n: name, c: clues, k, a };
+}
+function unscramble({ n, c, k, a }) {
+  const answer = a.map(([i, r]) => turnCard(k[i], (4 - r) % 4));
+  const decoys = k.filter((_, i) => !a.some(([j]) => j === i));
+  return [n, ...c, ...[...answer, ...decoys].map((w) => w.join('|'))].join('\n');
+}
+async function seal(boards, room) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = enc.encode(JSON.stringify(boards.map(scramble)));
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await shareKey(room), data));
+  return b64.enc(new Uint8Array([...iv, ...ct]));
+}
+async function unseal(payload, room) {
+  const raw = b64.dec(payload);
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: raw.slice(0, 12) }, await shareKey(room), raw.slice(12));
+  return JSON.parse(dec.decode(pt)).map(unscramble);
+}
+
 const customNames = [];
 const loadBoard = (text) => { if (X.load_custom(writeText(text))) customNames.push(text.split('\n')[0]); };
-try {
-  if (params.get('b')) b64url.dec(params.get('b')).split('\n\n').forEach(loadBoard);
-  const listed = await fetch('puzzles/index.json').then((r) => (r.ok ? r.json() : []));
-  const r = listed.includes(roomId) ? await fetch(`puzzles/${encodeURIComponent(roomId)}.json`) : null;
-  if (r?.ok) {
-    const p = await r.json();
-    loadBoard([p.name, ...p.clues, ...p.cards.map((c) => c.join('|'))].join('\n'));
-  }
-} catch {}
+if (params.get('b')) {
+  try { (await unseal(params.get('b'), roomId)).forEach(loadBoard); }
+  catch { setTimeout(() => toast("This shared-boards link is damaged; check it was copied in full.", 8000), 500); }
+}
 
-// "Share boards": pick clovers from this round → a link that opens a fresh
-// table guessing them (answers included, for people who weren't here).
-function shareLink(mask) {
-  const len = X.export_boards(mask);
-  const text = dec.decode(bytes(X.scratch_ptr(), len));
+/** A link opening a fresh table that guesses `boards` (board texts). */
+async function shareFromText(boards) {
   const room = Math.random().toString(36).slice(2, 8);
-  return `${location.origin}${location.pathname}?b=${b64url.enc(text)}#${room}`;
+  return `${location.origin}${location.pathname}?b=${await seal(boards, room)}#${room}`;
+}
+async function shareLink(mask) {
+  const len = X.export_boards(mask);
+  return shareFromText(dec.decode(bytes(X.scratch_ptr(), len)).split('\n\n'));
 }
 function openShare() {
   const s = ui();
@@ -228,10 +261,11 @@ function openShare() {
     row.querySelector('span').textContent = `${b.name}'s clover`;
     return row;
   }));
-  const update = () => {
+  const update = async () => {
     let mask = 0;
     list.querySelectorAll('input:checked').forEach((c) => (mask |= 1 << +c.dataset.i));
-    $('shareText').textContent = mask ? shareLink(mask) : '';
+    $('shareCopy').disabled = true;
+    $('shareText').textContent = mask ? await shareLink(mask) : '';
     $('shareCopy').disabled = !mask;
   };
   list.onchange = update;
@@ -506,6 +540,8 @@ window.__cl = {
   settle: () => X.settle(),
   answerRot: (s) => X.answer_rot(s),
   palette: () => scratchJson(X.palette()),
+  shareFromText,
+  unseal,
   wordBudget: () => X.word_budget(),
   measure: async (words) => {
     await document.fonts.load('700 26px Figtree');
