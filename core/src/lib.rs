@@ -256,6 +256,12 @@ pub extern "C" fn probe_shown_angle(i: u32) -> f32 {
     g().app.shown_angle(i as usize)
 }
 
+/// Widest a card word may be (card units) before it would crowd a corner.
+#[no_mangle]
+pub extern "C" fn word_budget() -> f32 {
+    app::WORD_MAX_W
+}
+
 /// Rendered size of card words, in CSS px.
 #[no_mangle]
 pub extern "C" fn probe_word_px() -> f32 {

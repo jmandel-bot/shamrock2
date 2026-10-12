@@ -189,6 +189,16 @@ try {
     gate('all text meets WCAG AA contrast (≥ 4.5:1)', worst[1] >= 4.5, `worst: ${worst[0]} ${worst[1].toFixed(2)}`);
     const smallest = Math.min(...domPairs.map((p) => p[3]));
     gate('no UI text smaller than 14 px', smallest >= 14, `${smallest}px`);
+    // Every word in the deck fits its card edge at full size (no squeezing,
+    // no corner collisions), measured in the shipped font.
+    const deck = JSON.parse(await readFile(here('../core/src/shamrock.json'), 'utf8')).flat();
+    const widths = await A.ev((w) => window.__cl.measure(w), deck);
+    const budget = await A.ev(() => window.__cl.wordBudget());
+    const widest = widths.reduce((m, w) => (w[1] > m[1] ? w : m));
+    metric('widest_word_vs_budget', `${widest[0]} ${widest[1].toFixed(0)}/${budget.toFixed(0)}`);
+    gate('every deck word fits its card edge at full size', widths.every((w) => w[1] <= budget), `${widest[0]} ${widest[1].toFixed(1)} of ${budget}`);
+    const fontOk = await A.ev(() => document.fonts.check('700 26px Figtree') && document.fonts.check('600 26px Fraunces'));
+    gate('brand fonts load from the site itself', fontOk);
     const sel = await E.ev(() => [getComputedStyle(document.getElementById('hint')).userSelect, getComputedStyle(document.getElementById('nameInput')).userSelect]);
     gate("bars can't be text-selected (no dictionary pop-ups); inputs can", sel[0] === 'none' && sel[1] !== 'none', sel.join(','));
   }
@@ -201,6 +211,9 @@ try {
     await B.page.waitForSelector('#clue', { state: 'visible' });
     await sleep(300);
     gate('tapping the side of a leaf edits it without turning the board', (await B.quarter()) === q0 && await B.page.isVisible('#clue'));
+    const tf = await B.page.evaluate(() => getComputedStyle(document.getElementById('clue')).transform);
+    const [a, b] = (tf.match(/-?[\d.e-]+/g) || [1, 0]).map(Number);
+    gate("a leaf's editor lies along the leaf (bottom leaf: upside down)", Math.abs(Math.atan2(b, a)) > 3.0, tf);
     await B.page.keyboard.press('Escape');
   }
 
@@ -266,7 +279,7 @@ try {
   // Legibility and fill, measured where it matters: while guessing (tray shown).
   for (const p of [G, E]) {
     const word = await p.ev(() => window.__cl.wordPx());
-    const boardPx = (await p.ev(() => window.__cl.cardPx() / window.__cl.zoom())) / 150 * 864; // 2 × EXTENT
+    const boardPx = (await p.ev(() => window.__cl.cardPx() / window.__cl.zoom())) / 210 * 864; // 2 × EXTENT
     const side = Math.min(p.viewport.width, p.viewport.height);
     const tag = p === E ? 'phone_390x844' : 'desktop_1280x860';
     metric(`word_px_${tag}`, word, ' px');
@@ -314,12 +327,12 @@ try {
 
   // Tentative placement: off-centre near a spot, and loose on the board.
   await G.settle();
-  await G.drag((await G.card(1)).slice(0, 2), (await G.board(115 + 45, 115 + 40)).slice(0, 2));
+  await G.drag((await G.card(1)).slice(0, 2), (await G.board(140 + 45, 140 + 40)).slice(0, 2));
   await G.drag((await G.card(2)).slice(0, 2), (await G.board(-20, 230)).slice(0, 2));
   await until(all, (d) => { const c = d.puzzles[0].cards; return c[1][0] === 'float' && c[2][0] === 'float'; });
   const tc = cur(await H.digest()).cards;
   gate('tentative placements stay exactly where dropped, for everyone',
-    Math.abs(tc[1][1] - 160) < 2 && Math.abs(tc[1][2] - 155) < 2 && Math.abs(tc[2][2] - 230) < 2, JSON.stringify(tc.slice(1, 3)));
+    Math.abs(tc[1][1] - 185) < 2 && Math.abs(tc[1][2] - 180) < 2 && Math.abs(tc[2][2] - 230) < 2, JSON.stringify(tc.slice(1, 3)));
   gate('a card near a spot counts toward a check', cur(await H.digest()).claim[2] === 1);
   await H.page.screenshot({ path: `${OUT}2-guessing-tentative.png` });
   await E.page.screenshot({ path: `${OUT}2-guessing-phone.png` });

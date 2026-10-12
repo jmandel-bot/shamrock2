@@ -15,11 +15,11 @@ pub const MAX_DECOYS: u8 = 4;
 pub const MAX_CARDS: usize = NSLOTS + MAX_DECOYS as usize;
 
 // Board geometry, in board units (cards are 150 units).
-pub const CARD: f32 = 150.0;
+pub const CARD: f32 = 210.0;
 pub const HALF: f32 = CARD / 2.0;
-pub const SLOT_OFF: f32 = 115.0;
+pub const SLOT_OFF: f32 = 140.0;
 /// Radius of the clover's round centre, where the four spots are.
-pub const BOARD_HALF: f32 = 275.0;
+pub const BOARD_HALF: f32 = 300.0;
 /// Clue leaves sit between these distances from the centre.
 pub const LEAF_IN: f32 = 290.0;
 pub const LEAF_OUT: f32 = 400.0;
@@ -28,9 +28,9 @@ pub const LEAF_HALF_W: f32 = 205.0;
 pub const EXTENT: f32 = 432.0;
 pub const HUB_R: f32 = 30.0;
 /// Dropping within this distance of a free spot snaps into it.
-pub const SNAP_R: f32 = 34.0;
+pub const SNAP_R: f32 = 40.0;
 /// A card within this distance of a spot counts as "in" it for a check.
-pub const CLAIM_R: f32 = 80.0;
+pub const CLAIM_R: f32 = 100.0;
 
 pub const MAX_TEXT: usize = 60;
 pub const MAX_PLAYERS: usize = 12;

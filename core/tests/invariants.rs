@@ -650,8 +650,9 @@ fn tapping_leaves_edits_without_turning_the_board() {
     let next = ev.iter().find(|(k, _)| *k == EV_EDIT_CLUE).expect("Enter opens the next leaf");
     assert_eq!(next.1[0], 1);
     assert_eq!(a.q, 0, "and doesn't turn the board either");
+    // The editor lies along its leaf: leaf 1 is the right-hand one, so vertical.
     let angle = f32::from_le_bytes(next.1[17..21].try_into().unwrap());
-    assert_eq!(angle, 0.0, "editor is upright on screen");
+    assert!((angle - std::f32::consts::FRAC_PI_2).abs() < 1e-3, "side-leaf editor runs vertically ({angle})");
 }
 
 #[test]
@@ -941,8 +942,8 @@ fn card_size_is_local_and_hit_testing_follows_it() {
     a.set_zoom(9.0);
     assert!((a.zoom - ZOOM_MAX).abs() < 1e-6, "clamped");
     assert_eq!(a.shared.digest(), digest, "zoom is not shared state");
-    // A spot in the board corner: zoomed cards overlap neighbours at most edge to edge.
-    assert!(CARD * ZOOM_MAX <= 2.0 * SLOT_OFF + 0.01);
+    // The phone default (1.25×) leaves neighbouring spots clear.
+    assert!(1.25 <= cloverleaf::app::ZOOM_TOUCH);
     // A tap near the zoomed card's corner (outside its unzoomed size) still hits it.
     let (from, to) = (card_at(a, 0), a.slot_screen(1));
     drag(a, from, to);

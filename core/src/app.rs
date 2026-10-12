@@ -56,13 +56,19 @@ const DRAG_THRESHOLD: f32 = 6.0;
 const CURSOR_TTL_MS: f64 = 4000.0;
 const HELLO_EVERY_MS: f64 = 2000.0;
 pub const WORD_SIZE: f32 = 26.0;
+/// Distance from a card's centre to the middle of each edge word. Deep
+/// enough that a word up to `WORD_MAX_W` wide never reaches the corner
+/// squares where the neighbouring edges' words sit, however long they are.
+pub const WORD_INSET: f32 = 86.0;
+pub const WORD_MAX_W: f32 = 2.0 * (WORD_INSET - WORD_SIZE / 2.0);
 /// Tray depth (short axis) in board units: two rows of cards plus air.
-const TRAY_UNITS: f32 = 400.0;
+const TRAY_UNITS: f32 = 480.0;
 const PAD: f32 = 8.0;
-/// Per-device card size range. At the top end, cards in neighbouring spots
-/// on the board just touch.
-pub const ZOOM_MIN: f32 = 0.8;
-pub const ZOOM_MAX: f32 = 2.0 * SLOT_OFF / CARD;
+/// Per-device card size range. Up to `ZOOM_TOUCH` cards in neighbouring
+/// spots don't overlap; beyond it they may, if a player wants them that big.
+pub const ZOOM_MIN: f32 = 0.7;
+pub const ZOOM_TOUCH: f32 = 2.0 * SLOT_OFF / CARD;
+pub const ZOOM_MAX: f32 = 1.6;
 
 /// 2D affine matrix in canvas `setTransform(a, b, c, d, e, f)` order.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -826,19 +832,20 @@ impl App {
         self.q += if delta == 3 { -1 } else { delta };
     }
 
-    /// Open the editor over leaf `d`, upright on screen (the board stays
-    /// as it is), as big as fits.
+    /// Open the editor over leaf `d`, lying along the leaf exactly like its
+    /// clue is drawn (vertical for side leaves). The board doesn't turn.
     pub fn edit_clue(&mut self, d: u8) {
         self.editing = Some(d);
-        let target = self.q as f32 * FRAC_PI_2;
-        let (x, y) = self.leaf_m_at(d, target).apply(0.0, Self::leaf_mid());
+        let f = self.leaf_m_at(d, self.q as f32 * FRAC_PI_2).then(M::t(0.0, Self::leaf_mid()));
+        let (x, y) = f.apply(0.0, 0.0);
+        let angle = f.angle();
         let k = self.scale();
-        let w = (2.0 * LEAF_HALF_W * k).clamp(220.0, self.w - 16.0);
-        let h = (72.0 * k).max(48.0);
-        let x = x.clamp(8.0 + w / 2.0, self.w - 8.0 - w / 2.0);
-        let y = y.clamp(8.0 + h / 2.0, self.h - 8.0 - h / 2.0);
+        let vertical = angle.sin().abs() > 0.7;
+        let room = if vertical { self.h } else { self.w } - 16.0;
+        let w = (2.0 * LEAF_HALF_W * k * 0.95).clamp(180.0_f32.min(room), room);
+        let h = ((LEAF_OUT - LEAF_IN) * k * 0.6).max(48.0);
         let mut p = vec![d];
-        for v in [x, y, w, h, 0.0] {
+        for v in [x, y, w, h, angle] {
             p.extend_from_slice(&v.to_le_bytes());
         }
         p.extend_from_slice(self.my_sub().clues[d as usize].as_bytes());
@@ -1242,7 +1249,7 @@ impl App {
             let f = self.pose_m(&pose);
             if c.held != 0 || Some(i) == dragging {
                 self.xform(M::t(5.0, 8.0).then(f));
-                self.rrect(-HALF, -HALF, CARD, CARD, 14.0, 0x00000055, 0, 0.0);
+                self.rrect(-HALF, -HALF, CARD, CARD, 18.0, 0x00000055, 0, 0.0);
             }
             self.xform(f);
             let solved = matches!(c.loc, Loc::Slot(s) if sc.locked & (1 << s) != 0) && phase != Phase::Writing;
@@ -1252,11 +1259,11 @@ impl App {
                 h if Some(h) == self.seat => (0xffffffff, 4.0),
                 h => (self.color_of(h), 7.0),
             };
-            self.rrect(-HALF, -HALF, CARD, CARD, 14.0, PAPER, stroke, lw);
-            self.circle(0.0, 0.0, 9.0, 0xeee4c8ff, 0, 0.0);
+            self.rrect(-HALF, -HALF, CARD, CARD, 18.0, PAPER, stroke, lw);
+            self.circle(0.0, 0.0, 11.0, 0xeee4c8ff, 0, 0.0);
             for s in 0..4u8 {
                 self.xform(f.then(M::r(turn(s))));
-                self.text(0.0, -50.0, WORD_SIZE, INK, F_SANS_BOLD, sc.words[i][s as usize], 112.0);
+                self.text(0.0, -WORD_INSET, WORD_SIZE, INK, F_SANS_BOLD, sc.words[i][s as usize], WORD_MAX_W);
             }
         }
 

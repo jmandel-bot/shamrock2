@@ -32,6 +32,8 @@ const FONTS = [
   (px) => `700 ${px}px ${SANS}`,
   (px) => `600 ${px}px Fraunces, Georgia, serif`,
 ];
+// Fonts ship with the site (web/fonts). Repaint happens every frame, so
+// canvas text switches over as soon as they're ready.
 document.fonts?.load(`700 20px Figtree`).catch(() => {});
 document.fonts?.load(`600 20px Fraunces`).catch(() => {});
 
@@ -250,7 +252,7 @@ $('newGameBtn').onclick = () => { closeSheets(); act(7); };
 
 // Card size is per device (display only): bigger cards just overlap more.
 const zoomKey = 'shamrock:zoom';
-let zoom = X.set_zoom(+(recall(zoomKey) ?? (Math.min(innerWidth, innerHeight) < 520 ? 1.3 : 1)));
+let zoom = X.set_zoom(+(recall(zoomKey) ?? (Math.min(innerWidth, innerHeight) < 520 ? 1.25 : 1)));
 const setZoom = (z) => { stats.presses++; zoom = X.set_zoom(z); remember(zoomKey, zoom); };
 $('sizeDown').onclick = () => setZoom(zoom - 0.15);
 $('sizeUp').onclick = () => setZoom(zoom + 0.15);
@@ -437,4 +439,11 @@ window.__cl = {
   settle: () => X.settle(),
   answerRot: (s) => X.answer_rot(s),
   palette: () => scratchJson(X.palette()),
+  wordBudget: () => X.word_budget(),
+  measure: async (words) => {
+    await document.fonts.load('700 26px Figtree');
+    const c = document.createElement('canvas').getContext('2d');
+    c.font = FONTS[1](26);
+    return words.map((w) => [w, c.measureText(w).width]);
+  },
 };

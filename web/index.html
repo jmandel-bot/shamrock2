@@ -6,10 +6,13 @@
 <meta name="theme-color" content="#102719">
 <title>Shamrock</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect x='33' y='10' width='34' height='34' rx='9' transform='rotate%2845 50 27%29' fill='%239fd8ad'/%3E%3Crect x='56' y='33' width='34' height='34' rx='9' transform='rotate%2845 73 50%29' fill='%239fd8ad'/%3E%3Crect x='33' y='56' width='34' height='34' rx='9' transform='rotate%2845 50 73%29' fill='%239fd8ad'/%3E%3Crect x='10' y='33' width='34' height='34' rx='9' transform='rotate%2845 27 50%29' fill='%23f2c14e'/%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;600;700&family=Fraunces:opsz,wght@9..144,600&display=swap">
+<link rel="preload" href="fonts/figtree-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/fraunces-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
 <style>
+  @font-face { font-family: Figtree; font-weight: 400; font-display: swap; src: url(fonts/figtree-latin-400-normal.woff2) format('woff2'); }
+  @font-face { font-family: Figtree; font-weight: 600; font-display: swap; src: url(fonts/figtree-latin-600-normal.woff2) format('woff2'); }
+  @font-face { font-family: Figtree; font-weight: 700; font-display: swap; src: url(fonts/figtree-latin-700-normal.woff2) format('woff2'); }
+  @font-face { font-family: Fraunces; font-weight: 600; font-display: swap; src: url(fonts/fraunces-latin-600-normal.woff2) format('woff2'); }
   /* Shamrock: green felt, paper cards, one warm accent. Text pairs meet WCAG AA. */
   :root {
     --felt: #14301f; --bar: #102719; --sheet: #1a3a28; --line: #3d7a52;
@@ -49,7 +52,7 @@
 
   #stage { position: relative; flex: 1; min-height: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
-  #clue { position: absolute; display: none; text-align: center; font: 600 22px var(--serif);
+  #clue { position: absolute; display: none; transform-origin: center; text-align: center; font: 600 22px var(--serif);
           border: 3px solid var(--go); border-radius: 16px; background: #f6fcf6; color: #0b2414; outline: none; padding: 0 12px;
           box-shadow: 0 8px 24px #0006; }
   #toast { position: absolute; left: 50%; bottom: 12px; transform: translate(-50%, 8px); max-width: calc(100% - 24px); background: #08170e; color: var(--fg);
