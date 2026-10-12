@@ -56,6 +56,10 @@ node harness/serve.mjs # prints a URL
 
 **Layout:** the board grows to fill the screen. While guessing, a tray for loose cards sits below it (portrait) or beside it (landscape). Tray positions are stored relative to the tray, so they fit every screen.
 
+## Importing an unfinished clover
+
+A room can open with a clover brought in from elsewhere, e.g. read off a screenshot of an old game. Add `web/puzzles/<room>.json` (name, four clues top/right/bottom/left, then the answer cards for spots top-left, top-right, bottom-right, bottom-left with words clockwise from the top as they sit, then any decoys). List `<room>` in `web/puzzles/index.json`. Opening `…/#<room>` and pressing **Start guessing** goes straight to guessing it; Check scores against that layout, and later rounds deal normally. Example: `web/puzzles/oldphone-x7q2.json`.
+
 ## Harness
 
 ```bash

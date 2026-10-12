@@ -169,6 +169,15 @@ pub extern "C" fn palette() -> u32 {
     to_scratch(App::palette_json())
 }
 
+/// An imported clover (text in the inbox; see `model::Custom::load`).
+/// Returns 1 if accepted.
+#[no_mangle]
+pub extern "C" fn load_custom(len: u32) -> u32 {
+    let ok = model::Custom::load(&inbox_str(len));
+    g().app.custom_room = ok;
+    ok as u32
+}
+
 #[no_mangle]
 pub extern "C" fn set_decoys(n: u32) {
     g().app.set_decoys(n.min(255) as u8);

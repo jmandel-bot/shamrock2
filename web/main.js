@@ -189,6 +189,19 @@ new ResizeObserver(() => {
 // ---- joining, watching, menu ------------------------------------------------------
 
 const nameKey = `shamrock:${roomId}:name`;
+
+// A room can open with an imported clover: web/puzzles/<room>.json, listed
+// in web/puzzles/index.json (so ordinary rooms don't probe for a file).
+let customName = null;
+try {
+  const listed = await fetch('puzzles/index.json').then((r) => (r.ok ? r.json() : []));
+  const r = listed.includes(roomId) ? await fetch(`puzzles/${encodeURIComponent(roomId)}.json`) : null;
+  if (r?.ok) {
+    const p = await r.json();
+    const text = [p.name, ...p.clues, ...p.cards.map((c) => c.join('|'))].join('\n');
+    if (X.load_custom(writeText(text))) customName = p.name;
+  }
+} catch {}
 function joinAs(name) {
   name = name.trim();
   if (!name) return;
@@ -293,6 +306,11 @@ function renderUi(force = false) {
     go = ['Join the game', true, openJoin];
   } else switch (s.phase) {
     case 'lobby':
+      if (customName && s.round === 0) {
+        hint = `This table opens with <b>${esc(customName)}</b>'s clover. Send the invite link (⋯ menu), then start guessing together.`;
+        go = ['Start guessing', s.dealable.length > 0, () => act(1)];
+        break;
+      }
       hint = `Send the invite link (⋯ menu). ${dealLine}`;
       go = [`Start with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
       break;

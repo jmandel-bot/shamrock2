@@ -75,6 +75,8 @@ pub struct Round {
     /// Where this round starts dealing in the game's deck (each dealt-in
     /// player takes `MAX_CARDS` cards).
     pub deck: u32,
+    /// 1 = this round guesses the imported clover (see `Custom`).
+    pub custom: u8,
 }
 
 impl Round {
@@ -175,6 +177,54 @@ pub struct Shared {
     pub next: (u16, Stamp),
 }
 
+/// A clover brought in from elsewhere (e.g. read off a screenshot of an
+/// unfinished game), guessed as an ordinary clover. Every device in the room
+/// loads the same file, so it behaves like shared state without being sent.
+#[derive(Debug)]
+pub struct Custom {
+    /// Who wrote it, shown as the clover's author.
+    pub name: String,
+    /// Top, right, bottom, left.
+    pub clues: [String; NSLOTS],
+    /// Cards 0..4 are the answer (card s in spot s, words clockwise from the
+    /// top as they sit there); the rest are decoys.
+    pub cards: Vec<[&'static str; 4]>,
+}
+
+static CUSTOM: std::sync::OnceLock<Custom> = std::sync::OnceLock::new();
+
+impl Custom {
+    /// The imported clover's author gets a seat id no typed name can produce.
+    pub fn writer(&self) -> u32 {
+        seat_id(&format!("\u{1}{}", self.name))
+    }
+
+    /// Format: name, then four clues, then one card per line as `a|b|c|d`
+    /// (at least four cards). Returns false (and keeps nothing) if malformed.
+    pub fn load(text: &str) -> bool {
+        let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+        let Some(name) = lines.next() else { return false };
+        let clues: Vec<String> = lines.by_ref().take(NSLOTS).map(|c| clamp_text(c, MAX_TEXT)).collect();
+        let cards: Vec<[&'static str; 4]> = lines
+            .take(MAX_CARDS)
+            .filter_map(|l| {
+                let w: Vec<&'static str> = l.split('|').map(|x| &*Box::leak(x.trim().to_string().into_boxed_str())).collect();
+                w.try_into().ok()
+            })
+            .collect();
+        if clues.len() < NSLOTS || cards.len() < NSLOTS {
+            return false;
+        }
+        CUSTOM
+            .set(Custom { name: clamp_text(name, 40), clues: core::array::from_fn(|i| clues[i].clone()), cards })
+            .is_ok()
+    }
+
+    pub fn get() -> Option<&'static Custom> {
+        CUSTOM.get()
+    }
+}
+
 /// Seat id for a display name: names are identities, so choosing an
 /// existing name on another device takes that seat over.
 pub fn seat_id(name: &str) -> u32 {
@@ -209,12 +259,14 @@ pub fn deck_card(game: Stamp, pos: u32) -> usize {
     perm[at]
 }
 
-/// Tray spot `k` of `n`: rows of up to four along the tray's long axis.
+/// Tray spot `k` of `n`: rows of up to three along the tray's long axis,
+/// so loose cards don't cover each other's words even on a phone.
 pub fn tray_spot(k: usize, n: usize) -> (f32, f32) {
-    let rows = n.div_ceil(4).max(1);
-    let (row, col) = (k / 4, k % 4);
-    let in_row = (n - row * 4).min(4);
-    let x = 0.5 + (col as f32 - (in_row as f32 - 1.0) / 2.0) / 3.0;
+    const PER_ROW: usize = 3;
+    let rows = n.div_ceil(PER_ROW).max(1);
+    let (row, col) = (k / PER_ROW, k % PER_ROW);
+    let in_row = (n - row * PER_ROW).min(PER_ROW);
+    let x = 0.5 + (col as f32 - (in_row as f32 - 1.0) / 2.0) / (PER_ROW - 1) as f32;
     let y = if rows == 1 { 0.5 } else { row as f32 / (rows - 1) as f32 };
     (x, y)
 }
@@ -341,6 +393,15 @@ impl Shared {
         let mut home: [u8; MAX_CARDS] = core::array::from_fn(|i| i as u8);
         for k in (1..MAX_CARDS).rev() {
             home.swap(k, rng.below(k + 1));
+        }
+        if let Some(c) = Custom::get().filter(|c| self.round.custom == 1 && c.writer() == writer) {
+            // The imported answer is exactly as it was laid out: no rotation.
+            return Deal {
+                words: core::array::from_fn(|i| c.cards.get(i).copied().unwrap_or(CARDS[cards[i]])),
+                sol_rot: [0; NSLOTS],
+                home,
+                home_rot: core::array::from_fn(|_| rng.below(4) as u8),
+            };
         }
         Deal {
             words: core::array::from_fn(|c| CARDS[cards[c]]),
@@ -617,6 +678,7 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 b.extend_from_slice(&p.to_le_bytes());
             }
             b.extend_from_slice(&round.deck.to_le_bytes());
+            b.push(round.custom);
             match body {
                 Body::None => {}
                 Body::Seat(id, s) => {
@@ -743,7 +805,7 @@ impl<'a> Reader<'a> {
         for p in seats.iter_mut().take(nseats as usize) {
             *p = self.u32()?;
         }
-        let round = Round { stamp, seed, n, seats, nseats, deck: self.u32()? };
+        let round = Round { stamp, seed, n, seats, nseats, deck: self.u32()?, custom: self.lt(2)? };
         let body = match tag {
             T_NONE => Body::None,
             T_SEAT => {

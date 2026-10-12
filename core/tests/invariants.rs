@@ -962,3 +962,39 @@ fn card_size_is_local_and_hit_testing_follows_it() {
     t.pump();
     assert!(t.digests_equal());
 }
+
+#[test]
+fn an_imported_clover_is_guessed_first_and_scores_against_its_layout() {
+    assert!(Custom::load(
+        "Josh's old phone\nsnake\nlink\nhorse\ngrappling\n\
+         tube|berry|throne|spy\nanimal|map|waiter|fool\nbasket|weak|knight|toy\npond|firefight|sheep|climbing\n\
+         tattoo|doe|clothing|banana"
+    ));
+    let mut t = Table::new(2);
+    for a in t.apps.iter_mut() {
+        a.custom_room = true; // as if both loaded this room's file
+    }
+    t.apps[0].action(1);
+    t.pump();
+    let s = &t.apps[1].shared;
+    assert_eq!(s.phase(), Phase::Guessing(0), "straight to guessing");
+    let w = s.puzzles()[0];
+    assert_eq!(s.seats[&w].name, "Josh's old phone");
+    assert_eq!(s.effective(w).unwrap().clues[3], "grappling");
+    assert_eq!(s.ncards(w), 5);
+    assert_eq!(s.deal(w).words[2], ["basket", "weak", "knight", "toy"]);
+    // Both players can guess; placing it as imported is a perfect clover.
+    let g = 1;
+    solve(&mut t, g, false);
+    t.apps[g].action(3);
+    t.pump();
+    assert_eq!(t.apps[0].shared.check(w).score(), PERFECT_SCORE);
+    assert!(t.digests_equal());
+    // The next round is an ordinary deal.
+    t.apps[0].action(4);
+    t.pump();
+    t.apps[0].action(1);
+    t.pump();
+    assert_eq!(t.apps[0].shared.phase(), Phase::Writing);
+    assert_eq!(t.apps[0].shared.round.custom, 0);
+}

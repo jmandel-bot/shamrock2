@@ -234,6 +234,8 @@ pub struct App {
     pub zoom: f32,
     /// Decorative motion on (off for prefers-reduced-motion).
     pub motion: bool,
+    /// This room has an imported clover to open with (see `Custom`).
+    pub custom_room: bool,
     /// Soft glow on the leaves after a clover is completed (1 → 0).
     glow: f32,
     last_done: Option<(u32, bool)>,
@@ -272,6 +274,7 @@ impl App {
             dt: 0.0,
             zoom: 1.0,
             motion: true,
+            custom_room: false,
             glow: 0.0,
             last_done: None,
             now: 0.0,
@@ -943,6 +946,10 @@ impl App {
         if players.is_empty() {
             return self.status("Join the table first.");
         }
+        // A room with an imported clover opens by guessing it.
+        if let Some(c) = Custom::get().filter(|_| self.custom_room && self.shared.round.n == 0) {
+            return self.start_custom(c, players);
+        }
         let prev = self.shared.round;
         // Draw down the deck: this round deals after the cards the last one used.
         let deck = if prev.n == 0 { 0 } else { prev.deck + (prev.nseats as usize * MAX_CARDS) as u32 };
@@ -952,6 +959,26 @@ impl App {
         self.shared.apply(&op);
         self.new_round_local();
         self.send(&[Msg::Op(op)]);
+    }
+
+    /// Round 1 of a room with an imported clover: straight to guessing it.
+    fn start_custom(&mut self, c: &'static Custom, mut players: Vec<u32>) {
+        let w = c.writer();
+        players.insert(0, w);
+        let round =
+            Round { seed: self.rng.next() as u32, n: 1, stamp: self.stamp(), custom: 1, ..Round::default() }.with_players(&players);
+        let op = Op { game: self.shared.game, round, body: Body::None };
+        self.shared.apply(&op);
+        self.new_round_local();
+        self.send(&[Msg::Op(op)]);
+        // Its author isn't at the table: an inactive seat just carries the name.
+        let stamp = self.stamp();
+        self.commit(Body::Seat(w, Seat { name: c.name.clone(), active: false, stamp }));
+        let stamp = self.stamp();
+        let sub = Sub { clues: c.clues.clone(), decoys: (c.cards.len() - NSLOTS) as u8, ready: true, stamp };
+        self.commit(Body::Sub(w, sub));
+        let s = self.stamp();
+        self.commit(Body::Start(s));
     }
 
     /// Fresh scores and seats: everyone here now is dealt in.

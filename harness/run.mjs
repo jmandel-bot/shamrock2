@@ -244,7 +244,7 @@ try {
     .then(() => gate('the progress bar fills as people submit (4 of 5)', true), () => gate('the progress bar fills as people submit (4 of 5)', false));
   const label = await A.page.textContent('#progLabel');
   const proceed = await A.page.textContent('#alt');
-  gate('progress names who is left; override reads "Proceed with 4 of 5"', label.includes('Eve') && proceed === 'Proceed with 4 of 5' && (await E.page.textContent('#alt')) === 'Proceed · 4/5', `${label} | ${proceed}`);
+  gate('progress names who is left; override reads "Proceed with 4 of 5"', label.includes('Eve') && proceed === 'Proceed with 4 of 5' && await E.page.waitForFunction(() => document.getElementById('alt').textContent === 'Proceed · 4/5', null, { timeout: 3000 }).then(() => true, () => false), `${label} | ${proceed}`);
   // Submitted players can still edit.
   await A.settle();
   await A.tap((await A.petal(2)).slice(0, 2));
