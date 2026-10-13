@@ -254,7 +254,7 @@ try {
   const label = await A.page.textContent('#hint');
   const proceed = await A.page.textContent('#alt');
   const eAlt = await E.page.evaluate(() => document.getElementById('alt').hidden);
-  gate('the status names who is still writing; the override reads "Start without Eve"', label.includes('Waiting for Eve') && proceed === 'Start without Eve' && eAlt, `${label} | ${proceed} | Eve's own override hidden: ${eAlt}`);
+  gate('the status names who is still writing; the override reads "Start anyway"', label.includes('Waiting for Eve') && proceed === 'Start anyway' && eAlt, `${label} | ${proceed} | Eve's own override hidden: ${eAlt}`);
   // Plain words that still fit: on the phone, the status line isn't cut off.
   const fits = await E.page.evaluate(() => { const h = document.getElementById('hint'); return [h.scrollWidth <= h.clientWidth + 1, h.textContent]; });
   gate("on a phone, the status line fits without being cut off", fits[0], fits[1]);

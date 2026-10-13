@@ -598,12 +598,20 @@ function renderUi(force = false) {
   // carry the actions, so the text never repeats them; things that would
   // crowd it (decoys, withdrawing a submitted clover, sharing) live on the
   // board, in the menu or in the recap. How-to tips show once per device.
+  // A hint may be a list, longest first: the strip shows the first that fits.
   let hint = '', go = null, alt = null, side = null, decoys = false;
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  // The strip uses first names (full ones in the menu and recap), unless two
+  // players share one; capped so a long name can't push the buttons off.
+  const first = (n) => String(n ?? '').trim().split(/\s+/)[0];
+  const short = (n) => {
+    const f = first(n), t = s.players.some((p) => p.name !== n && first(p.name) === f) ? String(n) : f;
+    return t.length > 12 ? `${t.slice(0, 11)}…` : t;
+  };
   const ORDINAL = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth'];
-  const whose = `<b>${esc(s.writerName ?? '')}'s</b> clover`;
-  const clover = s.n ? `${whose}, ${ORDINAL[s.k] ?? `number ${s.k + 1}`} of ${s.n}` : '';
-  const solved = `Solved <b>${esc(s.writerName ?? '')}'s</b> clover!`;
+  const whose = `<b>${esc(short(s.writerName))}'s</b> clover`;
+  const clover = s.n ? [`${whose}, ${ORDINAL[s.k] ?? `number ${s.k + 1}`} of ${s.n}`, `${whose}, ${s.k + 1} of ${s.n}`, whose] : '';
+  const solved = `Solved <b>${esc(short(s.writerName))}'s</b> clover!`;
   if (s.phase === 'guessing' && !(s.isWriter && !s.done) && (solo || s.seated)) tip('guess');
   if (solo) {
     if (s.phase === 'guessing' && s.done) {
@@ -631,8 +639,9 @@ function renderUi(force = false) {
       go = ['Start', s.dealable.length > 0, () => act(1)];
       break;
     case 'writing': {
-      const left = s.progress.filter((p) => !p.ready).map((p) => p.name);
+      const left = s.progress.filter((p) => !p.ready).map((p) => short(p.name));
       const who = left.length ? names(left.map((n) => `<b>${esc(n)}</b>`)) : 'the others';
+      const waiting = left.length > 1 ? [`Waiting for ${who}`, `Waiting for ${plural(left.length, 'player')}`] : `Waiting for ${who}`;
       if (!s.inRound) {
         hint = "You're in the next round";
       } else if (!s.ready) {
@@ -640,12 +649,13 @@ function renderUi(force = false) {
         hint = s.filled < 4 ? `${s.filled} of 4 clues written` : `Clues done · ${plural(s.decoys, 'decoy')}`;
         go = ['Submit', s.canReady, () => act(2)];
       } else {
-        hint = `Submitted · waiting for ${who}`;
+        hint = [`Submitted · waiting for ${who}`, waiting].flat();
       }
       decoys = s.inRound && s.filled >= 4;
       if ((s.ready || !s.inRound) && s.readyCount > 0 && s.readyCount < s.progress.length) {
-        alt = [left.length === 1 ? `Start without ${left[0]}` : 'Start without them', () => act(5)];
-        if (s.ready) hint = `Waiting for ${who}`;
+        // The status beside it names who is missing, so the button needn't.
+        alt = ['Start anyway', () => act(5)];
+        if (s.ready) hint = waiting;
       }
       // Everyone dealt in has gone and nobody submitted: nothing to start
       // with, so offer a fresh deal for whoever is here.
@@ -690,8 +700,6 @@ function renderUi(force = false) {
       return seg;
     }));
   }
-  $('hint').innerHTML = hint;
-  $('hint').title = $('hint').textContent;
   // While guessing, the status names the clover; tap it to pick another.
   const picking = s.phase === 'guessing' && (solo ? s.n : s.boards.length) > 1;
   const recap = !home && s.phase === 'end' && s.boards.length > 0;
@@ -714,7 +722,22 @@ function renderUi(force = false) {
   if (alt) { altBtn.textContent = alt[0]; altBtn.onclick = alt[1]; }
   $('decoys').hidden = !decoys;
   $('decLabel').textContent = `${s.decoys} decoy${s.decoys === 1 ? '' : 's'}`;
+  fitHint(hint);
 }
+
+// Show the longest version of the status that fits beside the buttons (the
+// last one is cut with … if even that doesn't). Re-fit when the width changes.
+let hintVariants = [];
+function fitHint(hint) {
+  hintVariants = [hint].flat();
+  const h = $('hint');
+  for (const v of hintVariants) {
+    h.innerHTML = v;
+    if (h.scrollWidth <= h.clientWidth + 1) break;
+  }
+  h.title = hintVariants[0] ? h.ownerDocument.createRange().createContextualFragment(hintVariants[0]).textContent : '';
+}
+addEventListener('resize', () => fitHint(hintVariants));
 
 // How-to tips: shown once per device as a toast that the next touch on the
 // board dismisses, and kept in the ⋯ menu.
