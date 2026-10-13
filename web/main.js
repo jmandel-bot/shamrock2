@@ -375,7 +375,8 @@ async function linkFor(scrambled) {
   return `${location.origin}${location.pathname}?b=${await seal(scrambled, salt)}#${salt}`;
 }
 const shareLink = async (mask) => linkFor(scratchText(X.export_boards(mask)));
-const ownTable = () => { location.href = `${location.origin}${location.pathname}#${Math.random().toString(36).slice(2, 8)}`; };
+// To the home page, where a new table gets its name (and yours).
+const ownTable = () => { location.href = `${location.origin}${location.pathname}`; };
 function openShare() {
   const s = ui();
   const list = $('shareList');
@@ -410,6 +411,7 @@ function joinAs(name) {
   X.join(writeText(name));
   drainOutbox();
   remember(nameKey, name);
+  remember(NAME, name);
   noteTable(name);
   closeSheets();
   renderUi(true);
@@ -434,11 +436,20 @@ function openJoin() {
       b.onclick = () => joinAs(p.name);
       return b;
     }));
-  $('nameInput').value = s.name ?? recall(nameKey) ?? '';
+  $('tableInput').value = roomId;
+  $('nameInput').value = s.name ?? recall(nameKey) ?? myName();
   $('joinSheet').classList.add('open');
-  setTimeout(() => $('nameInput').focus(), 50);
+  // A remembered name means one tap on Join; only an empty one needs typing.
+  if (!$('nameInput').value) setTimeout(() => $('nameInput').focus(), 50);
 }
-$('joinForm').onsubmit = (e) => { e.preventDefault(); stats.presses++; joinAs($('nameInput').value); };
+$('joinForm').onsubmit = (e) => {
+  e.preventDefault();
+  stats.presses++;
+  // Editing the table name switches tables (joining that one instead).
+  const room = normRoom($('tableInput').value);
+  if (room && room !== roomId) return startAt(room, $('nameInput').value);
+  joinAs($('nameInput').value);
+};
 $('watchBtn').onclick = watch;
 $('menuBtn').onclick = () => {
   const s = ui();
@@ -707,7 +718,24 @@ $('invite').onclick = async () => {
 
 const TABLES = 'shamrock:tables', LOG = 'shamrock:log', LOG_MAX = 60;
 const readJson = (k, d) => { try { return JSON.parse(recall(k)) ?? d; } catch { return d; } };
-const newRoom = () => Math.random().toString(36).slice(2, 8);
+// Table names are the link (and the only key to the table): suggestions are
+// easy to type and unlikely to collide; typed names are used as typed, just
+// made link-safe ("Family Night" -> family-night).
+const ADJ = 'amber brave bright calm clever cosy daring eager fancy gentle golden happy jolly kind lively lucky merry mellow noble plucky proud quick quiet rapid shiny silly sleepy snappy spry sunny swift tidy witty zesty bold breezy chirpy dapper fuzzy giddy hearty nimble perky rosy sturdy'.split(' ');
+const NOUN = 'otter badger falcon heron koala lemur marten panda puffin raven robin seal tiger walrus wombat beaver bison camel crane dingo eagle ferret gecko goose hare ibis jackal lark llama moose newt oriole owl parrot quail rabbit shrew sloth swan toad viper wren yak zebra'.split(' ');
+const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
+const suggestRoom = () => `${pick(ADJ)}-${pick(NOUN)}-${10 + Math.floor(Math.random() * 90)}`;
+const normRoom = (t) => t.trim().toLowerCase().replace(/[\s_]+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 32);
+const newRoom = suggestRoom;
+// Your name, carried across tables as the default.
+const NAME = 'shamrock:name';
+const myName = () => recall(NAME) ?? myTables().find((t) => t.name)?.name ?? '';
+/** Go to `room` as `name`: remembered for that table, so it joins on arrival. */
+function startAt(room, name) {
+  name = name.trim();
+  if (name) { remember(NAME, name); remember(`shamrock:${room}:name`, name); }
+  goTo(room);
+}
 const tableUrl = (room) => `${location.origin}${location.pathname}${room ? `#${room}` : ''}`;
 // The page is one table (or the home page) for its whole life: when the
 // #room changes, as with Back/Forward between the home page and a table,
@@ -802,9 +830,15 @@ function openHome() {
   const n = readJson(LOG, []).length;
   $('homeLog').hidden = !n;
   $('homeLog').textContent = `Past games (${n})`;
+  if (!$('homeRoom').value) $('homeRoom').value = suggestRoom();
+  if (!$('homeName').value) $('homeName').value = myName();
   $('homeSheet').classList.add('open');
 }
-$('homeNew').onclick = () => goTo(newRoom());
+$('homeReroll').onclick = () => { $('homeRoom').value = suggestRoom(); };
+$('homeForm').onsubmit = (e) => {
+  e.preventDefault();
+  startAt(normRoom($('homeRoom').value) || suggestRoom(), $('homeName').value);
+};
 $('homeLog').onclick = openLog;
 $('logClose').onclick = () => { closeSheets(); if (home) openHome(); };
 $('logMenuBtn').onclick = openLog;

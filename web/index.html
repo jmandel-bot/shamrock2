@@ -130,6 +130,12 @@
   .tip { color: var(--dim); font-size: 15px; }
   body.home #top, body.home #dock { visibility: hidden; }
   #invite { padding: 9px 12px; white-space: nowrap; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field > span:first-child { font-size: 14px; font-weight: 600; color: var(--dim); }
+  .withBtn { display: flex; gap: 8px; }
+  .withBtn input { flex: 1; min-width: 0; }
+  .withBtn button { flex: none; min-width: 52px; font-size: 22px; border-radius: 14px; }
+  .startForm { display: flex; flex-direction: column; gap: 12px; }
   .tableItem { display: flex; gap: 8px; align-items: stretch; }
   .tableRow { flex: 1; min-width: 0; text-decoration: none; color: var(--fg); background: var(--menu-item); border-radius: 14px; padding: 10px 14px; }
   .tableItem .forget { border-radius: 14px; background: var(--menu-item); color: var(--dim); }
@@ -203,7 +209,8 @@
       <h1>shamrock</h1>
       <p>Clue your clover. Guess your friends'.</p>
     </div>
-    <input id="nameInput" maxlength="24" placeholder="Your name" autocomplete="nickname" enterkeyhint="go" aria-label="Your name">
+    <label class="field"><span>Table</span><input id="tableInput" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="next"></label>
+    <label class="field"><span>Your name</span><input id="nameInput" maxlength="24" placeholder="Your name" autocomplete="nickname" enterkeyhint="go"></label>
     <p>Choosing a name that's already playing takes over that seat, handy for switching devices.</p>
     <div class="list" id="seatList"></div>
     <div class="row"><button type="submit" class="go grow" id="joinBtn">Join</button></div>
@@ -251,7 +258,12 @@
       <h1>shamrock</h1>
       <p>Clue your clover. Guess your friends'.</p>
     </div>
-    <button class="go" id="homeNew">Start a new table</button>
+    <form id="homeForm" class="startForm">
+      <h2>Start a table</h2>
+      <label class="field"><span>Table</span><span class="withBtn"><input id="homeRoom" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="next"><button type="button" id="homeReroll" aria-label="Suggest another name" title="Suggest another name">↻</button></span></label>
+      <label class="field"><span>Your name</span><input id="homeName" maxlength="24" placeholder="Your name" autocomplete="nickname" enterkeyhint="go"></label>
+      <button type="submit" class="go" id="homeNew">Start</button>
+    </form>
     <h2 id="tablesHead">Your tables</h2>
     <div class="list" id="tableList"></div>
     <button class="menuBtn" id="homeLog" hidden>Past games</button>

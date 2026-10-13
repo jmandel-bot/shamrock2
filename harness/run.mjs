@@ -536,6 +536,24 @@ try {
     await homePage.goForward();
     const forwardTable = await homePage.waitForFunction((r) => location.hash === `#${r}` && !document.getElementById('homeSheet').classList.contains('open'), room, { timeout: 8000 }).then(() => true, () => false);
     gate('Back from a table opened on the home page returns home (and Forward goes back in)', backHome && forwardTable, `back ${backHome}, forward ${forwardTable}`);
+    // Starting a table: a suggested name and my usual name, both editable;
+    // a typed name is used as typed (made link-safe), and I join on arrival.
+    await homePage.goBack();
+    await homePage.waitForSelector('#homeSheet.open');
+    const suggested = await homePage.inputValue('#homeRoom');
+    const myName = await homePage.inputValue('#homeName');
+    await homePage.fill('#homeRoom', 'Family Night!');
+    await homePage.click('#homeNew');
+    const started = await homePage.waitForFunction(() => location.hash === '#family-night' && window.__cl?.ui?.().seated, null, { timeout: 8000 }).then(() => true, () => false);
+    gate('starting a table suggests a name and uses my usual name; a typed name is kept (link-safe) and I join on arrival',
+      /^[a-z]+-[a-z]+-\d\d$/.test(suggested) && myName === 'Ana' && started, `${suggested} | ${myName} | started ${started}`);
+    // Opening another table's link: one tap, my name already filled in.
+    const other = await A.page.context().newPage();
+    await other.goto(`http://localhost:${PORT}/?signal=ws://localhost:${RELAY}#someone-elses-table`);
+    await other.waitForSelector('#joinSheet.open');
+    const pre = [await other.inputValue('#tableInput'), await other.inputValue('#nameInput')];
+    gate('a new table link opens the join sheet with the table and my name filled in', pre[0] === 'someone-elses-table' && pre[1] === 'Ana', pre.join(' | '));
+    await other.close();
     await homePage.close();
   }
   await A.page.screenshot({ path: `${OUT}5-end.png` });
