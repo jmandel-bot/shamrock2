@@ -199,6 +199,11 @@ pub struct Custom {
 
 static CUSTOMS: std::sync::Mutex<Vec<&'static Custom>> = std::sync::Mutex::new(Vec::new());
 
+/// Every word on an imported clover's cards (for measuring).
+pub fn custom_words() -> Vec<&'static str> {
+    CUSTOMS.lock().map(|c| c.iter().flat_map(|x| x.cards.iter().flatten().copied()).collect()).unwrap_or_default()
+}
+
 impl Custom {
     /// Each imported clover's author gets a seat id no typed name can
     /// produce (and two imports by the same name stay distinct).

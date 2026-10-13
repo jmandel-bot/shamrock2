@@ -99,18 +99,25 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
 const DRAG_THRESHOLD: f32 = 6.0;
 const CURSOR_TTL_MS: f64 = 4000.0;
 const HELLO_EVERY_MS: f64 = 2000.0;
-/// Card word size, board units (a card is 210 across). Sized so ~90% of the
-/// deck's words fit their edge at full size (measured in Figtree Bold, see the
-/// harness); the longer ones shrink evenly to fit (the shell's text command),
-/// rather than every word being small enough for the longest.
-pub const WORD_SIZE: f32 = 33.0;
-/// Gap between a card's edge and its edge words.
-const WORD_EDGE: f32 = 6.0;
-/// Distance from a card's centre to the middle of each edge word.
-pub const WORD_INSET: f32 = HALF - WORD_EDGE - WORD_SIZE / 2.0;
-/// Room for an edge word: never reaching the corner squares where the
-/// neighbouring edges' words sit, however long those are.
-pub const WORD_MAX_W: f32 = 2.0 * (WORD_INSET - WORD_SIZE / 2.0);
+/// Card word size, board units (a card is 210 across). Words are laid out
+/// per card from their measured widths (the shell measures every word in the
+/// card font, see `set_word_widths`): a word may run into a corner whenever
+/// the words on both neighbouring edges are short enough to stay clear of it,
+/// so ~90% of the deck renders at full size; the rest shrink evenly to fit.
+pub const WORD_SIZE: f32 = 38.0;
+/// Gap between a card's edge and the top of its words' letters.
+const WORD_EDGE: f32 = 3.0;
+/// Figtree Bold, per unit of size, around the text's centre line (measured):
+/// the tallest letters reach 0.45 above it, and ascender-to-descender ink
+/// spans 0.96.
+const WORD_ASC: f32 = 0.45;
+const WORD_INK: f32 = 0.96;
+/// How far along its edge a word may reach from the centre: the card's
+/// rounded corner (radius 18) at the letters' top.
+const WORD_REACH: f32 = 96.0;
+/// Room for a word that stays out of both corners, which are the squares
+/// where the neighbouring edges' words sit.
+pub const WORD_SAFE_W: f32 = 2.0 * (HALF - WORD_EDGE - WORD_INK * WORD_SIZE) - 4.0;
 /// Tray depth (short axis) in board units: two rows of cards plus air.
 /// Clue size on a leaf, board units: as big as the band between the centre
 /// circle (300) and the notch between the lobes (400) allows. Longer clues
@@ -263,6 +270,8 @@ pub struct Scene {
 }
 
 pub struct App {
+    /// Card-word widths at size 100 in the card font, measured by the shell.
+    word_w: std::collections::HashMap<String, f32>,
     /// Colours for the current theme (display only, per device).
     pub pal: &'static Palette,
     pub shared: Shared,
@@ -349,6 +358,7 @@ impl App {
             last_guess: None,
             shakes: BTreeMap::new(),
             pal: &DARK,
+            word_w: Default::default(),
             solved_at: f64::NEG_INFINITY,
             now: 0.0,
             outbox: Vec::new(),
@@ -700,6 +710,54 @@ impl App {
             let s = self.stamp();
             self.commit(Body::Next(k as u16, s));
         }
+    }
+
+    /// Card-word widths at size 100, one `word\twidth` per line.
+    pub fn set_word_widths(&mut self, text: &str) {
+        for line in text.lines() {
+            if let Some((w, x)) = line.split_once('\t') {
+                if let Ok(x) = x.parse::<f32>() {
+                    self.word_w.insert(w.to_string(), x);
+                }
+            }
+        }
+    }
+
+    /// Width of a card word at full size (an estimate until measured).
+    fn word_width(&self, w: &str) -> f32 {
+        self.word_w.get(w).copied().unwrap_or(w.chars().count() as f32 * 56.0) * WORD_SIZE / 100.0
+    }
+
+    /// Each edge word's size on a card (top, right, bottom, left): full size
+    /// if it fits clear of the corners, or reaches into them while both
+    /// neighbours stay clear; otherwise shrunk evenly to what room it has.
+    pub fn card_word_sizes(&self, words: &[&str; 4]) -> [f32; 4] {
+        let w = words.map(|x| self.word_width(x));
+        core::array::from_fn(|j| {
+            let clear = |k: usize| w[k] <= WORD_SAFE_W;
+            let room = if clear(j) {
+                w[j]
+            } else if clear((j + 1) % 4) && clear((j + 3) % 4) {
+                2.0 * WORD_REACH
+            } else {
+                WORD_SAFE_W
+            };
+            WORD_SIZE * (room / w[j]).min(1.0)
+        })
+    }
+
+    /// Over the whole deck: the share of words at full size, and the smallest
+    /// scale any word gets.
+    pub fn word_fit(&self) -> (f32, f32) {
+        let (mut full, mut min, mut n) = (0, 1.0f32, 0);
+        for c in crate::words::CARDS.iter() {
+            for size in self.card_word_sizes(c) {
+                n += 1;
+                full += (size >= WORD_SIZE - 1e-3) as u32;
+                min = min.min(size / WORD_SIZE);
+            }
+        }
+        (full as f32 / n as f32, min)
     }
 
     pub fn set_theme(&mut self, dark: bool) {
@@ -1503,9 +1561,13 @@ impl App {
             };
             self.rrect(-HALF, -HALF, CARD, CARD, 18.0, self.pal.paper, stroke, lw);
             self.circle(0.0, 0.0, 11.0, 0xeee4c8ff, 0, 0.0);
+            let sizes = self.card_word_sizes(&sc.words[i]);
             for s in 0..4u8 {
                 self.xform(f.then(M::r(turn(s))));
-                self.text(0.0, -WORD_INSET, WORD_SIZE, self.pal.ink, F_SANS_BOLD, sc.words[i][s as usize], WORD_MAX_W);
+                // Letters' tops sit WORD_EDGE from the edge at any size.
+                let size = sizes[s as usize];
+                let y = -(HALF - WORD_EDGE - WORD_ASC * size);
+                self.text(0.0, y, size, self.pal.ink, F_SANS_BOLD, sc.words[i][s as usize], 2.0 * WORD_REACH);
             }
         }
 

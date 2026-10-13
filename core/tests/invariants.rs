@@ -1138,6 +1138,23 @@ fn guessers_choose_the_order_of_clovers() {
     assert_eq!(t.apps[1].shared.phase(), Phase::End);
 }
 
+/// Card words use the corners when their neighbours leave them free: a long
+/// word between two short ones keeps full size; two long neighbours share
+/// and both shrink to stay out of each other's corner.
+#[test]
+fn long_card_words_use_free_corners() {
+    use cloverleaf::app::{WORD_SAFE_W, WORD_SIZE};
+    let mut a = App::new(1);
+    // Widths at size 100: "long" needs the corners, "short" doesn't.
+    let long = (WORD_SAFE_W * 1.3) * 100.0 / WORD_SIZE;
+    a.set_word_widths(&format!("long\t{long}\nlong2\t{long}\nshort\t100"));
+    let s = a.card_word_sizes(&["long", "short", "short", "short"]);
+    assert_eq!(s, [WORD_SIZE; 4], "a long word between short ones stays full size");
+    let s = a.card_word_sizes(&["long", "long2", "short", "short"]);
+    assert!(s[0] < WORD_SIZE && s[1] < WORD_SIZE && s[2] == WORD_SIZE, "neighbouring long words shrink: {s:?}");
+    assert!((s[0] / WORD_SIZE - 1.0 / 1.3).abs() < 1e-3);
+}
+
 /// One test owns the process-wide imported-clover registry.
 #[test]
 fn imported_and_shared_boards_are_guessed_first_and_check_against_their_layout() {

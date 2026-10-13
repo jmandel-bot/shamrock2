@@ -327,9 +327,29 @@ pub extern "C" fn word_size() -> f32 {
     app::WORD_SIZE
 }
 
+/// Every card word (deck and imported clovers), newline-separated, for the
+/// shell to measure in the card font.
 #[no_mangle]
-pub extern "C" fn word_budget() -> f32 {
-    app::WORD_MAX_W
+pub extern "C" fn word_list() -> u32 {
+    let mut ws: Vec<&str> = words::CARDS.iter().flatten().copied().collect();
+    ws.extend(model::custom_words());
+    ws.sort_unstable();
+    ws.dedup();
+    to_scratch(ws.join("\n"))
+}
+
+/// Measured card-word widths (`word\twidth` lines, at size 100; in the inbox).
+#[no_mangle]
+pub extern "C" fn set_word_widths(len: u32) {
+    let s = inbox_str(len);
+    g().app.set_word_widths(&s);
+}
+
+/// Over the deck: (share of words at full size, smallest scale), as JSON.
+#[no_mangle]
+pub extern "C" fn word_fit() -> u32 {
+    let (full, min) = g().app.word_fit();
+    to_scratch(format!("{{\"full\":{full},\"min\":{min}}}"))
 }
 
 /// Rendered size of card words, in CSS px.

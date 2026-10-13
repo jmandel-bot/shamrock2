@@ -336,12 +336,25 @@ async function unseal(payload, salt) {
   return JSON.parse(dec.decode(json)).map(({ n, c, k, a }) => [n, ...c, ...k.map((w) => w.join('|')), `@ ${a.flat().join(' ')}`].join('\n'));
 }
 
+// Card words are laid out per card from their real widths: measure every
+// card word (deck and any imported clovers) once the card font is in.
+let wordsMeasured = false;
+async function measureWords() {
+  await document.fonts?.load(`700 100px Figtree`).catch(() => {});
+  const c = document.createElement('canvas').getContext('2d');
+  c.font = FONTS[1](100);
+  const list = scratchText(X.word_list()).split('\n');
+  X.set_word_widths(writeText(list.map((w) => `${w}\t${c.measureText(w).width.toFixed(2)}`).join('\n')));
+  wordsMeasured = true;
+}
+
 const customNames = [];
 const loadBoard = (text) => { if (X.load_custom(writeText(text))) customNames.push(text.split('\n')[0]); };
 if (solo) {
   try { (await unseal(params.get('b'), roomId)).forEach(loadBoard); }
   catch { setTimeout(() => toast("This shared-boards link is damaged; check it was copied in full.", 8000), 500); }
 }
+measureWords();
 
 /** A link that plays `boards` (texts in answer order, e.g. from a screenshot). */
 async function shareFromText(boards) {
@@ -893,7 +906,7 @@ window.__cl = {
   palette: () => scratchJson(X.palette()),
   shareFromText,
   unseal,
-  wordBudget: () => X.word_budget(),
+  wordFit: () => wordsMeasured && scratchJson(X.word_fit()),
   wordSize: () => X.word_size(),
   measure: async (words, size = X.word_size()) => {
     await document.fonts.load(`700 ${size}px Figtree`);
