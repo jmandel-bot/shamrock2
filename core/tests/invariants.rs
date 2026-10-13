@@ -1139,20 +1139,34 @@ fn guessers_choose_the_order_of_clovers() {
 }
 
 /// Card words use the corners when their neighbours leave them free: a long
-/// word between two short ones keeps full size; two long neighbours share
-/// and both shrink to stay out of each other's corner.
+/// word between two short ones keeps full size; two long neighbours each take
+/// their free corner; a corner is never given to both words beside it.
 #[test]
 fn long_card_words_use_free_corners() {
     use cloverleaf::app::{WORD_SAFE_W, WORD_SIZE};
     let mut a = App::new(1);
     // Widths at size 100: "long" needs the corners, "short" doesn't.
-    let long = (WORD_SAFE_W * 1.3) * 100.0 / WORD_SIZE;
-    a.set_word_widths(&format!("long\t{long}\nlong2\t{long}\nshort\t100"));
+    // "long" needs one corner's worth of extra room; "longer" needs two.
+    let long = (WORD_SAFE_W * 1.2) * 100.0 / WORD_SIZE;
+    let longer = (WORD_SAFE_W * 1.45) * 100.0 / WORD_SIZE;
+    a.set_word_widths(&format!("long\t{long}\nlong2\t{long}\nlonger\t{longer}\nshort\t100"));
     let s = a.card_word_sizes(&["long", "short", "short", "short"]);
     assert_eq!(s, [WORD_SIZE; 4], "a long word between short ones stays full size");
-    let s = a.card_word_sizes(&["long", "long2", "short", "short"]);
-    assert!(s[0] < WORD_SIZE && s[1] < WORD_SIZE && s[2] == WORD_SIZE, "neighbouring long words shrink: {s:?}");
-    assert!((s[0] / WORD_SIZE - 1.0 / 1.3).abs() < 1e-3);
+    // Two long neighbours: each takes its other, free corner (sliding off
+    // centre toward it) instead of both shrinking to the corner-free room.
+    let l = a.card_word_layout(&["long", "long2", "short", "short"]);
+    assert!(l.iter().all(|x| x.0 == WORD_SIZE), "both full size: {l:?}");
+    assert!(l.iter().any(|x| x.1.abs() > 1e-3), "one slid toward its free corner: {l:?}");
+    // A word needing both its corners beside one needing one: it keeps both,
+    // the neighbour takes its other corner.
+    let l = a.card_word_layout(&["longer", "long", "short", "short"]);
+    assert!(l[0].0 == WORD_SIZE && l[0].1.abs() < 1e-3 && l[1].0 == WORD_SIZE && l[1].1 > 0.0, "{l:?}");
+    // Four words needing one corner each: one corner each, all full size.
+    assert_eq!(a.card_word_sizes(&["long", "long2", "long", "long2"]), [WORD_SIZE; 4]);
+    // Corners never go to both words beside them: four words each needing
+    // two corners can't all be full size.
+    let s = a.card_word_sizes(&["longer", "longer", "longer", "longer"]);
+    assert!(s.iter().any(|&x| x < WORD_SIZE), "{s:?}");
 }
 
 /// One test owns the process-wide imported-clover registry.

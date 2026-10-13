@@ -104,7 +104,7 @@ const HELLO_EVERY_MS: f64 = 2000.0;
 /// card font, see `set_word_widths`): a word may run into a corner whenever
 /// the words on both neighbouring edges are short enough to stay clear of it,
 /// so ~90% of the deck renders at full size; the rest shrink evenly to fit.
-pub const WORD_SIZE: f32 = 38.0;
+pub const WORD_SIZE: f32 = 42.0;
 /// Gap between a card's edge and the top of its words' letters.
 const WORD_EDGE: f32 = 3.0;
 /// Figtree Bold, per unit of size, around the text's centre line (measured):
@@ -115,9 +115,12 @@ const WORD_INK: f32 = 0.96;
 /// How far along its edge a word may reach from the centre: the card's
 /// rounded corner (radius 18) at the letters' top.
 const WORD_REACH: f32 = 96.0;
+/// Clear space kept between a word's end and the letters of the word on the
+/// neighbouring edge (so they never read as touching).
+const WORD_GAP: f32 = 6.0;
 /// Room for a word that stays out of both corners, which are the squares
 /// where the neighbouring edges' words sit.
-pub const WORD_SAFE_W: f32 = 2.0 * (HALF - WORD_EDGE - WORD_INK * WORD_SIZE) - 4.0;
+pub const WORD_SAFE_W: f32 = 2.0 * (HALF - WORD_EDGE - WORD_INK * WORD_SIZE - WORD_GAP);
 /// Tray depth (short axis) in board units: two rows of cards plus air.
 /// Clue size on a leaf, board units: as big as the band between the centre
 /// circle (300) and the notch between the lobes (400) allows. Longer clues
@@ -728,22 +731,54 @@ impl App {
         self.word_w.get(w).copied().unwrap_or(w.chars().count() as f32 * 56.0) * WORD_SIZE / 100.0
     }
 
-    /// Each edge word's size on a card (top, right, bottom, left): full size
-    /// if it fits clear of the corners, or reaches into them while both
-    /// neighbours stay clear; otherwise shrunk evenly to what room it has.
-    pub fn card_word_sizes(&self, words: &[&str; 4]) -> [f32; 4] {
+    /// Each edge word's size and offset along its edge on a card (top,
+    /// right, bottom, left). Every word gets the room clear of the corners;
+    /// each corner can also go to one of the two words beside it (never both:
+    /// they'd overlap there), and a word slides off centre toward a corner it
+    /// owns. Of the 81 ways to hand out the corners, take the one whose
+    /// smallest word is biggest, then the most text at full size, then the
+    /// fewest words off centre. Words that still don't fit shrink evenly.
+    pub fn card_word_layout(&self, words: &[&str; 4]) -> [(f32, f32); 4] {
         let w = words.map(|x| self.word_width(x));
-        core::array::from_fn(|j| {
-            let clear = |k: usize| w[k] <= WORD_SAFE_W;
-            let room = if clear(j) {
-                w[j]
-            } else if clear((j + 1) % 4) && clear((j + 3) % 4) {
-                2.0 * WORD_REACH
-            } else {
-                WORD_SAFE_W
-            };
-            WORD_SIZE * (room / w[j]).min(1.0)
-        })
+        let half = WORD_SAFE_W / 2.0;
+        let corner = (WORD_REACH - half).max(0.0);
+        // Corner k sits between word k's +x end and word k+1's -x end.
+        let place = |owners: [u8; 4]| -> [(f32, f32); 4] {
+            core::array::from_fn(|j| {
+                let hi = half + if owners[j] == 1 { corner } else { 0.0 };
+                let lo = -half - if owners[(j + 3) % 4] == 2 { corner } else { 0.0 };
+                let scale = ((hi - lo) / w[j]).min(1.0);
+                let ww = w[j] * scale;
+                let off = (0.0f32).max(lo + ww / 2.0).min(hi - ww / 2.0);
+                (WORD_SIZE * scale, off)
+            })
+        };
+        let mut best = place([0; 4]);
+        let score = |l: &[(f32, f32); 4]| {
+            let min = l.iter().map(|x| x.0).fold(f32::MAX, f32::min);
+            let sum: f32 = l.iter().map(|x| x.0).sum();
+            let moved = l.iter().filter(|x| x.1.abs() > 1e-3).count();
+            (min, sum, -(moved as f32))
+        };
+        let mut best_score = score(&best);
+        // Nothing to decide if every word fits clear of the corners.
+        if w.iter().any(|&x| x > WORD_SAFE_W) {
+            for code in 1..81u32 {
+                let owners: [u8; 4] = core::array::from_fn(|k| (code / 3u32.pow(k as u32) % 3) as u8);
+                let l = place(owners);
+                let sc = score(&l);
+                if sc.partial_cmp(&best_score) == Some(core::cmp::Ordering::Greater) {
+                    best = l;
+                    best_score = sc;
+                }
+            }
+        }
+        best
+    }
+
+    /// Just the sizes (see `card_word_layout`).
+    pub fn card_word_sizes(&self, words: &[&str; 4]) -> [f32; 4] {
+        self.card_word_layout(words).map(|x| x.0)
     }
 
     /// Over the whole deck: the share of words at full size, and the smallest
@@ -1561,13 +1596,13 @@ impl App {
             };
             self.rrect(-HALF, -HALF, CARD, CARD, 18.0, self.pal.paper, stroke, lw);
             self.circle(0.0, 0.0, 11.0, 0xeee4c8ff, 0, 0.0);
-            let sizes = self.card_word_sizes(&sc.words[i]);
+            let layout = self.card_word_layout(&sc.words[i]);
             for s in 0..4u8 {
                 self.xform(f.then(M::r(turn(s))));
                 // Letters' tops sit WORD_EDGE from the edge at any size.
-                let size = sizes[s as usize];
+                let (size, off) = layout[s as usize];
                 let y = -(HALF - WORD_EDGE - WORD_ASC * size);
-                self.text(0.0, y, size, self.pal.ink, F_SANS_BOLD, sc.words[i][s as usize], 2.0 * WORD_REACH);
+                self.text(off, y, size, self.pal.ink, F_SANS_BOLD, sc.words[i][s as usize], 2.0 * WORD_REACH);
             }
         }
 
