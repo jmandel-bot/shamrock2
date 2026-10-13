@@ -681,12 +681,16 @@ fn palette_meets_wcag_aa() {
         };
         0.2126 * ch(16) + 0.7152 * ch(8) + 0.0722 * ch(0)
     }
-    let json = App::palette_json();
-    for row in json.trim_matches(|c| c == '[' || c == ']').split("],[") {
-        let f: Vec<&str> = row.split(',').map(|x| x.trim_matches(|c| c == '"' || c == '[' || c == ']')).collect();
-        let (a, b) = (lum(f[1]), lum(f[2]));
-        let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
-        assert!(ratio >= 4.5, "{}: contrast {ratio:.2}", f[0]);
+    let mut t = Table::new(1);
+    for dark in [false, true] {
+        t.apps[0].set_theme(dark);
+        let json = t.apps[0].palette_json();
+        for row in json.trim_matches(|c| c == '[' || c == ']').split("],[") {
+            let f: Vec<&str> = row.split(',').map(|x| x.trim_matches(|c| c == '"' || c == '[' || c == ']')).collect();
+            let (a, b) = (lum(f[1]), lum(f[2]));
+            let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+            assert!(ratio >= 4.5, "{} ({}): contrast {ratio:.2}", f[0], if dark { "dark" } else { "light" });
+        }
     }
 }
 

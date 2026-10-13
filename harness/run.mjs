@@ -7,6 +7,7 @@ import { chromium } from 'playwright';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { serve } from './serve.mjs';
+import { createWsRelayServer } from '@trystero-p2p/ws-relay/server';
 
 const here = (p) => fileURLToPath(new URL(p, import.meta.url));
 const OUT = here('./out/');
@@ -161,8 +162,12 @@ try {
 
   // ---- legibility: contrast, size, no stray selection --------------------------------
   {
-    const canvasPairs = await A.ev(() => window.__cl.palette());
-    const domPairs = await A.ev(() => {
+    // Both themes: light (the default here) and dark.
+    const canvasPairs = [], domPairs = [];
+    for (const theme of ['light', 'dark']) {
+    await A.ev((t) => window.__cl.setTheme(t), theme);
+    canvasPairs.push(...(await A.ev(() => window.__cl.palette())).map(([n, f, b]) => [`${theme}: ${n}`, f, b]));
+    domPairs.push(...(await A.ev((theme) => {
       const rgb = (c) => (c.match(/[\d.]+/g) || []).map(Number);
       const opaqueBg = (el) => {
         for (let e = el; e; e = e.parentElement) {
@@ -172,11 +177,13 @@ try {
         return [20, 48, 31];
       };
       const hex = (c) => '#' + c.slice(0, 3).map((x) => Math.round(x).toString(16).padStart(2, '0')).join('');
-      return ['#hint', '#go', '#decLabel']
+      return ['#hint', '#go', '#decLabel', '#copyLink', '.danger', '.tip', '#themeBtn']
         .map((sel) => document.querySelector(sel))
         .filter((el) => el && el.offsetParent)
-        .map((el) => [el.id || el.className, hex(rgb(getComputedStyle(el).color)), hex(opaqueBg(el)), parseFloat(getComputedStyle(el).fontSize)]);
-    });
+        .map((el) => [`${theme}: ${el.id || el.className}`, hex(rgb(getComputedStyle(el).color)), hex(opaqueBg(el)), parseFloat(getComputedStyle(el).fontSize)]);
+    }, theme)));
+    }
+    await A.ev(() => window.__cl.setTheme('auto'));
     const lum = (h) => {
       const v = parseInt(h.slice(1), 16);
       const ch = (s) => { const c = ((v >> s) & 255) / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
@@ -565,6 +572,31 @@ try {
   await F.page.waitForFunction((t) => JSON.stringify(window.__cl.digest()) === t, JSON.stringify(await A.digest()), { timeout: 30000 });
   metric('late_join_state_ms', performance.now() - t0, ' ms');
   gate('a late visitor receives the full table state', true);
+
+  // ---- signaling down when people arrive: they must find each other without a reload ----
+  console.log('\n# reconnecting');
+  {
+    const LATE = RELAY + 7;
+    const url = `http://localhost:${PORT}/?signal=ws://localhost:${LATE}&rejoin=1500#late-relay`;
+    const pages = [];
+    for (const nm of ['Lu', 'Mo']) {
+      const page = await (await browser.newContext({ viewport: { width: 1000, height: 800 } })).newPage();
+      page.on('pageerror', (e) => errors.push(`${nm}: ${e.message}`));
+      await page.goto(url);
+      pages.push(page);
+    }
+    await sleep(2500);
+    const lonely = await pages[0].textContent('#hint');
+    gate('alone, the status line says it is looking for the others', /Looking for the others/.test(lonely), lonely);
+    const relay = createWsRelayServer({ port: LATE, host: '127.0.0.1' });
+    await relay.ready;
+    t0 = performance.now();
+    const met = await Promise.all(pages.map((p) => p.waitForFunction(() => window.__cl.peerCount() > 0, null, { timeout: 25000 }).then(() => true, () => false)));
+    metric('meet_after_relay_returns_ms', performance.now() - t0, ' ms');
+    gate('players who arrive while signaling is down find each other without a reload', met.every(Boolean));
+    for (const p of pages) await p.context().close();
+    await relay.close();
+  }
 
   console.log('\n# perf');
   await sleep(1000);

@@ -24,24 +24,68 @@ const C_LEAF: f32 = 6.0;
 const F_SANS_BOLD: u8 = 1;
 const F_SERIF: u8 = 2;
 
-// Palette. Every text/background pair here is checked for WCAG AA contrast
-// by the harness (see `palette_json`).
-const BG: u32 = 0x14301fff;
-const TRAY: u32 = 0x1b3d2aff;
-const TRAY_EDGE: u32 = 0x2b5a3eff;
-const LEAF: u32 = 0xa8dbb0ff;
-const LEAF_ACTIVE: u32 = 0xd6f1daff;
-const LEAF_GLOW: u32 = 0xe9f8cfff;
-const LEAF_EDGE: u32 = 0x2e6b42ff;
-const CENTRE: u32 = 0x2e6b45ff;
-const CENTRE_EDGE: u32 = 0x24573aff;
-const PAPER: u32 = 0xfcf8eeff;
-const PAPER_EDGE: u32 = 0xcdbf9aff;
-const INK: u32 = 0x1c1710ff;
-const CLUE_INK: u32 = 0x0b2414ff;
-const KEYWORD_INK: u32 = 0x1d4a2bff;
-const HUB: u32 = 0x173a27ff;
-const GOLD: u32 = 0xf2c14eff;
+// Palettes, one per theme. Every text/background pair is checked for WCAG AA
+// contrast in both by the harness (see `palette_json`).
+#[derive(Debug)]
+pub struct Palette {
+    pub bg: u32,
+    pub tray: u32,
+    pub tray_edge: u32,
+    pub leaf: u32,
+    pub leaf_active: u32,
+    pub leaf_glow: u32,
+    pub leaf_edge: u32,
+    pub centre: u32,
+    pub centre_edge: u32,
+    pub paper: u32,
+    pub paper_edge: u32,
+    pub ink: u32,
+    pub clue_ink: u32,
+    pub keyword_ink: u32,
+    pub hub: u32,
+    pub gold: u32,
+}
+
+/// Daylight: a pale sage table, white cards, the clover as before.
+pub const LIGHT: Palette = Palette {
+    bg: 0xe6eee2ff,
+    tray: 0xd9e4d4ff,
+    tray_edge: 0xb9cdb3ff,
+    leaf: 0xa8dbb0ff,
+    leaf_active: 0xd6f1daff,
+    leaf_glow: 0xe9f8cfff,
+    leaf_edge: 0x4f8a5eff,
+    centre: 0x2e6b45ff,
+    centre_edge: 0x24573aff,
+    paper: 0xffffffff,
+    paper_edge: 0xc9bf9fff,
+    ink: 0x1c1710ff,
+    clue_ink: 0x0b2414ff,
+    keyword_ink: 0x1d4a2bff,
+    hub: 0x173a27ff,
+    gold: 0xd99a1eff,
+};
+
+/// Night: a near-neutral charcoal table, muted leaves, and cards dimmed a
+/// little so they don't glare.
+pub const DARK: Palette = Palette {
+    bg: 0x111613ff,
+    tray: 0x18201bff,
+    tray_edge: 0x2a362eff,
+    leaf: 0x86b38fff,
+    leaf_active: 0xa9cdb0ff,
+    leaf_glow: 0xcfe6b8ff,
+    leaf_edge: 0x2c4a35ff,
+    centre: 0x22432fff,
+    centre_edge: 0x2f5a3fff,
+    paper: 0xe8e3d5ff,
+    paper_edge: 0x8f876eff,
+    ink: 0x1c1710ff,
+    clue_ink: 0x0b2414ff,
+    keyword_ink: 0x10301bff,
+    hub: 0x0e1f15ff,
+    gold: 0xf2c14eff,
+};
 
 fn mix(a: u32, b: u32, t: f32) -> u32 {
     let t = t.clamp(0.0, 1.0);
@@ -205,6 +249,8 @@ pub struct Scene {
 }
 
 pub struct App {
+    /// Colours for the current theme (display only, per device).
+    pub pal: &'static Palette,
     pub shared: Shared,
     /// This device (Lamport tie-break, presence).
     pub device: u32,
@@ -288,6 +334,7 @@ impl App {
             last_done: None,
             last_guess: None,
             shakes: BTreeMap::new(),
+            pal: &DARK,
             solved_at: f64::NEG_INFINITY,
             now: 0.0,
             outbox: Vec::new(),
@@ -631,6 +678,10 @@ impl App {
     /// Card zoom as drawn now (see `Layout::z`).
     pub fn card_zoom(&self) -> f32 {
         self.layout().z
+    }
+
+    pub fn set_theme(&mut self, dark: bool) {
+        self.pal = if dark { &DARK } else { &LIGHT };
     }
 
     pub fn set_zoom(&mut self, z: f32) {
@@ -1329,7 +1380,7 @@ impl App {
     pub fn render(&mut self) {
         self.cmds.clear();
         self.strs.clear();
-        self.cmds.extend_from_slice(&[C_CLEAR, f32::from_bits(BG)]);
+        self.cmds.extend_from_slice(&[C_CLEAR, f32::from_bits(self.pal.bg)]);
         let sc = self.scene();
         let phase = self.shared.phase();
         let l = self.layout();
@@ -1337,7 +1388,7 @@ impl App {
 
         if let Some((x, y, w, h, _)) = l.tray {
             self.xform(M::ID);
-            self.rrect(x, y, w, h, 18.0, TRAY, TRAY_EDGE, 1.5);
+            self.rrect(x, y, w, h, 18.0, self.pal.tray, self.pal.tray_edge, 1.5);
         }
 
         // The clover: four heart-shaped leaves (one clue each) round a centre.
@@ -1346,11 +1397,11 @@ impl App {
         let mid = Self::leaf_mid();
         for d in 0..4u8 {
             self.xform(self.leaf_m_at(d, self.angle));
-            let fill = if self.editing == Some(d) { LEAF_ACTIVE } else { mix(LEAF, LEAF_GLOW, glow) };
-            self.cmds.extend_from_slice(&[C_LEAF, 290.0, 430.0, f32::from_bits(fill), f32::from_bits(LEAF_EDGE), 4.0]);
+            let fill = if self.editing == Some(d) { self.pal.leaf_active } else { mix(self.pal.leaf, self.pal.leaf_glow, glow) };
+            self.cmds.extend_from_slice(&[C_LEAF, 290.0, 430.0, f32::from_bits(fill), f32::from_bits(self.pal.leaf_edge), 4.0]);
         }
         self.xform(board);
-        self.circle(0.0, 0.0, BOARD_HALF, CENTRE, CENTRE_EDGE, 4.0);
+        self.circle(0.0, 0.0, BOARD_HALF, self.pal.centre, self.pal.centre_edge, 4.0);
         for d in 0..4u8 {
             self.xform(self.leaf_m_at(d, self.angle));
             let clue = sc.clues[d as usize].clone();
@@ -1358,11 +1409,11 @@ impl App {
             let maxw = 2.0 * LEAF_HALF_W - 30.0;
             match (clue.is_empty(), keys) {
                 (false, Some(k)) => {
-                    self.text(0.0, mid - 18.0, 48.0, CLUE_INK, F_SERIF, &clue, maxw);
-                    self.text(0.0, mid + 30.0, 30.0, KEYWORD_INK, F_SANS_BOLD, &k, maxw);
+                    self.text(0.0, mid - 18.0, 48.0, self.pal.clue_ink, F_SERIF, &clue, maxw);
+                    self.text(0.0, mid + 30.0, 30.0, self.pal.keyword_ink, F_SANS_BOLD, &k, maxw);
                 }
-                (false, None) => self.text(0.0, mid, 54.0, CLUE_INK, F_SERIF, &clue, maxw),
-                (true, Some(k)) => self.text(0.0, mid, 38.0, KEYWORD_INK, F_SANS_BOLD, &k, maxw),
+                (false, None) => self.text(0.0, mid, 54.0, self.pal.clue_ink, F_SERIF, &clue, maxw),
+                (true, Some(k)) => self.text(0.0, mid, 38.0, self.pal.keyword_ink, F_SANS_BOLD, &k, maxw),
                 (true, None) => {}
             }
         }
@@ -1373,7 +1424,7 @@ impl App {
             let claimed = sc.claim[s].is_some() && matches!(phase, Phase::Guessing(_));
             let (fill, stroke) = match (solved, claimed) {
                 (true, _) => (0x9be7a8aa, 0xffffff60),
-                (false, true) => (0x0000002e, GOLD),
+                (false, true) => (0x0000002e, self.pal.gold),
                 _ => (0x0000002e, 0xffffff38),
             };
             self.rrect(x - HALF - 6.0, y - HALF - 6.0, CARD + 12.0, CARD + 12.0, 18.0, fill, stroke, 3.0);
@@ -1409,23 +1460,23 @@ impl App {
             let solved = matches!(c.loc, Loc::Slot(s) if sc.locked & (1 << s) != 0) && phase != Phase::Writing;
             let (stroke, lw) = match c.held {
                 0 if solved => (0x2fa84fff, 6.0),
-                0 => (PAPER_EDGE, 2.0),
+                0 => (self.pal.paper_edge, 2.0),
                 h if Some(h) == self.seat => (0xffffffff, 4.0),
                 h => (self.color_of(h), 7.0),
             };
-            self.rrect(-HALF, -HALF, CARD, CARD, 18.0, PAPER, stroke, lw);
+            self.rrect(-HALF, -HALF, CARD, CARD, 18.0, self.pal.paper, stroke, lw);
             self.circle(0.0, 0.0, 11.0, 0xeee4c8ff, 0, 0.0);
             for s in 0..4u8 {
                 self.xform(f.then(M::r(turn(s))));
-                self.text(0.0, -WORD_INSET, WORD_SIZE, INK, F_SANS_BOLD, sc.words[i][s as usize], WORD_MAX_W);
+                self.text(0.0, -WORD_INSET, WORD_SIZE, self.pal.ink, F_SANS_BOLD, sc.words[i][s as usize], WORD_MAX_W);
             }
         }
 
         // Hub: tap to turn the board.
         self.xform(board);
-        self.circle(0.0, 0.0, HUB_R, HUB, PAPER, 3.0);
+        self.circle(0.0, 0.0, HUB_R, self.pal.hub, self.pal.paper, 3.0);
         self.xform(M::t(l.bc.0, l.bc.1).then(M::s(l.k)));
-        self.text(0.0, 1.0, 32.0, PAPER, F_SANS_BOLD, "⟳", 44.0);
+        self.text(0.0, 1.0, 32.0, self.pal.paper, F_SANS_BOLD, "⟳", 44.0);
 
         // Other guessers' pointers.
         if matches!(phase, Phase::Guessing(_)) {
@@ -1536,15 +1587,15 @@ impl App {
     }
 
     /// Text/background colour pairs actually used, for contrast checks.
-    pub fn palette_json() -> String {
+    pub fn palette_json(&self) -> String {
         let pairs = [
-            ("card words", INK, PAPER),
-            ("clue on leaf", CLUE_INK, LEAF),
-            ("clue on glowing leaf", CLUE_INK, LEAF_GLOW),
-            ("clue on active leaf", CLUE_INK, LEAF_ACTIVE),
-            ("keywords on leaf", KEYWORD_INK, LEAF),
-            ("keywords on active leaf", KEYWORD_INK, LEAF_ACTIVE),
-            ("hub glyph", PAPER, HUB),
+            ("card words", self.pal.ink, self.pal.paper),
+            ("clue on leaf", self.pal.clue_ink, self.pal.leaf),
+            ("clue on glowing leaf", self.pal.clue_ink, self.pal.leaf_glow),
+            ("clue on active leaf", self.pal.clue_ink, self.pal.leaf_active),
+            ("keywords on leaf", self.pal.keyword_ink, self.pal.leaf),
+            ("keywords on active leaf", self.pal.keyword_ink, self.pal.leaf_active),
+            ("hub glyph", self.pal.paper, self.pal.hub),
         ];
         let rows: Vec<String> =
             pairs.iter().map(|(n, f, b)| format!("[\"{n}\",\"#{:06x}\",\"#{:06x}\"]", f >> 8, b >> 8)).collect();

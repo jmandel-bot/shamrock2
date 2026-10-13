@@ -93,7 +93,7 @@ function paint(n) {
 
 // ---- outbox: network packets, UI requests ---------------------------------
 
-const stats = { sentPackets: 0, sentBytes: 0, recvPackets: 0, recvBytes: 0, frameMs: [], presses: 0 };
+const stats = { joins: 0, sentPackets: 0, sentBytes: 0, recvPackets: 0, recvBytes: 0, frameMs: [], presses: 0 };
 let net = null;
 
 let toastTimer = 0;
@@ -457,6 +457,26 @@ function syncSize() {
   $('sizeDown').disabled = !down;
   $('sizeNote').hidden = up;
 }
+// Theme: follow the device's light/dark setting, or a choice made in the
+// menu (kept per device). Rust draws the board in the matching palette.
+const themeKey = 'shamrock:theme';
+const systemDark = matchMedia('(prefers-color-scheme: dark)');
+let themePref = recall(themeKey) ?? 'auto';
+function applyTheme() {
+  const dark = themePref === 'dark' || (themePref === 'auto' && systemDark.matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  X.set_theme(dark ? 1 : 0);
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', getComputedStyle(document.documentElement).getPropertyValue('--bar').trim());
+  $('themeBtn').textContent = `Theme: ${themePref}`;
+}
+systemDark.addEventListener('change', applyTheme);
+$('themeBtn').onclick = () => {
+  themePref = { auto: 'light', light: 'dark', dark: 'auto' }[themePref] ?? 'auto';
+  remember(themeKey, themePref === 'auto' ? null : themePref);
+  applyTheme();
+};
+applyTheme();
+
 // Full screen where the browser allows it (Android, desktop; not iPhone,
 // where "Add to Home Screen" gives the same via the manifest).
 const fullBtn = $('fullBtn');
@@ -565,6 +585,11 @@ function renderUi(force = false) {
       side = ['Share', openShare];
       break;
   }
+  // Not connected to anyone: say so rather than look normal while broken.
+  if (!solo && !peers.size) {
+    const others = s.players.some((p) => !p.you);
+    hint = `<span class="pulse"></span>${others ? 'Reconnecting to the others…' : 'Looking for the others… (invite via ⋯)'}`;
+  }
   // Submission progress: a thin bar along the top of the strip.
   const segs = $('segs');
   segs.hidden = s.phase !== 'writing';
@@ -614,8 +639,8 @@ canvas.addEventListener('pointerdown', () => $('toast').classList.remove('show')
 // ---- network ----------------------------------------------------------------
 
 const peers = new Set();
-const joined = (id) => { peers.add(id); X.on_peer_join(); drainOutbox(); };
-const left = (id) => { peers.delete(id); X.on_link_lost(linkId(id)); };
+const joined = (id) => { peers.add(id); X.on_peer_join(); drainOutbox(); renderUi(true); };
+const left = (id) => { peers.delete(id); X.on_link_lost(linkId(id)); renderUi(true); };
 
 async function connect() {
   const mode = params.get('net');
@@ -635,16 +660,40 @@ async function connect() {
   }
   const signal = params.get('signal');
   const lib = signal ? await import('./vendor/trystero-ws.js') : await import('./vendor/trystero-nostr.js');
-  const config = { appId: 'shamrock-p2p' };
-  if (signal) config.relayConfig = { urls: [signal] };
-  const room = lib.joinRoom(config, roomId);
-  const action = room.makeAction('m');
-  action.onMessage = (data, { peerId }) => receive(new Uint8Array(data), linkId(peerId));
-  room.onPeerJoin = joined;
-  room.onPeerLeave = left;
+  // Players find each other through public Nostr relays. Trystero's default
+  // picks 5 hobby relays by hashing the app id, and when they're down or
+  // slow nobody meets until a reload happens to get through; these are
+  // large, widely run open relays, all used at once.
+  const config = { appId: 'shamrock-p2p', relayConfig: { urls: signal ? [signal] : RELAYS } };
+  let room, action;
+  const enter = () => {
+    room = lib.joinRoom(config, roomId);
+    action = room.makeAction('m');
+    action.onMessage = (data, { peerId }) => receive(new Uint8Array(data), linkId(peerId));
+    room.onPeerJoin = joined;
+    room.onPeerLeave = left;
+    stats.joins++;
+  };
+  enter();
+  // Alone? Announce again from scratch (what a reload did), soon at first,
+  // then backing off; and at once when the page comes back to the
+  // foreground, since phones drop sockets in background tabs.
+  let since = performance.now(), wait = REJOIN_FIRST_MS;
+  const rejoin = () => {
+    try { room.leave(); } catch {}
+    enter();
+    since = performance.now();
+  };
+  setInterval(() => {
+    if (peers.size) { since = performance.now(); wait = REJOIN_FIRST_MS; return; }
+    if (performance.now() - since > wait) { wait = Math.min(wait * 1.6, 30000); rejoin(); }
+  }, 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && !peers.size) rejoin(); });
   addEventListener('pagehide', () => room.leave());
-  return { send: (u8) => peers.size && action.send(u8) };
+  return { send: (u8) => peers.size && action.send(u8), rejoin };
 }
+const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://nostr.mom', 'wss://relay.snort.social', 'wss://offchain.pub'];
+const REJOIN_FIRST_MS = +(params.get('rejoin') ?? 12000);
 
 // Solo play (a share link) never connects to anyone.
 if (!solo) connect().then((n) => { net = n; }, (e) => toast(`Can't connect: ${e.message}`, 10000));
@@ -683,6 +732,8 @@ requestAnimationFrame(tick);
 
 const probe = (fn, ...a) => { fn(...a); return Array.from(new Float32Array(X.memory.buffer, X.probe_ptr(), 3)); };
 window.__cl = {
+  setTheme: (t) => { themePref = t; applyTheme(); },
+  peerCount: () => peers.size,
   camera: () => ({ ...cam }),
   device, X, stats, peers, ui, joinAs, watch,
   digest: () => scratchJson(X.digest()),

@@ -17,11 +17,22 @@
   @font-face { font-family: Figtree; font-weight: 600; font-display: swap; src: url(fonts/figtree-latin-600-normal.woff2) format('woff2'); }
   @font-face { font-family: Figtree; font-weight: 700; font-display: swap; src: url(fonts/figtree-latin-700-normal.woff2) format('woff2'); }
   @font-face { font-family: Fraunces; font-weight: 600; font-display: swap; src: url(fonts/fraunces-latin-600-normal.woff2) format('woff2'); }
-  /* Shamrock: green felt, paper cards, one warm accent. Text pairs meet WCAG AA. */
+  /* Shamrock: a sage table by day, charcoal by night; paper cards, one warm
+     accent. The theme follows the system unless chosen in the menu (main.js
+     sets data-theme). Text pairs meet WCAG AA in both. */
   :root {
-    --felt: #14301f; --bar: #102719; --sheet: #1a3a28; --line: #3d7a52;
-    --fg: #f3f8f1; --dim: #b9d3c0; --hint: #ffe7a6; --leaf: #a8dbb0;
-    --go: #f2c14e; --go-fg: #231c05; --on: #8fe0a2; --on-fg: #0b2414; --chip: #ffffff17;
+    --felt: #e6eee2; --bar: #f5f8f2; --sheet: #ffffff; --line: #9fbca6;
+    --fg: #13261a; --dim: #43604c; --hint: #6b4a00; --leaf: #a8dbb0;
+    --go: #f2c14e; --go-fg: #231c05; --on: #2f8a4a; --on-fg: #ffffff; --chip: #13261a12;
+    --menu-item: #13261a0b; --danger: #a3261a; --toast: #13261a; --toast-fg: #f5f8f2; --field: #ffffff;
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --felt: #111613; --bar: #171e19; --sheet: #1d2620; --line: #3a4b40;
+    --fg: #edf2ee; --dim: #a8b7ac; --hint: #f3dc9b; --leaf: #86b38f;
+    --go: #f2c14e; --go-fg: #231c05; --on: #8fe0a2; --on-fg: #0b2414; --chip: #ffffff14;
+    --menu-item: #ffffff0d; --danger: #ffb4a8; --toast: #050806; --toast-fg: #edf2ee; --field: #0000004d;
+    color-scheme: dark;
     --sans: Figtree, system-ui, -apple-system, sans-serif; --serif: Fraunces, Georgia, serif;
     color-scheme: dark;
   }
@@ -62,7 +73,7 @@
   #clue { position: absolute; display: none; transform-origin: center; text-align: center; font: 600 22px var(--serif);
           border: 3px solid var(--go); border-radius: 16px; background: #f6fcf6; color: #0b2414; outline: none; padding: 0 12px;
           box-shadow: 0 8px 24px #0006; }
-  #toast { position: absolute; left: 50%; bottom: 12px; transform: translate(-50%, 8px); max-width: calc(100% - 24px); background: #08170e; color: var(--fg);
+  #toast { position: absolute; left: 50%; bottom: 12px; transform: translate(-50%, 8px); max-width: calc(100% - 24px); background: var(--toast); color: var(--toast-fg);
            padding: 10px 16px; border-radius: 14px; font-size: 16px; font-weight: 600; pointer-events: none; opacity: 0; transition: opacity .25s, transform .25s; text-align: center; box-shadow: 0 6px 20px #0008; }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
 
@@ -75,6 +86,8 @@
   #segs i.away { opacity: .15; }
   #hint { flex: 1; min-width: 0; color: var(--hint); font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #hint b { color: var(--fg); }
+  .pulse { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--hint); margin-right: 7px; vertical-align: 1px; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
   #dockBtns { display: flex; align-items: center; gap: 6px; flex: none; }
   #go, #alt, #side { white-space: nowrap; }
   #alt, #side { padding: 9px 12px; }
@@ -95,7 +108,7 @@
   @media (min-width: 600px) { .overlay { align-items: center; } .sheet { border-radius: 22px; } }
   .sheet h2 { margin: 0; font: 600 24px var(--serif); }
   .sheet p { margin: 0; color: var(--dim); font-size: 16px; }
-  .sheet input { font: 600 20px var(--sans); color: var(--fg); background: #0004; border: 2px solid var(--line); border-radius: 14px; padding: 12px 14px; width: 100%; }
+  .sheet input { font: 600 20px var(--sans); color: var(--fg); background: var(--field); border: 2px solid var(--line); border-radius: 14px; padding: 12px 14px; width: 100%; }
   .brand { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 4px 0 6px; text-align: center; }
   .brand svg { width: 72px; height: 72px; }
   /* The mark settles in once: a quarter turn, easing to rest. */
@@ -109,8 +122,8 @@
   .item { display: flex; align-items: center; gap: 10px; padding: 6px 4px; }
   .item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .link { background: none; padding: 6px 0; min-height: 0; color: var(--dim); text-decoration: underline; font-weight: 600; }
-  .menuBtn { text-align: left; border-radius: 14px; background: #ffffff10; width: 100%; }
-  .danger { color: #ffc2b8; }
+  .menuBtn { text-align: left; border-radius: 14px; background: var(--menu-item); width: 100%; }
+  .danger { color: var(--danger); }
   code { font-size: 14px; color: var(--dim); word-break: break-all; }
   /* Solo play from a share link: no table, so no roster or table menu. */
   body.solo #roster, body.solo #tableItems { display: none; }
@@ -119,6 +132,14 @@
     *, *::before, *::after { transition: none !important; animation: none !important; }
   }
 </style>
+<script>
+  // Pick the theme before first paint (main.js keeps it in sync after).
+  try {
+    const t = localStorage.getItem('shamrock:theme');
+    const dark = t === 'dark' || (t !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  } catch {}
+</script>
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -171,6 +192,7 @@
     <div class="prefs">
       <span class="stepper" id="size" title="Card size on your screen only"><button id="sizeDown" aria-label="Smaller cards">−</button><span>Card size</span><button id="sizeUp" aria-label="Bigger cards">+</button></span>
       <button id="fullBtn" hidden>Full screen</button>
+      <button id="themeBtn" title="Light or dark: follow this device, or pick one">Theme: auto</button>
     </div>
     <p id="sizeNote" class="tip" hidden>That's as big as cards get while every card still fits. Pinch the board to zoom in further.</p>
     <div id="tipText" class="tip"></div>

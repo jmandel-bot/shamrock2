@@ -56,6 +56,10 @@ node harness/serve.mjs # prints a URL
 
 **Pinch zoom** is the board's own, per device: two fingers (or ctrl+wheel / a trackpad pinch) zoom and pan the board area up to 4×, while the bottom bar and menu stay normal size, so you can't get stranded zoomed in. While zoomed, one finger on a card still plays, and one finger anywhere else pans the view (the board only turns via ⟳ then; a tap is still a tap); **1×** (top-left, shown while zoomed) resets it. A second finger cancels whatever the first started (a dragged card goes back, nothing turns). The page itself doesn't pinch-zoom: zooming the whole page past the dock left the board filling the screen with no way back.
 
+**Light and dark.** The theme follows the device's light/dark setting; the ⋯ menu's *Theme* button cycles auto → light → dark (kept per device). Light is a pale sage table with white cards; dark is near-neutral charcoal with muted leaves and slightly dimmed cards so they don't glare. Rust draws the board from a palette per theme; every text pair in both passes WCAG AA (native test and harness).
+
+**Finding each other.** Players meet through public Nostr relays (six large, widely run ones rather than Trystero's hashed pick of hobby relays). While a device is connected to nobody, the status line says *Looking for the others…*, and it re-announces from scratch after 12 s (backing off to 30 s) and as soon as the page returns to the foreground, which is what a manual reload used to fix.
+
 **Card size** is per device: − / + in the ⋯ menu (narrow screens start larger). Positions on the board are shared; bigger cards just overlap more on your screen. At the largest size, cards in neighbouring spots touch edge to edge. In the tray, cards never grow past a third of the tray's width, so a saved big size can't make them overlap. At that limit + greys out and the menu says to pinch the board for more; − always shrinks what you see (it steps from the drawn size, not a bigger saved one).
 
 **Presence** follows the WebRTC connections, not a heartbeat, so a phone that locks its screen or a backgrounded tab still counts as at the table.

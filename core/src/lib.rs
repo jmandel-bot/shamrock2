@@ -162,6 +162,12 @@ pub extern "C" fn remove_seat(id: u32) {
     g().app.remove_seat(id);
 }
 
+/// Theme for this device's drawing: 1 dark, 0 light.
+#[no_mangle]
+pub extern "C" fn set_theme(dark: u32) {
+    g().app.set_theme(dark != 0);
+}
+
 /// Card zoom as drawn now: the chosen size, capped so tray cards fit.
 #[no_mangle]
 pub extern "C" fn card_zoom() -> f32 {
@@ -184,7 +190,7 @@ pub extern "C" fn set_motion(on: u32) {
 /// Text/background colour pairs used on the canvas (JSON) → scratch.
 #[no_mangle]
 pub extern "C" fn palette() -> u32 {
-    to_scratch(App::palette_json())
+    to_scratch(g().app.palette_json())
 }
 
 /// Boards given in answer order (inbox text) → scrambled form → scratch.
