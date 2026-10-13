@@ -21,6 +21,7 @@ core/                Rust crate; all game logic. No dependencies, no wasm-bindge
   src/lib.rs         raw extern "C" exports
   tests/             native property tests (convergence, rotation invariants, …)
 web/                 static site: index.html, main.js (~180-line shim), core.wasm, vendored Trystero
+legacy-web.html      deployed as /web/: sends old /web/ links to the site root
 harness/serve.mjs    static server + local signaling relay
 harness/run.mjs      Playwright scorecard: real tabs, real WebRTC, real pointer events
 ```
@@ -38,7 +39,7 @@ node harness/serve.mjs # prints a URL
 - `?signal=ws://localhost:8788#myroom` uses the bundled local relay.
 - `?net=local#myroom` uses BroadcastChannel, for same-browser tabs with no WebRTC.
 
-`web/` is fully static, so any static host works. Anyone with the same `#room` joins the table.
+`web/` is fully static, so any static host works. Pages serves it at the site root. Anyone with the same `#room` joins the table.
 
 **How a game goes** (So Clover! rules, everyone at once):
 

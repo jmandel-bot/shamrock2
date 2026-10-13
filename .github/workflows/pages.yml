@@ -23,11 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # web/core.wasm and web/vendor/ are committed, so the site is static as-is.
+      # The game is served at the site root; /web/ only redirects old links there.
       - name: Assemble site
         run: |
-          mkdir -p _site
-          cp index.html .nojekyll _site/
-          cp -r web _site/web
+          mkdir -p _site/web
+          cp -r web/. .nojekyll _site/
+          cp legacy-web.html _site/web/index.html
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
