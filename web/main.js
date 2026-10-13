@@ -977,7 +977,8 @@ const REJOIN_FIRST_MS = +(params.get('rejoin') ?? 12000);
 const stateKey = `shamrock:${roomId}:state`;
 let savedState = '';
 function saveTable() {
-  const s = b64.enc(bytes(X.scratch_ptr(), X.snapshot()));
+  // The snapshot first: it replaces the scratch buffer, which may move.
+  const s = b64.enc(scratchBytes(X.snapshot()));
   if (s !== savedState) { savedState = s; remember(stateKey, JSON.stringify({ at: Date.now(), v: X.protocol(), s })); }
 }
 if (!solo && !home) {

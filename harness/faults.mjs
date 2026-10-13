@@ -55,6 +55,9 @@ async function table(room, names) {
   await until(() => seatedEverywhere(ps, names.length), 30000);
   return ps;
 }
+// Phones save every 2 s (and on the way out, which a closing page may not
+// reach): wait until each has saved since `t` before closing it.
+const savedSince = (ps, room, t) => Promise.all(ps.map((p) => until(() => p.page.evaluate(([r, t]) => (JSON.parse(localStorage.getItem(`shamrock:${r}:state`) ?? '{}').at ?? 0) > t, [room, t]), 15000)));
 const done = async (ps) => { for (const p of ps) await p.ctx.close().catch(() => {}); };
 
 // ONLY=text runs just the scenarios whose title contains it.
@@ -219,7 +222,7 @@ await scenario('two groups played apart in one room, then meet, and one moves aw
   await until(async () => (await ab[0].table()).phase === 'writing');
   await ab[0].tool('write_clue', { leaf: 'top', text: 'moonlight' });
   await ab[1].tool('write_clue', { leaf: 'top', text: 'starlight' });
-  await sleep(2500);
+  await savedSince([...ab, eve], room, Date.now());
   for (const p of [...ab, eve]) await p.page.close({ runBeforeUnload: true });
   // Later Cy and Dee use the same room and get a round further.
   const cd = await table(room, ['Cy', 'Dee']);
@@ -228,7 +231,7 @@ await scenario('two groups played apart in one room, then meet, and one moves aw
   await until(async () => (await cd[0].table()).phase === 'guessing');
   await cd[0].page.evaluate(() => document.getElementById('redealBtn').click());
   await until(async () => (await cd[1].table()).round === 2);
-  await sleep(2500);
+  await savedSince(cd, room, Date.now());
   for (const p of cd) await p.page.close({ runBeforeUnload: true });
   // Ana, Ben, Cy and Dee come back at once, each phone with its own save.
   const all = [...ab, ...cd];
@@ -242,7 +245,7 @@ await scenario('two groups played apart in one room, then meet, and one moves aw
   check((await happenedAt(ab[0], room)).some((x) => /also been playing/.test(x)), 'and it is listed under What happened');
   const log = await ab[0].page.evaluate(() => JSON.parse(localStorage.getItem('shamrock:log') ?? '[]'));
   check(log.some((e) => e.finished === false && e.boards.some((b) => b.text.includes('moonlight'))), 'her half-written round is in Past games, marked unfinished');
-  for (const p of cd) check(!(await happenedAt(p, room)).some((x) => /also been playing/.test(x)), `${p.name} lost nothing to the merge, so is told nothing about it`);
+  for (const p of cd) { const h = await happenedAt(p, room); check(!h.some((x) => /also been playing/.test(x)), `${p.name} lost nothing to the merge, so is told nothing about it`, JSON.stringify(h)); }
 
   // Ana moves her group.
   await ab[0].page.click('#toast button');
