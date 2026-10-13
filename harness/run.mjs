@@ -421,7 +421,7 @@ try {
     const s = k % 4;
     await G.drag((await G.card(0)).slice(0, 2), (await G.slot(s)).slice(0, 2));
     const t = performance.now();
-    await until(all.filter((p) => p !== G), new Function('d', `const c=d.puzzles[0].cards[0];return c[0]==='slot'&&c[1]===${s}&&c[3]===0`));
+    await until(all.filter((p) => p !== G), new Function('d', `const c=d.puzzles[0].cards[0];return c[0]==='slot'&&c[1]===${s}`));
     lat.push(performance.now() - t);
   }
   metric('sync_latency_p50_ms', pct(lat, 0.5), ' ms');
@@ -495,7 +495,7 @@ try {
   await H.waitGoEnabled();
   await H.go();
   await until(all, (d) => d.puzzles[0].attempts === 2 && d.puzzles[0].mask === 15);
-  gate('guessing keeps going until all four are right (no limit, no score)', (await A.digest()).gameScore === 0);
+  { const d = await A.digest(); gate('guessing keeps going until all four are right (no limit, no score)', d.puzzles[0].attempts === 2 && !('gameScore' in d)); }
   await G.page.screenshot({ path: `${OUT}3-clover-done.png` });
 
   for (let k = 1; k < 5; k++) {
@@ -636,7 +636,7 @@ try {
   await until(all, (d) => d.phase === 'writing' && d.round === 2);
   gate('next round button names the players', nextLabel === 'Next round with 5 players', nextLabel);
   const r2 = await C.digest();
-  gate('next round: same players', r2.seats.length === 5);
+  gate('next round: same players', r2.seats.filter((s) => s[2]).length === 5);
 
   await D.ctx.close();
   // (Dee has left mid-writing; others would now see "Waiting for Dee (away)".)
@@ -648,7 +648,8 @@ try {
   const live = [A, B, C, E, A2, W];
   await until(live, (d) => d.phase === 'lobby' && d.round === 0);
   const g2 = await B.digest();
-  gate("New game starts over with whoever is here", g2.seats.length === 4 && !g2.seats.some((s) => s[1] === 'Dee'), g2.seats.map((s) => s[1]).join(','));
+  const seated = g2.seats.filter((s) => s[2]);
+  gate("New game starts over with whoever is here", seated.length === 4 && !seated.some((s) => s[1] === 'Dee'), seated.map((s) => s[1]).join(','));
 
   t0 = performance.now();
   const F = await open('Late');

@@ -54,6 +54,9 @@ struct Dev {
     dragging: bool,
     /// What the page last saved to localStorage (every 2 s), restored on reload.
     saved: Vec<u8>,
+    /// The furthest this device's table has got (epoch, round): what a
+    /// merge must never take away from it.
+    best: (u16, u16),
 }
 
 struct Packet {
@@ -89,7 +92,6 @@ struct Sim {
     rough: Rough,
     seed: u64,
     log: Vec<String>,
-    new_games: u32,
     loads: u64,
 }
 
@@ -100,7 +102,7 @@ fn pair(i: usize, j: usize) -> (usize, usize) {
 impl Sim {
     fn new(seed: u64, n: usize, rough: Rough) -> Sim {
         let devs = (0..n)
-            .map(|k| Dev { app: Some(app(seed * 100 + k as u64 + 1)), name: None, join_at: None, online: true, dragging: false, saved: Vec::new() })
+            .map(|k| Dev { app: Some(app(seed * 100 + k as u64 + 1)), name: None, join_at: None, online: true, dragging: false, saved: Vec::new(), best: (0, 0) })
             .collect();
         Sim {
             devs,
@@ -114,7 +116,6 @@ impl Sim {
             rough,
             seed,
             log: Vec::new(),
-            new_games: 0,
             loads: 0,
         }
     }
@@ -197,6 +198,8 @@ impl Sim {
             if self.live(k) {
                 let now = self.now;
                 self.devs[k].app.as_mut().unwrap().frame(now);
+                let r = self.devs[k].app.as_ref().unwrap().shared.round;
+                self.devs[k].best = self.devs[k].best.max((r.epoch, r.n));
                 if (now / TICK) as u64 % 100 == k as u64 {
                     self.devs[k].saved = self.devs[k].app.as_ref().unwrap().snapshot();
                 }
@@ -220,7 +223,7 @@ impl Sim {
             let games: Vec<String> = self
                 .devs
                 .iter()
-                .map(|d| d.app.as_ref().map_or("-".into(), |a| format!("{}.{}/r{}", a.shared.game.clock, a.shared.game.peer % 100, a.shared.round.n)))
+                .map(|d| d.app.as_ref().map_or("-".into(), |a| format!("e{}r{}/{}", a.shared.round.epoch, a.shared.round.n, a.shared.round.nseats)))
                 .collect();
             let g = games.join(" ");
             if self.log.last().is_none_or(|l| !l.ends_with(&g)) {
@@ -301,7 +304,6 @@ impl Sim {
             56 => {
                 if self.r.below(3) == 0 {
                     a.action(7);
-                    self.new_games += 1;
                     "NEW GAME".into()
                 } else {
                     a.action(6);
@@ -438,7 +440,7 @@ impl Sim {
 
     fn digest_of(&self, k: usize) -> String {
         let sh = &self.devs[k].app.as_ref().unwrap().shared;
-        format!("{:?}/{} {}", sh.game, sh.gen, sh.digest())
+        format!("{:?} {}", sh.round.stamp, sh.digest())
     }
 }
 
@@ -475,7 +477,6 @@ fn run(seed: u64, rough: Rough, cov: &mut Coverage) {
     for _ in 0..20 {
         s.tick();
     }
-    let game0 = s.devs[0].app.as_ref().unwrap().shared.game;
 
     // Chaos.
     let mut guessed = false;
@@ -529,15 +530,17 @@ fn run(seed: u64, rough: Rough, cov: &mut Coverage) {
             s.fail(&format!("device {k} saved a name but isn't seated"));
         }
     }
-    // 3. Nothing wiped without a New game.
-    let game = s.devs[live[0]].app.as_ref().unwrap().shared.game;
-    if s.new_games == 0 && game != game0 {
-        s.fail("the table's game was replaced though nobody pressed New game");
+    // 3. Nothing wiped: no device's table ever went back to less progress
+    // (a New game counts as progress).
+    for &k in &live {
+        let r = s.devs[k].app.as_ref().unwrap().shared.round;
+        if (r.epoch, r.n) < s.devs[k].best {
+            s.fail(&format!("device {k}'s table went back from {:?} to {:?}", s.devs[k].best, (r.epoch, r.n)));
+        }
     }
     // 4. No card is still drawn as held once every hand has let go.
     for &k in &live {
-        let a = s.devs[k].app.as_ref().unwrap();
-        if let Some(i) = a.scene().cards.iter().position(|c| c.held != 0) {
+        if let Some((i, _)) = s.devs[k].app.as_ref().unwrap().holds().into_iter().next() {
             s.fail(&format!("device {k} still shows card {i} as held after everyone let go"));
         }
     }
@@ -754,7 +757,7 @@ fn a_player_who_reloads_and_deals_alone_cannot_wipe_the_table() {
         a.set_clue(0, "kept", false);
     }
     s.heal();
-    let game = s.devs[0].app.as_ref().unwrap().shared.game;
+    let round = s.devs[0].app.as_ref().unwrap().shared.round;
     s.drop_all_links(2);
     s.blocked.extend([(0, 2), (1, 2)]);
     s.devs[2].saved = Vec::new(); // no save on this device
@@ -763,7 +766,7 @@ fn a_player_who_reloads_and_deals_alone_cannot_wipe_the_table() {
     s.devs[2].app.as_mut().unwrap().action(1);
     s.heal();
     let a = s.devs[2].app.as_ref().unwrap();
-    assert_eq!(a.shared.game, game, "Cy's lone deal replaced the table");
+    assert_eq!(a.shared.round, round, "Cy's lone deal replaced the table");
     assert!(a.seat.is_some_and(|me| a.shared.seats.get(&me).is_some_and(|x| x.active)), "Cy sits back down at the table");
     assert_eq!(s.digest_of(0), s.digest_of(2));
 }
@@ -814,6 +817,6 @@ fn a_card_held_by_a_phone_that_vanished_is_let_go() {
     s.devs[g].app = None;
     s.heal_for(300);
     for k in (0..3).filter(|&k| k != g) {
-        assert!(s.devs[k].app.as_ref().unwrap().scene().cards.iter().all(|c| c.held == 0), "device {k} still shows a held card");
+        assert!(s.devs[k].app.as_ref().unwrap().holds().is_empty(), "device {k} still shows a held card");
     }
 }

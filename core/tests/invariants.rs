@@ -158,22 +158,22 @@ fn solve(t: &mut Table, k: usize, decoy_in_spot0: bool) {
 #[test]
 fn wire_roundtrip() {
     let s = Stamp { clock: 99, peer: 7 };
-    let game = Stamp { clock: 1, peer: 2 };
-    let round = Round { seed: 42, n: 3, stamp: Stamp { clock: 3, peer: 1 }, ..Round::default() }.with_players(&[9, 4, 7]);
-    let op = |body| Msg::Op(Op { game, gen: 3, round, body });
+    let round = Round { epoch: 2, seed: 42, n: 3, stamp: Stamp { clock: 3, peer: 1 }, deck: 16, deck_seed: 77, ..Round::default() }
+        .with_players(&[9, 4, 7]);
+    let op = |body| Msg::Op(Op { round, body });
     let msgs = vec![
         op(Body::None),
         op(Body::Seat(9, Seat { name: "Ana ☘".into(), active: true, stamp: s })),
         op(Body::Sub(9, Sub { clues: ["a".into(), "fruit".into(), "".into(), "d".into()], decoys: 2, ready: true, stamp: s })),
         op(Body::Start(s)),
-        op(Body::Card(9, 5, Card { loc: Loc::Table { x: 0.25, y: 1.0 }, rot: 3, held: 9, stamp: s })),
-        op(Body::Card(9, 0, Card { loc: Loc::Slot(2), rot: 1, held: 0, stamp: s })),
-        op(Body::Card(9, 4, Card { loc: Loc::Float { x: -3.0, y: 4.0 }, rot: 0, held: 1, stamp: s })),
+        op(Body::Card(9, 5, Card { loc: Loc::Table { x: 0.25, y: 1.0 }, rot: 3, stamp: s })),
+        op(Body::Card(9, 0, Card { loc: Loc::Slot(2), rot: 1, stamp: s })),
+        op(Body::Card(9, 4, Card { loc: Loc::Float { x: -3.0, y: 4.0 }, rot: 0, stamp: s })),
         op(Body::Check(9, Check { attempts: 1, mask: 0b0101, stamp: s })),
         op(Body::Next(3, s)),
-        op(Body::Ledger(3, 9, 6, s)),
         Msg::Hello { device: 5, seat: 9, sum: 0xdead_beef },
-        Msg::Cursor { device: 5, seat: 9, kind: 2, x: 10.0, y: -10.0 },
+        Msg::Cursor { device: 5, seat: 9, kind: 2, x: 10.0, y: -10.0, card: Some(3) },
+        Msg::Cursor { device: 5, seat: 9, kind: 1, x: 0.5, y: 0.5, card: None },
     ];
     let mut b = Vec::new();
     for m in &msgs {
@@ -233,7 +233,6 @@ fn full_game_two_rounds_three_players() {
         t.pump();
     }
     assert_eq!(t.apps[1].shared.phase(), Phase::End);
-    assert_eq!(t.apps[2].shared.game_score(), 0, "nothing is scored");
     // Next round keeps the table.
     t.apps[2].action(1);
     t.pump();
@@ -821,24 +820,32 @@ fn late_joiner_receives_full_state() {
 }
 
 #[test]
-fn newer_rounds_reset_round_state_but_keep_seats_and_scores() {
+fn newer_rounds_reset_round_state_but_never_seats() {
     let mut s = Shared::default();
-    let g = Stamp { clock: 1, peer: 1 };
-    let r1 = Round { seed: 1, n: 1, stamp: Stamp { clock: 2, peer: 1 }, ..Round::default() };
     let st = |c| Stamp { clock: c, peer: 1 };
-    s.apply(&Op { game: g, gen: 0, round: r1, body: Body::Seat(5, Seat { name: "a".into(), active: true, stamp: st(3) }) });
-    s.apply(&Op { game: g, gen: 0, round: r1, body: Body::Sub(5, Sub { ready: true, stamp: st(4), ..Sub::default() }) });
-    s.apply(&Op { game: g, gen: 0, round: r1, body: Body::Ledger(1, 5, 6, st(5)) });
-    let r2 = Round { seed: 2, n: 2, stamp: st(6), ..Round::default() };
-    s.apply(&Op { game: g, gen: 0, round: r2, body: Body::None });
+    let r1 = Round { seed: 1, n: 1, stamp: st(2), ..Round::default() }.with_players(&[5, 6]);
+    s.apply(&Op { round: r1, body: Body::Seat(5, Seat { name: "a".into(), active: true, stamp: st(3) }) });
+    s.apply(&Op { round: r1, body: Body::Sub(5, Sub { ready: true, stamp: st(4), ..Sub::default() }) });
+    let r2 = Round { seed: 2, n: 2, stamp: st(6), ..Round::default() }.with_players(&[5, 6]);
+    s.apply(&Op { round: r2, body: Body::None });
     assert!(s.subs.is_empty());
-    assert_eq!((s.players(), s.game_score()), (vec![5], 6));
+    assert_eq!(s.players(), vec![5]);
     // A late op from round 1 doesn't resurrect anything.
-    s.apply(&Op { game: g, gen: 0, round: r1, body: Body::Sub(5, Sub { stamp: st(9), ..Sub::default() }) });
+    s.apply(&Op { round: r1, body: Body::Sub(5, Sub { stamp: st(9), ..Sub::default() }) });
     assert!(s.subs.is_empty());
-    // A newer game wipes the lot.
-    s.apply(&Op { game: st(10), gen: 1, round: Round::default(), body: Body::None });
-    assert!(s.seats.is_empty() && s.ledger.is_empty());
+    // A lone device's fresh deal (round 1, one player, even if newer) can't
+    // replace a table further along; a seat it brings still joins the table.
+    let lone = Round { seed: 3, n: 1, stamp: st(20), ..Round::default() }.with_players(&[7]);
+    s.apply(&Op { round: lone, body: Body::Seat(7, Seat { name: "c".into(), active: true, stamp: st(21) }) });
+    assert_eq!((s.round, s.players()), (r2, vec![5, 7]));
+    // Nor can a deal with fewer players in, at the same round.
+    s.apply(&Op { round: Round { seed: 4, n: 2, stamp: st(1), ..Round::default() }.with_players(&[7]), body: Body::None });
+    assert_eq!(s.round, r2);
+    // A New game (the next epoch) outranks every round of the last one, and
+    // the table keeps its seats.
+    let fresh = Round { epoch: 1, stamp: st(30), ..Round::default() };
+    s.apply(&Op { round: fresh, body: Body::None });
+    assert_eq!((s.round, s.phase(), s.players()), (fresh, Phase::Lobby, vec![5, 7]));
 }
 
 /// Random play by 3 devices, delivered out of order with duplicates.
@@ -942,7 +949,7 @@ fn deals_are_whole_cards_from_a_draw_down_deck() {
     }
     assert_eq!(seen.len(), 4 * 3 * MAX_CARDS);
     // Every position maps to a card, and a full pass uses each card once.
-    let g = t.apps[0].shared.game;
+    let g = t.apps[0].shared.round.deck_seed;
     let pass: std::collections::HashSet<usize> = (0..220).map(|p| deck_card(g, p)).collect();
     assert_eq!(pass.len(), 220);
 }
@@ -1108,7 +1115,7 @@ fn a_cancelled_gesture_puts_the_card_back_and_acts_on_nothing() {
     assert_ne!(a.shared.layout(w).0[NSLOTS].loc, before.loc, "mid-drag");
     a.pointer_cancel();
     let after = a.shared.layout(w).0[NSLOTS];
-    assert_eq!((after.loc, after.rot, after.held), (before.loc, before.rot, 0));
+    assert_eq!((after.loc, after.rot), (before.loc, before.rot));
     // A cancelled tap doesn't turn the card either.
     a.pointer_down(from.0, from.1);
     a.pointer_cancel();
@@ -1332,5 +1339,27 @@ fn players_who_join_before_meeting_both_stay_seated() {
         let names: Vec<_> = a.shared.seats.values().filter(|s| s.active).map(|s| s.name.clone()).collect();
         assert!(names.contains(&"Ana".to_string()) && names.contains(&"Ben".to_string()), "{names:?}");
     }
+    assert!(t.digests_equal());
+}
+
+#[test]
+fn a_dragged_card_shows_as_held_elsewhere_until_let_go() {
+    let mut t = table_in_guessing(3);
+    let w = t.writer_now();
+    let g = t.guesser_for(w);
+    let other = (0..3).find(|&k| k != g).unwrap();
+    let a = &mut t.apps[g];
+    a.settle();
+    let from = card_at(a, 0);
+    a.pointer_down(from.0, from.1);
+    a.pointer_move(from.0 + 40.0, from.1 + 40.0);
+    t.pump();
+    let seat = t.apps[g].seat.unwrap();
+    assert_eq!(t.apps[other].holds().get(&0), Some(&seat), "held while dragging");
+    let a = &mut t.apps[g];
+    a.pointer_up(from.0 + 40.0, from.1 + 40.0);
+    t.t += 100.0; // past the pointer's send throttle
+    t.pump();
+    assert!(t.apps[other].holds().is_empty(), "let go");
     assert!(t.digests_equal());
 }

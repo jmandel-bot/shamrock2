@@ -246,6 +246,8 @@ pub struct RemoteCursor {
     pub kind: u8,
     pub x: f32,
     pub y: f32,
+    /// The card it is dragging, if any.
+    pub card: Option<u8>,
     pub seen: f64,
 }
 
@@ -300,8 +302,6 @@ pub struct App {
     pub device: u32,
     /// The seat this device plays, if any (None = watching).
     pub seat: Option<u32>,
-    /// The name I sat down under, to take my seat back if a merge drops it.
-    my_name: Option<String>,
     clock: u64,
     rng: Rng,
     /// Target view rotation in quarter turns (local only).
@@ -357,7 +357,6 @@ impl App {
             shared: Shared::default(),
             device,
             seat: None,
-            my_name: None,
             clock: 0,
             rng,
             q: 0,
@@ -423,7 +422,7 @@ impl App {
     }
 
     fn op(&self, body: Body) -> Op {
-        Op { game: self.shared.game, gen: self.shared.gen, round: self.shared.round, body }
+        Op { round: self.shared.round, body }
     }
 
     /// Apply a locally-originated op and broadcast it.
@@ -434,9 +433,9 @@ impl App {
     }
 
     /// Local card write; broadcast is coalesced to once per frame.
-    fn set_card(&mut self, w: u32, i: usize, loc: Loc, rot: u8, held: u32) {
+    fn set_card(&mut self, w: u32, i: usize, loc: Loc, rot: u8) {
         let stamp = self.stamp();
-        let op = self.op(Body::Card(w, i as u8, Card { loc, rot, held, stamp }));
+        let op = self.op(Body::Card(w, i as u8, Card { loc, rot, stamp }));
         self.shared.apply(&op);
         self.dirty_cards.insert((w, i as u8));
     }
@@ -472,15 +471,15 @@ impl App {
                     let s = match &op.body {
                         Body::Sub(_, s) => s.stamp,
                         Body::Seat(_, s) => s.stamp,
-                        Body::Start(s) | Body::Next(_, s) | Body::Ledger(_, _, _, s) => *s,
+                        Body::Start(s) | Body::Next(_, s) => *s,
                         Body::Card(_, _, c) => c.stamp,
                         Body::Check(_, c) => c.stamp,
                         Body::None => op.round.stamp,
                     };
-                    self.clock = self.clock.max(s.clock).max(op.round.stamp.clock).max(op.game.clock);
-                    let before = (self.shared.game, self.shared.round.stamp);
+                    self.clock = self.clock.max(s.clock).max(op.round.stamp.clock);
+                    let before = self.shared.round.stamp;
                     self.shared.apply(&op);
-                    if (self.shared.game, self.shared.round.stamp) != before {
+                    if self.shared.round.stamp != before {
                         self.new_round_local();
                     }
                 }
@@ -488,10 +487,10 @@ impl App {
                     self.peers.insert(device, (seat, link));
                     self.compare_sums(device, sum);
                 }
-                Msg::Cursor { device, seat, kind, x, y } if device != self.device => {
+                Msg::Cursor { device, seat, kind, x, y, card } if device != self.device => {
                     let now = self.now;
                     self.peers.insert(device, (seat, link));
-                    self.cursors.insert(device, RemoteCursor { seat, kind, x, y, seen: now });
+                    self.cursors.insert(device, RemoteCursor { seat, kind, x, y, card, seen: now });
                 }
                 _ => {}
             }
@@ -564,60 +563,26 @@ impl App {
         if name.is_empty() {
             return;
         }
-        // No game is created here: a device that hasn't heard from its table
-        // yet must not start one, or its game (if later) would replace the
-        // table's when they meet. The first deal creates the game.
         let id = seat_id(&name);
         let stamp = self.stamp();
-        self.commit(Body::Seat(id, Seat { name: name.clone(), active: true, stamp }));
+        self.commit(Body::Seat(id, Seat { name, active: true, stamp }));
         self.seat = Some(id);
-        self.my_name = Some(name);
         self.hello();
     }
 
-    /// The first deal starts the game: re-sends every seat under it.
-    fn ensure_game(&mut self) {
-        if self.shared.game != Stamp::default() {
-            return;
-        }
-        let seats = std::mem::take(&mut self.shared.seats);
-        self.shared.game = self.stamp();
-        self.commit(Body::None);
-        for (id, seat) in seats {
-            let stamp = self.stamp();
-            self.commit(Body::Seat(id, Seat { stamp, ..seat }));
-        }
-    }
-
-    /// When two tables meet (devices that sat down before hearing from each
-    /// other, or a New game made while cut off), the later game replaces the
-    /// other wholesale, seats included. Whoever was seated only in the
-    /// replaced one sits back down under the same name.
+    /// While this device is here, its seat stays active: if someone took it
+    /// out (Remove, or a New game made while this device was cut off), it
+    /// sits back down.
     fn keep_my_seat(&mut self) {
-        let (Some(id), Some(name)) = (self.seat, self.my_name.clone()) else { return };
-        if self.shared.game != Stamp::default() && !self.shared.seats.contains_key(&id) {
+        let Some(id) = self.seat else { return };
+        if let Some(seat) = self.shared.seats.get(&id).filter(|s| !s.active).cloned() {
             let stamp = self.stamp();
-            self.commit(Body::Seat(id, Seat { name, active: true, stamp }));
+            self.commit(Body::Seat(id, Seat { active: true, stamp, ..seat }));
         }
-    }
-
-    /// Cards still marked as held by my seat when my finger isn't down (I
-    /// reloaded mid-drag, or the release was lost) are let go where they lie.
-    fn let_go_of_stale_holds(&mut self) {
-        let (Some(me), None) = (self.seat, self.press.as_ref()) else { return };
-        let Phase::Guessing(k) = self.shared.phase() else { return };
-        let w = self.shared.puzzles()[k];
-        let stale: Vec<(usize, Card)> =
-            self.shared.layout(w).0.into_iter().enumerate().filter(|(_, c)| c.held == me).collect();
-        for (i, c) in stale {
-            self.set_card(w, i, c.loc, c.rot, 0);
-        }
-        self.flush_cards();
     }
 
     pub fn watch(&mut self) {
         self.seat = None;
-        self.my_name = None;
         self.hello();
     }
 
@@ -688,7 +653,7 @@ impl App {
                 Scene {
                     writer: Some(me),
                     cards: (0..NSLOTS)
-                        .map(|i| Card { loc: Loc::Slot(i as u8), rot: d.sol_rot[i], held: 0, stamp: Stamp::default() })
+                        .map(|i| Card { loc: Loc::Slot(i as u8), rot: d.sol_rot[i], stamp: Stamp::default() })
                         .collect(),
                     claim: [Some(0), Some(1), Some(2), Some(3)],
                     words: d.words[..NSLOTS].to_vec(),
@@ -700,15 +665,7 @@ impl App {
             Phase::Guessing(k) => {
                 let w = s.puzzles()[k];
                 let d = s.deal(w);
-                let (mut cards, claim) = s.layout(w);
-                // A hold only shows while its player is here: a phone that
-                // dropped mid-drag can't let go.
-                let here = self.present();
-                for c in &mut cards {
-                    if c.held != 0 && !here.contains(&c.held) {
-                        c.held = 0;
-                    }
-                }
+                let (cards, claim) = s.layout(w);
                 let check = s.check(w);
                 let locked = if check.done() { 0b1111 } else { check.mask };
                 let can = self.seat.is_some_and(|me| me != w) && !check.done();
@@ -1044,15 +1001,22 @@ impl App {
         })
     }
 
+    /// Cards other players are dragging right now (card → their seat), from
+    /// their live pointers: a hold ends when they let go, go quiet or leave.
+    pub fn holds(&self) -> BTreeMap<usize, u32> {
+        self.cursors.values().filter(|c| c.seat != 0).filter_map(|c| c.card.map(|i| (i as usize, c.seat))).collect()
+    }
+
     /// Back-to-front draw order: like a real table, the card touched last
     /// is on top; cards being held or dragged float above everything.
     fn draw_order(&self, cards: &[Card]) -> Vec<usize> {
         let dragging = self.dragging_card();
+        let holds = self.holds();
         let rank = |i: usize| -> u8 {
-            match (Some(i) == dragging, cards[i].held) {
-                (true, _) => 2,
-                (false, 0) => 0,
-                _ => 1,
+            if Some(i) == dragging {
+                2
+            } else {
+                holds.contains_key(&i) as u8
             }
         };
         let mut v: Vec<usize> = (0..cards.len()).collect();
@@ -1169,7 +1133,7 @@ impl App {
 
     fn drag_card(&mut self, i: usize, cx: f32, cy: f32) {
         let sc = self.scene();
-        let (Some(w), Some(me)) = (sc.writer, self.seat) else { return };
+        let (Some(w), Some(_)) = (sc.writer, self.seat) else { return };
         let cur = sc.cards[i];
         let in_board_frame = !matches!(cur.loc, Loc::Table { .. });
         let (bx, by) = self.board_m().inv().apply(cx, cy);
@@ -1189,7 +1153,7 @@ impl App {
             let (u, v) = self.px_tray(cx, cy);
             Loc::Table { x: u, y: v }
         };
-        self.set_card(w, i, loc, rot, me);
+        self.set_card(w, i, loc, rot);
         // My own drag follows the finger exactly.
         let pose = Self::target_pose(&self.shared.cards[&(w, i as u8)]);
         self.poses.insert((w, i as u8), pose);
@@ -1200,12 +1164,14 @@ impl App {
     /// back to the nearest quarter, and there's no tap.
     pub fn pointer_cancel(&mut self) {
         let Some(p) = self.press.take() else { return };
+        // Letting go of a card ends its hold on other screens.
+        self.cursor_dirty |= p.moved && matches!(p.target, Target::Card(_));
         if p.spin.is_some() {
             self.q = (self.angle / FRAC_PI_2).round() as i32;
         }
         if let (Target::Card(i), true, Some(o)) = (p.target, p.moved, p.origin) {
             if let Some(w) = self.scene().writer {
-                self.set_card(w, i, o.loc, o.rot, 0);
+                self.set_card(w, i, o.loc, o.rot);
             }
         }
     }
@@ -1213,6 +1179,7 @@ impl App {
     pub fn pointer_up(&mut self, sx: f32, sy: f32) {
         self.pointer_move(sx, sy);
         let Some(p) = self.press.take() else { return };
+        self.cursor_dirty |= p.moved && matches!(p.target, Target::Card(_));
         if p.spin.is_some() {
             self.q = self.fling_quarter(&p.trail);
             return;
@@ -1222,7 +1189,7 @@ impl App {
             (Target::Card(i), false) => {
                 let sc = self.scene();
                 let c = sc.cards[i];
-                self.set_card(sc.writer.unwrap(), i, c.loc, (c.rot + 1) % 4, 0);
+                self.set_card(sc.writer.unwrap(), i, c.loc, (c.rot + 1) % 4);
             }
             // Tapping a leaf never turns the board: it only edits (when writing).
             (Target::Petal(d), false) => {
@@ -1262,14 +1229,14 @@ impl App {
         let Some(w) = sc.writer else { return };
         let c = sc.cards[i];
         let Loc::Float { x, y } = c.loc else {
-            return self.set_card(w, i, c.loc, c.rot, 0);
+            return self.set_card(w, i, c.loc, c.rot);
         };
         let spot = (0..NSLOTS).filter(|&s| sc.locked & (1 << s) == 0).find(|&s| {
             let (sx, sy) = slot_pos(s);
             (x - sx).hypot(y - sy) <= SNAP_R
         });
         let Some(s) = spot else {
-            return self.set_card(w, i, c.loc, c.rot, 0);
+            return self.set_card(w, i, c.loc, c.rot);
         };
         let occupant = (0..sc.cards.len()).find(|&j| j != i && sc.cards[j].loc == Loc::Slot(s as u8));
         if let (Some(k), Some(o)) = (occupant, origin) {
@@ -1278,9 +1245,9 @@ impl App {
                 Loc::Table { .. } => quarter(occ.rot as i32 + self.q),
                 _ => occ.rot,
             };
-            self.set_card(w, k, o.loc, rot, 0);
+            self.set_card(w, k, o.loc, rot);
         }
-        self.set_card(w, i, Loc::Slot(s as u8), c.rot, 0);
+        self.set_card(w, i, Loc::Slot(s as u8), c.rot);
     }
 
     /// Turn my view so leaf `d` sits at the top, reading upright.
@@ -1405,13 +1372,14 @@ impl App {
         if self.custom_room && self.shared.round.n == 0 && !customs.is_empty() {
             return self.start_custom(customs, players);
         }
-        self.ensure_game();
         let prev = self.shared.round;
-        // Draw down the deck: this round deals after the cards the last one used.
+        // Draw down the deck: this round deals after the cards the last one
+        // used. A game's first deal shuffles its deck.
         let deck = if prev.n == 0 { 0 } else { prev.deck + (prev.nseats as usize * MAX_CARDS) as u32 };
-        let round = Round { seed: self.rng.next() as u32, n: prev.n + 1, stamp: self.stamp(), deck, ..Round::default() }
-            .with_players(&players);
-        let op = Op { game: self.shared.game, gen: self.shared.gen, round, body: Body::None };
+        let deck_seed = if prev.deck_seed == 0 { self.rng.next() as u32 | 1 } else { prev.deck_seed };
+        let (seed, n, stamp) = (self.rng.next() as u32, prev.n + 1, self.stamp());
+        let round = Round { epoch: prev.epoch, seed, n, stamp, deck, deck_seed, ..Round::default() }.with_players(&players);
+        let op = Op { round, body: Body::None };
         self.shared.apply(&op);
         self.new_round_local();
         self.send(&[Msg::Op(op)]);
@@ -1419,12 +1387,11 @@ impl App {
 
     /// Round 1 of a room with imported clovers: straight to guessing them.
     fn start_custom(&mut self, customs: Vec<&'static Custom>, players: Vec<u32>) {
-        self.ensure_game();
         let mut seats: Vec<u32> = customs.iter().map(|c| c.writer()).collect();
         seats.extend(players);
-        let round =
-            Round { seed: self.rng.next() as u32, n: 1, stamp: self.stamp(), custom: 1, ..Round::default() }.with_players(&seats);
-        let op = Op { game: self.shared.game, gen: self.shared.gen, round, body: Body::None };
+        let (epoch, seed, deck_seed, stamp) = (self.shared.round.epoch, self.rng.next() as u32, self.rng.next() as u32 | 1, self.stamp());
+        let round = Round { epoch, seed, n: 1, stamp, deck_seed, custom: 1, ..Round::default() }.with_players(&seats);
+        let op = Op { round, body: Body::None };
         self.shared.apply(&op);
         self.new_round_local();
         self.send(&[Msg::Op(op)]);
@@ -1477,20 +1444,20 @@ impl App {
         text.split("\n\n").map(|b| scramble(b.trim(), &mut self.rng)).collect::<Vec<_>>().join("\n\n")
     }
 
-    /// Fresh scores and seats: everyone here now is dealt in.
+    /// Start over with whoever is here: the next epoch's lobby (it outranks
+    /// every round of this game), and players who aren't here leave the table.
     fn new_game(&mut self) {
-        let here: Vec<(u32, String)> = self
-            .present()
-            .into_iter()
-            .filter_map(|s| self.shared.seats.get(&s).map(|x| (s, x.name.clone())))
-            .collect();
-        let (game, gen) = (self.stamp(), self.shared.gen + 1);
-        self.shared = Shared { game, gen, ..Shared::default() };
+        let round = Round { epoch: self.shared.round.epoch + 1, stamp: self.stamp(), ..Round::default() };
+        let op = Op { round, body: Body::None };
+        self.shared.apply(&op);
         self.new_round_local();
-        self.commit(Body::None);
-        for (id, name) in here {
+        self.send(&[Msg::Op(op)]);
+        let here = self.present();
+        let gone: Vec<(u32, Seat)> =
+            self.shared.seats.iter().filter(|(id, s)| s.active && !here.contains(id)).map(|(id, s)| (*id, s.clone())).collect();
+        for (id, seat) in gone {
             let stamp = self.stamp();
-            self.commit(Body::Seat(id, Seat { name, active: true, stamp }));
+            self.commit(Body::Seat(id, Seat { active: false, stamp, ..seat }));
         }
     }
 
@@ -1529,7 +1496,7 @@ impl App {
             if mask & (1 << s) == 0 {
                 let k = sc.claim[s].unwrap();
                 let h = self.shared.home_card(&d, n, k);
-                self.set_card(w, k, h.loc, h.rot, 0);
+                self.set_card(w, k, h.loc, h.rot);
             }
         }
         // The boots and the check travel in one packet, cards first, so every
@@ -1557,7 +1524,6 @@ impl App {
             self.hello();
         }
         self.keep_my_seat();
-        self.let_go_of_stale_holds();
         self.maybe_start_guessing();
         let phase = self.shared.phase();
         // A clover just got finished: let the leaves glow briefly.
@@ -1604,8 +1570,8 @@ impl App {
             self.cursor_dirty = false;
             self.last_cursor_ms = now;
             let (kind, x, y) = self.my_cursor;
-            let (device, seat) = (self.device, self.seat.unwrap_or(0));
-            self.send(&[Msg::Cursor { device, seat, kind, x, y }]);
+            let (device, seat, card) = (self.device, self.seat.unwrap_or(0), self.dragging_card().map(|i| i as u8));
+            self.send(&[Msg::Cursor { device, seat, kind, x, y, card }]);
         }
         self.cursors.retain(|_, c| now - c.seen < CURSOR_TTL_MS);
         self.render();
@@ -1832,6 +1798,7 @@ impl App {
 
         // Cards.
         let dragging = self.dragging_card();
+        let holds = self.holds();
         let w = sc.writer.unwrap_or(0);
         for i in self.draw_order(&sc.cards) {
             let c = sc.cards[i];
@@ -1852,17 +1819,18 @@ impl App {
                     f = M::t(cx, cy).then(M::s(k)).then(M::t(-cx, -cy)).then(f);
                 }
             }
-            if c.held != 0 || Some(i) == dragging {
+            let held = holds.get(&i).copied();
+            if held.is_some() || Some(i) == dragging {
                 self.xform(M::t(5.0, 8.0).then(f));
                 self.rrect(-HALF, -HALF, CARD, CARD, 18.0, 0x00000055, 0, 0.0);
             }
             self.xform(f);
             let solved = matches!(c.loc, Loc::Slot(s) if sc.locked & (1 << s) != 0) && phase != Phase::Writing;
-            let (stroke, lw) = match c.held {
-                0 if solved => (0x2fa84fff, 6.0),
-                0 => (self.pal.paper_edge, 2.0),
-                h if Some(h) == self.seat => (0xffffffff, 4.0),
-                h => (self.color_of(h), 7.0),
+            let (stroke, lw) = match held {
+                _ if Some(i) == dragging => (0xffffffff, 4.0),
+                Some(h) => (self.color_of(h), 7.0),
+                None if solved => (0x2fa84fff, 6.0),
+                None => (self.pal.paper_edge, 2.0),
             };
             self.rrect(-HALF, -HALF, CARD, CARD, 18.0, self.pal.paper, stroke, lw);
             self.circle(0.0, 0.0, 11.0, 0xeee4c8ff, 0, 0.0);

@@ -1,11 +1,14 @@
 //! Shared, replicated game state.
 //!
-//! Every op carries the game and round it belongs to. A newer game resets
-//! everything; a newer round (same game) resets round state but keeps seats
-//! and the score ledger. Within a round each value is a register merged by a
-//! monotone rule (LWW by Lamport stamp, or max for counters). `apply` is
-//! commutative, associative and idempotent, so replicas converge regardless
-//! of delivery order or duplication.
+//! Seats belong to the table and are only ever merged (last writer wins).
+//! Everything else belongs to a round, and every op carries its round: the
+//! higher-ranked round wins and resets round state (see `Round::rank`), and
+//! a New game is just a round in the next epoch. Within a round each value
+//! is a register merged by a monotone rule (LWW by Lamport stamp, or max for
+//! counters). `apply` is commutative, associative and idempotent, so
+//! replicas converge regardless of delivery order or duplication, and two
+//! tables that meet (devices that started apart) merge rather than one
+//! wiping the other.
 
 use crate::words::CARDS;
 use std::collections::BTreeMap;
@@ -37,7 +40,6 @@ pub const CLAIM_R: f32 = 100.0;
 
 pub const MAX_TEXT: usize = 60;
 pub const MAX_PLAYERS: usize = 12;
-pub const PERFECT_SCORE: u8 = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Hash)]
 pub struct Stamp {
@@ -61,13 +63,13 @@ pub struct Card {
     pub loc: Loc,
     /// Clockwise quarter turns, relative to the frame `loc` lives in.
     pub rot: u8,
-    /// Seat currently dragging this card (0 = nobody).
-    pub held: u32,
     pub stamp: Stamp,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Round {
+    /// How many times the table has started a New game.
+    pub epoch: u16,
     pub seed: u32,
     /// 1-based round number within the game (0 = no round yet).
     pub n: u16,
@@ -78,11 +80,20 @@ pub struct Round {
     /// Where this round starts dealing in the game's deck (each dealt-in
     /// player takes `MAX_CARDS` cards).
     pub deck: u32,
+    /// The game's deck shuffle (0 until the game's first deal picks one).
+    pub deck_seed: u32,
     /// 1 = this round guesses the imported clover (see `Custom`).
     pub custom: u8,
 }
 
 impl Round {
+    /// Which of two rounds wins when they meet: a later epoch (New game)
+    /// always; then the game further along; then the deal with more players
+    /// in it; then the older. So a lone device that dealt before hearing
+    /// from its table can't overwrite a table in play.
+    pub fn rank(&self) -> (u16, u16, u8, core::cmp::Reverse<Stamp>) {
+        (self.epoch, self.n, self.nseats, core::cmp::Reverse(self.stamp))
+    }
     pub fn players(&self) -> &[u32] {
         &self.seats[..(self.nseats as usize).min(MAX_PLAYERS)]
     }
@@ -124,17 +135,11 @@ impl Check {
     pub fn done(&self) -> bool {
         self.mask == 0b1111
     }
-    pub fn score(&self) -> u8 {
-        match (self.attempts, self.mask) {
-            (1, 0b1111) => PERFECT_SCORE,
-            _ => self.mask.count_ones() as u8,
-        }
-    }
 }
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Body {
-    /// Just announces the game / round.
+    /// Just announces the round.
     None,
     Seat(u32, Seat),
     Sub(u32, Sub),
@@ -145,16 +150,10 @@ pub enum Body {
     /// Index of the clover being guessed (last writer wins, so anyone can
     /// jump to any clover; past the last one means the round is over).
     Next(u16, Stamp),
-    /// Points a writer's clover earned in round `n`.
-    Ledger(u16, u32, u8, Stamp),
 }
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Op {
-    pub game: Stamp,
-    /// The game's generation: each New game is one more than the game it
-    /// replaced. Games rank by generation, rounds dealt, players dealt in, age.
-    pub gen: u16,
     pub round: Round,
     pub body: Body,
 }
@@ -170,11 +169,7 @@ pub enum Phase {
 
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Shared {
-    pub game: Stamp,
-    pub gen: u16,
     pub seats: BTreeMap<u32, Seat>,
-    /// (round n, writer) → (points, stamp).
-    pub ledger: BTreeMap<(u16, u32), (u8, Stamp)>,
     pub round: Round,
     /// Every version of every writer's clues, keyed (writer, stamp). Keeping
     /// versions makes "what was submitted when guessing started" well
@@ -337,10 +332,10 @@ pub struct Deal {
 /// The game's draw-down deck: card at deck position `pos`. Each pass
 /// through the deck is a fresh shuffle seeded by the game, so cards don't
 /// repeat until the deck runs out.
-pub fn deck_card(game: Stamp, pos: u32) -> usize {
+pub fn deck_card(seed: u32, pos: u32) -> usize {
     let n = CARDS.len();
     let (pass, at) = (pos as usize / n, pos as usize % n);
-    let mut rng = Rng::new(game.clock ^ ((game.peer as u64) << 32) ^ (pass as u64).wrapping_mul(0xa076_1d64_78bd_642f));
+    let mut rng = Rng::new(seed as u64 ^ (pass as u64).wrapping_mul(0xa076_1d64_78bd_642f));
     let mut perm: Vec<usize> = (0..n).collect();
     for k in (1..n).rev() {
         perm.swap(k, rng.below(k + 1));
@@ -382,37 +377,14 @@ impl Shared {
     /// Merge one op. Returns true if anything changed.
     pub fn apply(&mut self, op: &Op) -> bool {
         let mut changed = false;
-        // Two games meeting (devices that dealt before hearing from each
-        // other, or a New game made while cut off): the later generation wins
-        // (New game always does); within one, the game further along, then
-        // the one with more players dealt in, then the older. A lone device
-        // that dealt a fresh game can't overwrite a table in play. A device
-        // with no game yet joins any.
-        let rank = |gen: u16, r: &Round, game: Stamp| (game != Stamp::default(), gen, r.n, r.nseats, core::cmp::Reverse(game));
-        if op.game != self.game && rank(op.gen, &op.round, op.game) > rank(self.gen, &self.round, self.game) {
-            *self = Shared { game: op.game, gen: op.gen, ..Shared::default() };
-            changed = true;
-        }
-        if op.game != self.game {
-            return changed;
-        }
-        // Game-level registers survive rounds.
-        match &op.body {
-            Body::Seat(id, s) => {
-                if self.seats.get(id).is_none_or(|c| s.stamp > c.stamp) {
-                    self.seats.insert(*id, s.clone());
-                    changed = true;
-                }
+        // Seats belong to the table: merged whatever round the op is from.
+        if let Body::Seat(id, seat) = &op.body {
+            if self.seats.get(id).is_none_or(|c| seat.stamp > c.stamp) {
+                self.seats.insert(*id, seat.clone());
+                changed = true;
             }
-            Body::Ledger(n, w, p, s) => {
-                if self.ledger.get(&(*n, *w)).is_none_or(|c| *s > c.1) {
-                    self.ledger.insert((*n, *w), (*p, *s));
-                    changed = true;
-                }
-            }
-            _ => {}
         }
-        if op.round.stamp > self.round.stamp {
+        if op.round.rank() > self.round.rank() {
             self.round = op.round;
             self.subs.clear();
             self.start = None;
@@ -463,11 +435,10 @@ impl Shared {
 
     /// Every stored register, for full-state sync with a new peer.
     pub fn all_ops(&self) -> Vec<Op> {
-        let (g, gen, r) = (self.game, self.gen, self.round);
-        let op = |body| Op { game: g, gen, round: r, body };
+        let r = self.round;
+        let op = |body| Op { round: r, body };
         let mut v = vec![op(Body::None)];
         v.extend(self.seats.iter().map(|(id, s)| op(Body::Seat(*id, s.clone()))));
-        v.extend(self.ledger.iter().map(|((n, w), (p, s))| op(Body::Ledger(*n, *w, *p, *s))));
         v.extend(self.subs.iter().map(|((w, _), s)| op(Body::Sub(*w, s.clone()))));
         v.extend(self.start.map(|s| op(Body::Start(s))));
         v.extend(self.cards.iter().map(|((w, i), c)| op(Body::Card(*w, *i, *c))));
@@ -487,7 +458,7 @@ impl Shared {
     pub fn deal(&self, writer: u32) -> Deal {
         let seat = self.round.players().iter().position(|p| *p == writer).unwrap_or(writer as usize % MAX_PLAYERS);
         let base = self.round.deck + (seat * MAX_CARDS) as u32;
-        let cards: [usize; MAX_CARDS] = core::array::from_fn(|i| deck_card(self.game, base + i as u32));
+        let cards: [usize; MAX_CARDS] = core::array::from_fn(|i| deck_card(self.round.deck_seed, base + i as u32));
         let mut rng = Rng::new(((self.round.seed as u64) << 32 | writer as u64) ^ 0x9e37_79b9_7f4a_7c15);
         let mut home: [u8; MAX_CARDS] = core::array::from_fn(|i| i as u8);
         for k in (1..MAX_CARDS).rev() {
@@ -583,7 +554,7 @@ impl Shared {
         // Rank of card i among the n cards in play gives its shuffled spot.
         let k = (0..n).filter(|&j| d.home[j] < d.home[i]).count();
         let (x, y) = tray_spot(k, n);
-        Card { loc: Loc::Table { x, y }, rot: d.home_rot[i], held: 0, stamp: Stamp::default() }
+        Card { loc: Loc::Table { x, y }, rot: d.home_rot[i], stamp: Stamp::default() }
     }
 
     /// Effective cards of `writer`'s clover while it is being guessed (locked
@@ -597,7 +568,7 @@ impl Shared {
         let cards: Vec<Card> = (0..n)
             .map(|i| {
                 if i < NSLOTS && locked(i) {
-                    Card { loc: Loc::Slot(i as u8), rot: d.sol_rot[i], held: 0, stamp: Stamp::default() }
+                    Card { loc: Loc::Slot(i as u8), rot: d.sol_rot[i], stamp: Stamp::default() }
                 } else if check.done() {
                     // Once done, decoys go back to the tray to show the answer.
                     self.home_card(&d, n, i)
@@ -624,18 +595,6 @@ impl Shared {
                 .map(|t| t.2);
         }
         (cards, claim)
-    }
-
-    pub fn round_score(&self, n: u16) -> u32 {
-        self.ledger.range((n, 0)..=(n, u32::MAX)).map(|(_, (p, _))| *p as u32).sum()
-    }
-
-    pub fn game_score(&self) -> u32 {
-        self.ledger.values().map(|(p, _)| *p as u32).sum()
-    }
-
-    pub fn seat_score(&self, seat: u32) -> u32 {
-        self.ledger.iter().filter(|((_, w), _)| *w == seat).map(|(_, (p, _))| *p as u32).sum()
     }
 
     /// Canonical rendering of the shared state; equal digests == converged.
@@ -668,9 +627,9 @@ impl Shared {
                 let cards: Vec<String> = cards
                     .iter()
                     .map(|c| match c.loc {
-                        Loc::Table { x, y } => format!("[\"table\",{},{},{},{}]", f(x), f(y), c.rot, c.held),
-                        Loc::Slot(s) => format!("[\"slot\",{s},{},{}]", c.rot, c.held),
-                        Loc::Float { x, y } => format!("[\"float\",{},{},{},{}]", f(x), f(y), c.rot, c.held),
+                        Loc::Table { x, y } => format!("[\"table\",{},{},{}]", f(x), f(y), c.rot),
+                        Loc::Slot(s) => format!("[\"slot\",{s},{}]", c.rot),
+                        Loc::Float { x, y } => format!("[\"float\",{},{},{}]", f(x), f(y), c.rot),
                     })
                     .collect();
                 let claim: Vec<String> = claim.iter().map(|o| o.map_or("null".into(), |i| i.to_string())).collect();
@@ -684,15 +643,14 @@ impl Shared {
             })
             .collect();
         format!(
-            "{{\"phase\":\"{phase}\",\"round\":{},\"seed\":{},\"dealt\":{:?},\"seats\":[{}],\"subs\":[{}],\"puzzles\":[{}],\"roundScore\":{},\"gameScore\":{}}}",
+            "{{\"phase\":\"{phase}\",\"epoch\":{},\"round\":{},\"seed\":{},\"dealt\":{:?},\"seats\":[{}],\"subs\":[{}],\"puzzles\":[{}]}}",
+            self.round.epoch,
             self.round.n,
             self.round.seed,
             self.round.players(),
             seats.join(","),
             subs.join(","),
-            puzzles.join(","),
-            self.round_score(self.round.n),
-            self.game_score()
+            puzzles.join(",")
         )
     }
 }
@@ -735,8 +693,7 @@ impl Rng {
 
 // ---------------------------------------------------------------------------
 // Wire format: a packet is a concatenation of records, each `[tag u8] body`.
-// All integers little-endian. Op records start with the game stamp and the
-// round (stamp, seed, n): 30 bytes.
+// All integers little-endian. Op records start with the round they belong to.
 
 const T_NONE: u8 = 1;
 const T_SUB: u8 = 2;
@@ -745,7 +702,6 @@ const T_CARD: u8 = 4;
 const T_CHECK: u8 = 5;
 const T_NEXT: u8 = 6;
 const T_SEAT: u8 = 7;
-const T_LEDGER: u8 = 8;
 const T_HELLO: u8 = 20;
 const T_CURSOR: u8 = 21;
 
@@ -757,7 +713,10 @@ pub enum Msg {
     /// drifted apart notice and resync (see `App::on_packet`).
     Hello { device: u32, seat: u32, sum: u32 },
     /// kind: 0 hidden, 1 tray coords, 2 board coords.
-    Cursor { device: u32, seat: u32, kind: u8, x: f32, y: f32 },
+    /// `card`: the card (of the clover on screen) this pointer is dragging,
+    /// if any. Holds live here, not in the table: they end when the device
+    /// goes quiet or leaves.
+    Cursor { device: u32, seat: u32, kind: u8, x: f32, y: f32, card: Option<u8> },
 }
 
 fn put_stamp(b: &mut Vec<u8>, s: Stamp) {
@@ -779,7 +738,7 @@ fn put_f32s(b: &mut Vec<u8>, v: &[f32]) {
 
 pub fn encode(m: &Msg, b: &mut Vec<u8>) {
     match m {
-        Msg::Op(Op { game, gen, round, body }) => {
+        Msg::Op(Op { round, body }) => {
             b.push(match body {
                 Body::None => T_NONE,
                 Body::Sub(..) => T_SUB,
@@ -788,10 +747,8 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 Body::Check(..) => T_CHECK,
                 Body::Next(..) => T_NEXT,
                 Body::Seat(..) => T_SEAT,
-                Body::Ledger(..) => T_LEDGER,
             });
-            put_stamp(b, *game);
-            b.extend_from_slice(&gen.to_le_bytes());
+            b.extend_from_slice(&round.epoch.to_le_bytes());
             put_stamp(b, round.stamp);
             b.extend_from_slice(&round.seed.to_le_bytes());
             b.extend_from_slice(&round.n.to_le_bytes());
@@ -800,6 +757,7 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 b.extend_from_slice(&p.to_le_bytes());
             }
             b.extend_from_slice(&round.deck.to_le_bytes());
+            b.extend_from_slice(&round.deck_seed.to_le_bytes());
             b.push(round.custom);
             match body {
                 Body::None => {}
@@ -831,7 +789,6 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                     b.push(k);
                     put_f32s(b, &[x, y]);
                     b.push(c.rot);
-                    b.extend_from_slice(&c.held.to_le_bytes());
                 }
                 Body::Check(w, c) => {
                     b.extend_from_slice(&w.to_le_bytes());
@@ -843,12 +800,6 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                     b.extend_from_slice(&k.to_le_bytes());
                     put_stamp(b, *s);
                 }
-                Body::Ledger(n, w, p, s) => {
-                    b.extend_from_slice(&n.to_le_bytes());
-                    b.extend_from_slice(&w.to_le_bytes());
-                    b.push(*p);
-                    put_stamp(b, *s);
-                }
             }
         }
         Msg::Hello { device, seat, sum } => {
@@ -857,12 +808,13 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
             b.extend_from_slice(&seat.to_le_bytes());
             b.extend_from_slice(&sum.to_le_bytes());
         }
-        Msg::Cursor { device, seat, kind, x, y } => {
+        Msg::Cursor { device, seat, kind, x, y, card } => {
             b.push(T_CURSOR);
             b.extend_from_slice(&device.to_le_bytes());
             b.extend_from_slice(&seat.to_le_bytes());
             b.push(*kind);
             put_f32s(b, &[*x, *y]);
+            b.push(card.unwrap_or(u8::MAX));
         }
     }
 }
@@ -919,17 +871,19 @@ impl<'a> Reader<'a> {
         if tag == T_CURSOR {
             let (device, seat) = (self.u32()?, self.u32()?);
             let kind = self.lt(3)?;
-            return Some(Msg::Cursor { device, seat, kind, x: self.f32()?, y: self.f32()? });
+            let (x, y) = (self.f32()?, self.f32()?);
+            let card = Some(self.u8()?).filter(|i| (*i as usize) < MAX_CARDS);
+            return Some(Msg::Cursor { device, seat, kind, x, y, card });
         }
-        let game = self.stamp()?;
-        let gen = self.u16()?;
+        let epoch = self.u16()?;
         let (stamp, seed, n) = (self.stamp()?, self.u32()?, self.u16()?);
         let nseats = self.u8().filter(|n| (*n as usize) <= MAX_PLAYERS)?;
         let mut seats = [0u32; MAX_PLAYERS];
         for p in seats.iter_mut().take(nseats as usize) {
             *p = self.u32()?;
         }
-        let round = Round { stamp, seed, n, seats, nseats, deck: self.u32()?, custom: self.lt(2)? };
+        let (deck, deck_seed) = (self.u32()?, self.u32()?);
+        let round = Round { epoch, stamp, seed, n, seats, nseats, deck, deck_seed, custom: self.lt(2)? };
         let body = match tag {
             T_NONE => Body::None,
             T_SEAT => {
@@ -963,8 +917,7 @@ impl<'a> Reader<'a> {
                     _ => return None,
                 };
                 let rot = self.lt(4)?;
-                let held = self.u32()?;
-                Body::Card(w, i, Card { loc, rot, held, stamp })
+                Body::Card(w, i, Card { loc, rot, stamp })
             }
             T_CHECK => {
                 let w = self.u32()?;
@@ -977,14 +930,9 @@ impl<'a> Reader<'a> {
                 let k = self.u16()?;
                 Body::Next(k, self.stamp()?)
             }
-            T_LEDGER => {
-                let (n, w) = (self.u16()?, self.u32()?);
-                let p = self.u8().filter(|p| *p <= PERFECT_SCORE)?;
-                Body::Ledger(n, w, p, self.stamp()?)
-            }
             _ => return None,
         };
-        Some(Msg::Op(Op { game, gen, round, body }))
+        Some(Msg::Op(Op { round, body }))
     }
 }
 
