@@ -165,6 +165,9 @@ const zoomAt = (k, px, py) => {
 $('unzoom').onclick = () => setCam(1, 0, 0);
 
 const fingers = new Map();
+// While zoomed, one finger dragged from anywhere but a card pans the view
+// (instead of spinning the board); a press that doesn't move is still a tap.
+let pan = null; // { x, y, cx, cy, moved }
 let pinch = null; // { d, mx, my, s, x, y } at the start of a two-finger gesture
 let pinching = false;
 const at = (e) => { const r = view(); return [e.clientX - r.left, e.clientY - r.top]; };
@@ -176,17 +179,26 @@ canvas.addEventListener('pointerdown', (e) => {
   try { canvas.setPointerCapture(e.pointerId); } catch {}
   fingers.set(e.pointerId, at(e));
   if (fingers.size === 2) {
-    if (!pinching) { X.pointer_cancel(); drainOutbox(); }
+    if (!pinching && !pan) { X.pointer_cancel(); drainOutbox(); }
+    pan = null;
     pinching = true;
     pinch = { ...spread(), s: cam.s, x: cam.x, y: cam.y };
     return;
   }
   if (fingers.size > 2 || pinching) return;
+  const [px, py] = at(e);
+  if (cam.s > 1 && !X.on_card(...local(e))) { pan = { x: px, y: py, cx: cam.x, cy: cam.y, moved: false }; return; }
   X.pointer_down(...local(e));
 });
 canvas.addEventListener('pointermove', (e) => {
   if (!fingers.has(e.pointerId)) { if (e.pointerType === 'mouse') X.pointer_move(...local(e)); return; }
   fingers.set(e.pointerId, at(e));
+  if (pan && !pinching) {
+    const [px, py] = at(e);
+    pan.moved ||= Math.hypot(px - pan.x, py - pan.y) > 8;
+    if (pan.moved) setCam(cam.s, pan.cx + px - pan.x, pan.cy + py - pan.y);
+    return;
+  }
   if (!pinching) return X.pointer_move(...local(e));
   if (fingers.size !== 2 || !pinch) return;
   const now = spread(), s = pinch.s * now.d / pinch.d;
@@ -199,6 +211,13 @@ const lift = (e, act) => {
     if (fingers.size === 2) pinch = { ...spread(), s: cam.s, x: cam.x, y: cam.y };
     if (!fingers.size) { pinching = false; pinch = null; }
     return;
+  }
+  if (pan) {
+    // A pan that never moved was a tap (a leaf to edit, ⟳ to turn).
+    const tap = act && !pan.moved;
+    pan = null;
+    if (!tap) return;
+    X.pointer_down(...local(e));
   }
   if (act) { stats.presses++; X.pointer_up(...local(e)); } else X.pointer_cancel();
   drainOutbox();

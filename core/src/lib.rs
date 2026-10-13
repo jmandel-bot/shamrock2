@@ -123,6 +123,12 @@ pub extern "C" fn pointer_up(x: f32, y: f32) {
     g().app.pointer_up(x, y);
 }
 
+/// 1 if a press at (x, y) CSS px would pick up a card.
+#[no_mangle]
+pub extern "C" fn on_card(x: f32, y: f32) -> u32 {
+    g().app.on_card(x, y) as u32
+}
+
 /// A gesture the browser took over (pinch zoom): undo it, act on nothing.
 #[no_mangle]
 pub extern "C" fn pointer_cancel() {

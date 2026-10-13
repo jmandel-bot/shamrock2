@@ -355,6 +355,26 @@ try {
     for (let k = 0; k < 3; k++) await ptr([['pointerdown', 1, zx, zy], ['pointerup', 1, zx, zy]]);
     await sleep(200);
     gate('while zoomed, one finger still plays (a tap turns the card under it)', rot1 === (rot0 + 1) % 4 && JSON.stringify(cur(await E.digest()).cards) === before, `${rot0} → ${rot1}`);
+    // One finger from an empty spot pans the zoomed view; the board doesn't turn.
+    {
+      const q0 = await E.quarter();
+      const c0 = await E.ev(() => window.__cl.camera());
+      const spot = await E.ev(() => {
+        const c = document.getElementById('c').getBoundingClientRect(), cam = window.__cl.camera();
+        for (let y = 60; y < c.height - 60; y += 20) for (let x = 60; x < c.width - 60; x += 20)
+          if (!window.__cl.X.on_card((x - cam.x) / cam.s, (y - cam.y) / cam.s)) return [x, y];
+        return null;
+      });
+      const [dx, dy] = [c0.x < -50 ? 50 : -50, c0.y < -50 ? 50 : -50];
+      const moves = [['pointerdown', 1, spot[0], spot[1]]];
+      for (let k = 1; k <= 8; k++) moves.push(['pointermove', 1, spot[0] + dx * k / 8, spot[1] + dy * k / 8]);
+      await ptr([...moves, ['pointerup', 1, spot[0] + dx, spot[1] + dy]]);
+      await sleep(400);
+      const c1 = await E.ev(() => window.__cl.camera());
+      gate('while zoomed, one finger off the cards pans instead of turning the board',
+        Math.abs(c1.x - c0.x - dx) < 1 && Math.abs(c1.y - c0.y - dy) < 1 && (await E.quarter()) === q0 && JSON.stringify(cur(await E.digest()).cards) === before,
+        `pan ${(c1.x - c0.x).toFixed(0)},${(c1.y - c0.y).toFixed(0)} of ${dx},${dy}; quarter ${q0} → ${await E.quarter()}`);
+    }
     await E.page.click('#unzoom');
     gate('1× resets the board zoom', (await E.ev(() => window.__cl.camera().s)) === 1 && !(await E.page.isVisible('#unzoom')));
   }

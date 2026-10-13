@@ -721,6 +721,12 @@ impl App {
         -(LEAF_IN + LEAF_OUT) / 2.0
     }
 
+    /// Whether a press at this point would pick up a card (so the shell
+    /// knows a one-finger drag elsewhere can pan its zoom instead).
+    pub fn on_card(&self, px: f32, py: f32) -> bool {
+        matches!(self.hit(px, py), Target::Card(_))
+    }
+
     fn hit(&self, px: f32, py: f32) -> Target {
         let (bx, by) = self.board_m().inv().apply(px, py);
         if bx.hypot(by) <= HUB_R + 6.0 {
