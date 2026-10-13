@@ -201,6 +201,7 @@ try {
     await A.page.waitForFunction(() => window.__cl.wordFit(), null, { timeout: 5000 });
     const fit = await A.ev(() => window.__cl.wordFit());
     metric('deck_words_full_size', `${(fit.full * 100).toFixed(1)}%`);
+    metric('deck_words_at_90pct_or_more', `${(fit.near * 100).toFixed(1)}%`);
     metric('smallest_word_scale', `${(fit.min * 100).toFixed(0)}%`);
     gate('~90% of deck words render at full size on their cards', fit.full >= 0.88, `${(fit.full * 100).toFixed(1)}%`);
     gate('every longer word fits by shrinking evenly (≥ 60%, no squeeze)', fit.min >= 0.6, `${(fit.min * 100).toFixed(0)}%`);

@@ -348,8 +348,8 @@ pub extern "C" fn set_word_widths(len: u32) {
 /// Over the deck: (share of words at full size, smallest scale), as JSON.
 #[no_mangle]
 pub extern "C" fn word_fit() -> u32 {
-    let (full, min) = g().app.word_fit();
-    to_scratch(format!("{{\"full\":{full},\"min\":{min}}}"))
+    let (full, near, min) = g().app.word_fit();
+    to_scratch(format!("{{\"full\":{full},\"near\":{near},\"min\":{min}}}"))
 }
 
 /// Rendered size of card words, in CSS px.
