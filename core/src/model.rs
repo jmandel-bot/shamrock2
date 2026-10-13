@@ -26,6 +26,9 @@ pub const LEAF_OUT: f32 = 400.0;
 pub const LEAF_HALF_W: f32 = 205.0;
 /// Half-extent of everything on the board, leaves included.
 pub const EXTENT: f32 = 432.0;
+/// Half-size the screen layout fits: just past the clue text on each leaf
+/// (LEAF_OUT), so only the decorative lobe tips may touch the screen edge.
+pub const FIT_EXTENT: f32 = LEAF_OUT + 10.0;
 pub const HUB_R: f32 = 30.0;
 /// Dropping within this distance of a free spot snaps into it.
 pub const SNAP_R: f32 = 40.0;
