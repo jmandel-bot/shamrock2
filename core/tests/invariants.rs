@@ -715,6 +715,41 @@ fn dragging_around_the_board_spins_it_to_the_nearest_quarter() {
     assert_eq!(a.q, 1);
 }
 
+/// Spins a quarter of `turn` (in quarters) over `ms`, then lets go after
+/// `hold` ms without moving. Returns the quarter the board settles on.
+fn spin(turn: f32, ms: f64, hold: f64) -> i32 {
+    let mut t = Table::new(1);
+    let a = &mut t.apps[0];
+    a.action(1);
+    let (cx, cy) = a.hub_screen();
+    let r = 330.0;
+    let mut now = 1000.0;
+    a.frame(now);
+    a.pointer_down(cx + r, cy);
+    let end = turn * std::f32::consts::FRAC_PI_2;
+    for k in 1..=10 {
+        now += ms / 10.0;
+        a.frame(now);
+        let th = end * k as f32 / 10.0;
+        a.pointer_move(cx + r * th.cos(), cy + r * th.sin());
+    }
+    a.frame(now + hold);
+    a.pointer_up(cx + r * end.cos(), cy + r * end.sin());
+    a.q
+}
+
+#[test]
+fn a_quick_flick_spins_the_board_a_quarter_but_a_slow_nudge_does_not() {
+    // A third of a quarter in 80 ms carries on to the next quarter, either way.
+    assert_eq!(spin(0.35, 80.0, 0.0), 1);
+    assert_eq!(spin(-0.35, 80.0, 0.0), -1);
+    // The same distance slowly, or held still before letting go, springs back.
+    assert_eq!(spin(0.35, 800.0, 0.0), 0);
+    assert_eq!(spin(0.35, 80.0, 300.0), 0);
+    // A fast long spin coasts at most one quarter past where it was let go.
+    assert!(spin(1.0, 60.0, 0.0) <= 2);
+}
+
 #[test]
 fn writer_taps_on_locked_cards_turn_the_board() {
     let mut t = Table::new(1);

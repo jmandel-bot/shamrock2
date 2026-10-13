@@ -24,16 +24,15 @@
     --felt: #e6eee2; --bar: #f5f8f2; --sheet: #ffffff; --line: #9fbca6;
     --fg: #13261a; --dim: #43604c; --hint: #6b4a00; --leaf: #a8dbb0;
     --go: #f2c14e; --go-fg: #231c05; --on: #2f8a4a; --on-fg: #ffffff; --chip: #13261a12;
-    --menu-item: #13261a0b; --danger: #a3261a; --toast: #13261a; --toast-fg: #f5f8f2; --field: #ffffff;
+    --menu-item: #13261a0b; --leaf-fg: #13261a; --danger: #a3261a; --toast: #13261a; --toast-fg: #f5f8f2; --field: #ffffff;
+    --sans: Figtree, system-ui, -apple-system, sans-serif; --serif: Fraunces, Georgia, serif;
     color-scheme: light;
   }
   :root[data-theme="dark"] {
     --felt: #111613; --bar: #171e19; --sheet: #1d2620; --line: #3a4b40;
     --fg: #edf2ee; --dim: #a8b7ac; --hint: #f3dc9b; --leaf: #86b38f;
     --go: #f2c14e; --go-fg: #231c05; --on: #8fe0a2; --on-fg: #0b2414; --chip: #ffffff14;
-    --menu-item: #ffffff0d; --danger: #ffb4a8; --toast: #050806; --toast-fg: #edf2ee; --field: #0000004d;
-    color-scheme: dark;
-    --sans: Figtree, system-ui, -apple-system, sans-serif; --serif: Fraunces, Georgia, serif;
+    --menu-item: #ffffff0d; --leaf-fg: #0b2414; --danger: #ffb4a8; --toast: #050806; --toast-fg: #edf2ee; --field: #0000004d;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
@@ -147,20 +146,32 @@
   .logEntry { background: var(--menu-item); border-radius: 14px; padding: 10px 12px; }
   .logEntry summary { cursor: pointer; font-size: 15px; line-height: 1.35; }
   .logEntry .row { margin-top: 10px; }
-  .mini { margin-top: 14px; }
-  .mini .who { font-size: 15px; margin-bottom: 6px; }
-  .mclover { display: grid; grid-template: auto auto auto / auto auto auto; grid-template-areas: ". t ." "l g r" ". b ."; align-items: center; justify-items: center; gap: 4px; }
-  .mclover > span { font: 600 17px var(--serif); color: var(--fg); max-width: 240px; text-align: center; }
-  .mclover .ct { grid-area: t; } .mclover .cb { grid-area: b; } .mgrid { grid-area: g; }
-  .mclover .cl { grid-area: l; writing-mode: vertical-rl; transform: rotate(180deg); }
-  .mclover .cr { grid-area: r; writing-mode: vertical-rl; }
-  .mgrid { display: grid; grid-template-columns: repeat(2, 108px); gap: 4px; }
-  .mc { position: relative; height: 108px; background: #fcf8ee; border: 1px solid #cdbf9a; border-radius: 10px; color: #1c1710; font: 700 14px var(--sans); }
+  /* A finished clover, read-only: each clue on its leaf with the two words
+     it linked, round the four answer cards (outward words only). Used by the
+     end-of-round recap and Past games. */
+  .mini { padding: 12px 10px 10px; border-radius: 16px; background: var(--menu-item); scroll-snap-align: start; }
+  .mini .who { display: flex; align-items: center; justify-content: space-between; gap: 8px; font: 600 18px var(--serif); margin-bottom: 8px; }
+  .badge { font: 700 13px var(--sans); border-radius: 99px; padding: 3px 10px; background: var(--chip); color: var(--fg); white-space: nowrap; }
+  .badge.first { background: var(--go); color: var(--go-fg); }
+  .mclover { --card: min(92px, 22vw); display: grid; grid-template-columns: 1fr calc(2 * var(--card) + 4px) 1fr; grid-template-areas: ". t ." "l g r" ". b ."; align-items: center; justify-items: center; gap: 5px; }
+  .leafTag { background: var(--leaf); color: var(--leaf-fg); border-radius: 46% 46% 40% 40% / 62% 62% 38% 38%; padding: 4px 10px; text-align: center; max-width: 100%; overflow-wrap: anywhere; }
+  .leafTag b { display: block; font: 600 17px var(--serif); }
+  .leafTag small { display: block; font-size: 12px; opacity: .8; }
+  .mclover .c0 { grid-area: t; } .mclover .c1 { grid-area: r; } .mclover .c2 { grid-area: b; } .mclover .c3 { grid-area: l; } .mgrid { grid-area: g; }
+  .mgrid { display: grid; grid-template-columns: repeat(2, var(--card)); gap: 4px; }
+  .mc { position: relative; height: var(--card); background: #fcf8ee; border: 1px solid #cdbf9a; border-radius: 10px; color: #1c1710; font: 700 12px var(--sans); }
   .mc span { position: absolute; white-space: nowrap; }
   .mc .t { top: 5px; left: 50%; transform: translateX(-50%); }
-  .mc .b { bottom: 5px; left: 50%; transform: translateX(-50%) rotate(180deg); }
+  .mc .b { bottom: 5px; left: 50%; transform: translateX(-50%); }
   .mc .r { right: 4px; top: 50%; writing-mode: vertical-rl; transform: translateY(-50%); }
   .mc .l { left: 4px; top: 50%; writing-mode: vertical-rl; transform: translateY(-50%) rotate(180deg); }
+  .mini .decoys { text-align: center; }
+  .stats { display: flex; gap: 8px; }
+  .stat { flex: 1; background: var(--menu-item); border-radius: 12px; padding: 6px 4px; text-align: center; font-size: 13px; color: var(--dim); }
+  .stat b { display: block; font: 700 21px var(--sans); color: var(--fg); font-variant-numeric: tabular-nums; }
+  /* The recap scrolls clover to clover; the buttons stay put. */
+  #recapSheet .sheet { overflow: hidden; }
+  .recapList { overflow-y: auto; min-height: 0; flex: 1; scroll-snap-type: y proximity; gap: 10px; }
   .decoys { font-size: 14px; color: var(--dim); margin-top: 6px; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition: none !important; animation: none !important; }
@@ -308,6 +319,14 @@
     <p id="logEmpty">Nothing yet: finish a round and it shows up here.</p>
     <div class="list" id="logList"></div>
     <button id="logClose">Close</button>
+  </div>
+</div>
+<div class="overlay" id="recapSheet">
+  <div class="sheet">
+    <h2 id="recapHead">Round done</h2>
+    <div class="stats" id="recapStats"></div>
+    <div class="list recapList" id="recapList"></div>
+    <div class="row"><button id="recapShare">Share</button><button class="go grow" id="recapNext">Next round</button><button id="recapClose">Close</button></div>
   </div>
 </div>
 <div class="overlay" id="shareSheet">

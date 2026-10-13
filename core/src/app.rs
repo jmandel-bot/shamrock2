@@ -97,6 +97,9 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
 }
 
 const DRAG_THRESHOLD: f32 = 6.0;
+/// A released board spin coasts this long at its last speed before settling.
+const FLING_S: f32 = 0.18;
+const FLING_WINDOW_MS: f64 = 120.0;
 const CURSOR_TTL_MS: f64 = 4000.0;
 const HELLO_EVERY_MS: f64 = 2000.0;
 /// Card word size, board units (a card is 210 across). Words are laid out
@@ -232,6 +235,8 @@ struct Press {
     moved: bool,
     /// (pointer angle about the board centre, view angle) while spinning.
     spin: Option<(f32, f32)>,
+    /// Recent (time ms, view angle) samples of a spin, for its fling.
+    trail: Vec<(f64, f32)>,
 }
 
 pub struct RemoteCursor {
@@ -1012,7 +1017,7 @@ impl App {
             }
             _ => ((0.0, 0.0), None),
         };
-        self.press = Some(Press { sx, sy, target, grab, origin, moved: false, spin: None });
+        self.press = Some(Press { sx, sy, target, grab, origin, moved: false, spin: None, trail: Vec::new() });
     }
 
     pub fn pointer_move(&mut self, sx: f32, sy: f32) {
@@ -1045,9 +1050,13 @@ impl App {
                 let ang = |x: f32, y: f32| (y - bc.1).atan2(x - bc.0);
                 let start = spin.unwrap_or((ang(psx, psy), self.angle));
                 self.angle = start.1 + wrap(ang(sx, sy) - start.0);
-                let a = self.angle;
+                let (a, now) = (self.angle, self.now);
                 if let Some(p) = self.press.as_mut() {
                     p.spin = Some((ang(sx, sy), a));
+                    p.trail.push((now, a));
+                    if p.trail.len() > 12 {
+                        p.trail.remove(0);
+                    }
                 }
             }
         }
@@ -1100,7 +1109,7 @@ impl App {
         self.pointer_move(sx, sy);
         let Some(p) = self.press.take() else { return };
         if p.spin.is_some() {
-            self.q = (self.angle / FRAC_PI_2).round() as i32;
+            self.q = self.fling_quarter(&p.trail);
             return;
         }
         match (p.target, p.moved) {
@@ -1120,6 +1129,24 @@ impl App {
             _ => {}
         }
         self.flush_cards();
+    }
+
+    /// Where a released spin comes to rest. It carries on at the speed it had
+    /// over its last ~120 ms for FLING_S, as if coasting, then settles on the
+    /// nearest quarter: a short, quick flick turns the board a quarter, and a
+    /// slow drag settles where it was let go. At most one extra quarter.
+    fn fling_quarter(&self, trail: &[(f64, f32)]) -> i32 {
+        let here = self.angle / FRAC_PI_2;
+        let mut coast = 0.0;
+        if let Some(&(t1, a1)) = trail.last() {
+            let early = trail.iter().find(|&&(t, _)| t1 - t <= FLING_WINDOW_MS && t < t1);
+            // A finger that stopped before lifting has no fling left.
+            if let (Some(&(t0, a0)), true) = (early, self.now - t1 <= FLING_WINDOW_MS) {
+                let speed = (a1 - a0) / ((t1 - t0) as f32 / 1000.0);
+                coast = (speed * FLING_S / FRAC_PI_2).clamp(-1.0, 1.0);
+            }
+        }
+        (here + coast).round() as i32
     }
 
     /// Cards stay exactly where they're dropped (so players can leave
@@ -1616,7 +1643,7 @@ impl App {
                 let at = match c.loc {
                     Loc::Table { .. } => "\"tray\"".to_string(),
                     Loc::Slot(s) => format!("\"slot {s}\""),
-                    Loc::Float { .. } => "\"loose on board\"".to_string(),
+                    Loc::Float { .. } => "\"board\"".to_string(),
                 };
                 let words = turn_words(sc.words[i], c.rot).map(json_str).join(",");
                 format!(

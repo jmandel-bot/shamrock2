@@ -1,7 +1,8 @@
 // Agent play-test driver: one real browser page per player at the same table,
-// each controlled through a small local HTTP API (see README.md here). Every
-// action goes through the real interface (taps, typing, drags, buttons), so
-// automated players exercise the game the way people do.
+// each controlled through a small local HTTP API (see README.md here). Moves
+// go through the page's own agent tools (web/agent.js, also offered to
+// browser assistants over WebMCP), which drive the same Rust input path as
+// touch; the main buttons are clicked as a person would.
 //
 //   node harness/agentplay/driver.mjs <room> <players> [apiBasePort]
 //   e.g. node harness/agentplay/driver.mjs agent-test 3 9111
@@ -35,37 +36,26 @@ async function player(k) {
   await page.goto(url);
   await page.waitForFunction(() => window.__cl?.ui);
   const ev = (fn, a) => page.evaluate(fn, a);
-  const origin = () => ev(() => { const r = document.getElementById('c').getBoundingClientRect(); return [r.left, r.top]; });
-  const at = async (xy) => { const o = await origin(); return [o[0] + xy[0], o[1] + xy[1]]; };
   let shots = 0;
 
-  // Cards are labelled by their shuffled tray order (never the internal
-  // index, whose first entries are the answer in spot order).
-  const view = async () => ev(() => window.__cl.agentView());
-  const index = async (label) => (await view()).cards.find((c) => c.card === label)?._i;
-  const strip = (v) => ({ ...v, cards: v.cards.map(({ _i, ...c }) => c) });
-  const state = async () => ev(() => {
-    const u = window.__cl.ui(), $ = (id) => document.getElementById(id);
-    const btn = (id) => { const b = $(id); return b && !b.hidden ? { label: b.textContent, enabled: !b.disabled } : null; };
-    return {
-      phase: u.phase, round: u.round, seated: u.seated, me: u.name ?? null,
-      players: u.players.map((p) => ({ name: p.name, status: p.status, away: p.away, you: p.you })),
-      cloverIndex: u.k, cloverCount: u.n, writerName: u.writerName ?? null, isMyClover: !!u.isWriter, solved: !!u.done,
-      decoys: u.decoys, readyCount: u.readyCount,
-      statusLine: $('hint').textContent, mainButton: btn('go'), otherButton: btn('alt'), sideButton: btn('side'),
-      joinFormOpen: $('joinSheet').classList.contains('open'), toast: $('toast').classList.contains('show') ? $('toast').textContent : null,
-      clover: window.__cl.agentView(),
-    };
-  }).then((s) => ({ ...s, clover: strip(s.clover) }));
+  // Game actions go through the page's own agent tools (web/agent.js), the
+  // same ones a browser's assistant gets over WebMCP. The main and other
+  // buttons are pressed as a person would.
+  const tool = (name, args = {}) => ev(([n, a]) => window.__cl.tools[n](a), [name, args]);
+  const said = (r) => typeof r === 'object' && 'result' in r ? r.result : JSON.stringify(r);
+  const state = async () => {
+    const [t, dom] = await Promise.all([tool('get_table'), ev(() => {
+      const $ = (id) => document.getElementById(id);
+      const btn = (id) => { const b = $(id); return b && !b.hidden ? { label: b.textContent, enabled: !b.disabled } : null; };
+      return { mainButton: btn('go'), otherButton: btn('alt'), joinFormOpen: $('joinSheet').classList.contains('open'),
+        toast: $('toast').classList.contains('show') ? $('toast').textContent : null };
+    })]);
+    return { ...t, ...dom };
+  };
   const key = (s) => JSON.stringify(s);
 
   const actions = {
-    async join({ name }) {
-      await page.waitForSelector('#joinSheet.open', { timeout: 5000 }).catch(() => {});
-      await page.fill('#nameInput', name);
-      await page.click('#joinBtn');
-      return `joined as ${name}`;
-    },
+    join: async ({ name }) => said(await tool('join_table', { name })),
     async go() {
       const b = await page.$('#go');
       if (!b || await b.isHidden() || await b.isDisabled()) return 'main button is hidden or disabled';
@@ -80,67 +70,12 @@ async function player(k) {
       await b.click();
       return `pressed "${label}"`;
     },
-    async clue({ leaf, text }) {
-      const d = ['top', 'right', 'bottom', 'left'].indexOf(leaf);
-      if (d < 0) return 'leaf must be top, right, bottom or left';
-      await ev(() => window.__cl.settle());
-      const [x, y] = await at((await ev((d) => window.__cl.petal(d), d)).slice(0, 2));
-      await page.mouse.click(x, y);
-      await page.waitForSelector('#clue', { state: 'visible', timeout: 3000 });
-      await page.fill('#clue', text);
-      await page.keyboard.press('Enter');
-      await sleep(150);
-      // Enter moves on to the next empty leaf; close that without changes.
-      if (await page.isVisible('#clue')) await page.keyboard.press('Escape');
-      return `wrote "${text}" on the ${leaf} leaf`;
-    },
-    async decoys({ n }) {
-      for (let i = 0; i < 8; i++) {
-        const cur = (await ev(() => window.__cl.ui().decoys));
-        if (cur === n) return `decoys set to ${n}`;
-        const id = cur < n ? '#decUp' : '#decDown';
-        if (!(await page.isVisible(id))) return 'decoy buttons are not shown (write all four clues first)';
-        await page.click(id);
-      }
-      return `decoys now ${await ev(() => window.__cl.ui().decoys)}`;
-    },
-    async move({ card: label, slot }) {
-      const card = await index(label);
-      if (card === undefined) return `no card ${label}`;
-      await ev(() => window.__cl.settle());
-      const from = await at((await ev((i) => window.__cl.card(i), card)).slice(0, 2));
-      let to;
-      if (slot === 'tray') {
-        const box = await page.evaluate(() => { const c = document.getElementById('c').getBoundingClientRect(); return [c.left + c.width * 0.5, c.top + c.height - 60]; });
-        to = box;
-      } else to = await at((await ev((s) => window.__cl.slot(s), slot)).slice(0, 2));
-      const m = page.mouse;
-      await m.move(from[0], from[1]); await m.down();
-      for (let s = 1; s <= 14; s++) await m.move(from[0] + (to[0] - from[0]) * s / 14, from[1] + (to[1] - from[1]) * s / 14);
-      await m.up();
-      await sleep(250);
-      const where = (await view()).cards.find((c) => c._i === card)?.at;
-      return `card ${label} is now at ${where}`;
-    },
-    async turn({ card: label, times = 1 }) {
-      const card = await index(label);
-      if (card === undefined) return `no card ${label}`;
-      for (let t = 0; t < times; t++) {
-        await ev(() => window.__cl.settle());
-        const [x, y] = await at((await ev((i) => window.__cl.card(i), card)).slice(0, 2));
-        await page.mouse.click(x, y);
-        await sleep(120);
-      }
-      const c = (await view()).cards.find((x) => x._i === card);
-      return `card ${label} now reads top/right/bottom/left: ${c?.words.join(' / ')}`;
-    },
-    async pick({ clover }) {
-      if (!(await page.$('#hint.pick'))) return 'clover picker is only available while guessing';
-      await page.click('#hint');
-      await page.waitForSelector('#cloverSheet.open');
-      await page.click(`#cloverList .clover-row:nth-child(${clover + 1})`);
-      return `picked clover ${clover}`;
-    },
+    clue: async ({ leaf, text }) => said(await tool('write_clue', { leaf, text })),
+    decoys: async ({ n }) => said(await tool('set_decoys', { count: n })),
+    move: async ({ card, slot }) => said(await tool('place_card', { card, spot: slot })),
+    turn: async ({ card, times }) => said(await tool('turn_card', { card, times })),
+    pick: async ({ clover }) => said(await tool('choose_clover', { clover })),
+    recap: async () => tool('get_recap'),
     async screenshot() {
       const path = `${OUT}${tag}-${String(++shots).padStart(2, '0')}.png`;
       await page.screenshot({ path });
@@ -160,6 +95,13 @@ async function player(k) {
         while (wait && since && String(hash(key(s))) === since && Date.now() - t0 < wait * 1000) { await sleep(400); s = await state(); }
         return reply(200, { etag: String(hash(key(s))), ...s });
       }
+      // Any agent tool by name: POST /tool/<name> with its arguments.
+      if (req.method === 'POST' && u.pathname.startsWith('/tool/')) {
+        let body = ''; for await (const c of req) body += c;
+        const result = await tool(u.pathname.slice(6), body ? JSON.parse(body) : {});
+        await log(tag, `${u.pathname.slice(1)} ${body} -> ${said(result)}`);
+        return reply(200, { result });
+      }
       if (req.method === 'POST' && actions[u.pathname.slice(1)]) {
         let body = ''; for await (const c of req) body += c;
         const args = body ? JSON.parse(body) : {};
@@ -167,7 +109,7 @@ async function player(k) {
         await log(tag, `${u.pathname.slice(1)} ${body} -> ${result}`);
         return reply(200, { result });
       }
-      reply(404, { error: 'GET /state[?wait=N&since=ETAG] or POST /join /go /other /clue /decoys /move /turn /pick /screenshot' });
+      reply(404, { error: 'GET /state[?wait=N&since=ETAG] or POST /join /go /other /clue /decoys /move /turn /pick /recap /screenshot /tool/<name>' });
     } catch (e) {
       await log(tag, `ERROR ${u.pathname}: ${e.message}`);
       reply(500, { error: e.message.split('\n')[0] });

@@ -22,6 +22,7 @@ core/                Rust crate; all game logic. No dependencies, no wasm-bindge
   tests/             native property tests (convergence, rotation invariants, …)
 web/                 static site: index.html, main.js (~180-line shim), core.wasm, vendored Trystero
 legacy-web.html      deployed as /web/: sends old /web/ links to the site root
+web/agent.js         the game as tools for AI assistants (WebMCP) and the agent play test
 harness/serve.mjs    static server + local signaling relay
 harness/run.mjs      Playwright scorecard: real tabs, real WebRTC, real pointer events
 ```
@@ -49,9 +50,9 @@ node harness/serve.mjs # prints a URL
 4. **A progress bar fills** one segment per dealt-in player as they submit. Guessing starts by itself only when **all** of them have submitted, whether they're online, offline or gone. Anyone can override with **Proceed with 3 of 5**. Every version of each player's clues is kept, so an edit that races Proceed resolves identically everywhere: whatever was in before the Proceed stamp counts. Clovers are guessed one at a time, in deal order, on a big shared board. Drag cards **anywhere**: loose "maybe" placements stay exactly where you leave them for everyone, and a card only snaps when dropped close to a spot (pushing any card already there back to where yours came from). The card touched last sits on top. A card within reach of a spot counts for **Check**. **Guess** boots any wrongly placed cards back to the tray, with a small shake and no commentary. Right cards stay. There's no scoring and no limit: keep guessing until all four are right, and the clover glows.
 While guessing, **tap the status line** ("Sam · 1/3 · 1 decoy ▾") to pick which clover everyone guesses: any order, jump ahead or back (solved ones show their answer). **Next clover** goes to the next unsolved one, and the round ends when all are solved.
 
-5. **Next clover**, then **Next round**. Seats and scores carry across rounds. The ⋯ menu has the invite link, switch player, watch, *Deal new cards*, *New game* (reset scores, keep whoever is here), and *Remove* for away players.
+5. **Next clover**, then the **recap**: when the last clover is solved, a sheet opens on everyone's screen with every clover of the round, one after another (scroll from one to the next): its clues, each with the two words it linked, the four answer cards showing their outward words, the decoys, and how many guesses it took, plus round totals. Tap the status line ("Round 1 done ▾") to see it again. It has *Share* and *Next round*. Then **Next round**. Seats and scores carry across rounds. The ⋯ menu has the invite link, switch player, watch, *Deal new cards*, *New game* (reset scores, keep whoever is here), and *Remove* for away players.
 
-**Turning the board** is local to each player: tap ⟳ or the clover's round centre, or drag around it. Tapping a leaf never turns the board: while writing, it opens that leaf's editor upright on screen, and each leaf shows its two keywords ("ocean & storm"). Cards on the board turn with it; cards in the tray stay put. Card turns, moves and board turns all animate. Each clover starts upright.
+**Turning the board** is local to each player: tap ⟳ or the clover's round centre, or drag around it. A drag has momentum: let go of a quick flick and the board coasts on (about 0.18 s at the speed of its last 120 ms) before settling on the nearest quarter, so a short flick turns it a quarter while a slow nudge springs back. Tapping a leaf never turns the board: while writing, it opens that leaf's editor upright on screen, and each leaf shows its two keywords ("ocean & storm"). Cards on the board turn with it; cards in the tray stay put. Card turns, moves and board turns all animate. Each clover starts upright.
 
 **No header bar.** The ⋯ menu button sits at the left of the bottom strip; players are listed by name (with what they're doing, and *Remove* for away players) in the menu. In the lobby, or whenever you're connected to nobody, the strip has an **Invite** button (the phone's share sheet, else copy link). The **tray** fits every card of the current clover without overlap, three to a row (a column in landscape) at your card size. A 5–6 card clover gets two rows at full size; only a clover that really has 7–8 cards takes a third row and shrinks its board to make room.
 
@@ -78,6 +79,10 @@ At the end of a round, **Share boards** (also in the ⋯ menu) lists the round's
 ## Importing an unfinished clover
 
 Boards from elsewhere (e.g. read off a screenshot of an old game) become ordinary share links. Write the board as text: name, the four clues (top, right, bottom, left), then the answer cards for spots top-left, top-right, bottom-right and bottom-left (words clockwise from the top as they sit), then any decoys. Then call `window.__cl.shareFromText([text])` on any open page to get the link.
+
+## Tools for AI assistants (WebMCP)
+
+`web/agent.js` describes the game as tools an AI assistant can call: `get_table`, `join_table`, `start_round`, `write_clue`, `set_decoys`, `submit_clover`, `place_card`, `turn_card`, `check_guess`, `next_clover`, `choose_clover` and `get_recap`. In a browser with [WebMCP](https://github.com/webmachinelearning/webmcp) (`document.modelContext`, or the earlier `navigator.modelContext`), the page registers them for the browser's built-in agent; elsewhere it does nothing. Each tool goes through the same Rust entry points as touch input, and sees only what that player's screen shows: cards are numbered by their shuffled tray order, and `get_recap` (the answers) only works once the round has ended. The agent play-test driver uses the same tools (`window.__cl.tools`), and `harness/agentplay/tools-test.mjs` plays a whole three-player round through them alone.
 
 ## Harness
 

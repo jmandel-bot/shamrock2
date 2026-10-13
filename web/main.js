@@ -1,6 +1,8 @@
 // Platform shim: everything here is plumbing. Game rules, sync, layout,
 // hit-testing, animation and drawing decisions live in core.wasm (Rust).
 
+import { agentTools, offerTools } from './agent.js';
+
 const params = new URLSearchParams(location.search);
 // No room in the link (and no shared boards): the home page, listing this
 // device's tables and past games, with a button to start a new table.
@@ -630,6 +632,8 @@ function renderUi(force = false) {
       break;
   }
   if (!solo && !home && s.phase === 'end') logRound(s);
+  // When a round ends, its recap opens once by itself; the status reopens it.
+  if (!home && s.phase === 'end' && recapShown !== s.round) { recapShown = s.round; setTimeout(openRecap, 600); }
   // Not connected to anyone: say so rather than look normal while broken.
   if (!solo && !peers.size) {
     const others = s.players.some((p) => !p.you);
@@ -651,9 +655,10 @@ function renderUi(force = false) {
   $('hint').title = $('hint').textContent;
   // While guessing, the status names the clover; tap it to pick another.
   const picking = s.phase === 'guessing' && (solo ? s.n : s.boards.length) > 1;
-  $('hint').classList.toggle('pick', picking);
-  $('hint').onclick = picking ? openClovers : null;
-  if (picking) $('hint').innerHTML += ' ▾';
+  const recap = !home && s.phase === 'end' && s.boards.length > 0;
+  $('hint').classList.toggle('pick', picking || recap);
+  $('hint').onclick = picking ? openClovers : recap ? openRecap : null;
+  if (picking || recap) $('hint').innerHTML += ' ▾';
   // Invite sits in the strip itself in the lobby, or whenever you're alone.
   $('invite').hidden = solo || home || !(s.phase === 'lobby' || !peers.size);
   const goBtn = $('go');
@@ -779,20 +784,45 @@ function logRound(s) {
   log.unshift({ id, room: roomId, round: s.round, at: Date.now(), players: s.players.map((p) => p.name), boards });
   remember(LOG, JSON.stringify(log.slice(0, LOG_MAX)));
 }
-/** A small read-only clover: clues around four answer cards, decoys below. */
+/** A finished clover, read-only: each clue on its leaf with the two words
+ *  it linked, round the four answer cards showing only their outward words. */
 function cloverHtml(b) {
   const [name, ...rest] = b.text.split('\n');
   const clues = rest.slice(0, 4), cards = rest.slice(4).map((l) => l.split('|'));
-  const card = (w) => `<div class="mc">${['t', 'r', 'b', 'l'].map((k, i) => `<span class="${k}">${esc(w?.[i] ?? '')}</span>`).join('')}</div>`;
-  const [tl, tr, br, bl] = cards;
+  const W = cards.slice(0, 4);
+  // Leaf d links spot d and the next spot clockwise, both on side d.
+  const leaf = (d) => `<span class="leafTag c${d}"><b>${esc(clues[d])}</b><small>${esc(W[d]?.[d] ?? '')} + ${esc(W[(d + 1) % 4]?.[d] ?? '')}</small></span>`;
+  const OUT = [[0, 3], [0, 1], [1, 2], [2, 3]];
+  const card = (s) => `<div class="mc">${OUT[s].map((e) => `<span class="${'trbl'[e]}">${esc(W[s]?.[e] ?? '')}</span>`).join('')}</div>`;
+  const badge = !b.solved ? '<span class="badge">not solved</span>'
+    : b.guesses === 1 ? '<span class="badge first">☘ first try</span>' : `<span class="badge">${guesses(b.guesses)}</span>`;
   return `<div class="mini">
-    <div class="who"><b>${esc(name)}</b> · ${b.solved ? `solved in ${guesses(b.guesses)}` : 'not solved'}</div>
-    <div class="mclover"><span class="ct">${esc(clues[0])}</span><span class="cr">${esc(clues[1])}</span>
-      <div class="mgrid">${card(tl)}${card(tr)}${card(bl)}${card(br)}</div>
-      <span class="cb">${esc(clues[2])}</span><span class="cl">${esc(clues[3])}</span></div>
-    ${cards.length > 4 ? `<div class="decoys">Decoys: ${cards.slice(4).map((w) => esc(w.join(' · '))).join('; ')}</div>` : ''}
+    <div class="who"><span>${esc(name)}'s clover</span>${badge}</div>
+    <div class="mclover">${leaf(0)}${leaf(1)}${leaf(2)}${leaf(3)}<div class="mgrid">${[0, 1, 3, 2].map(card).join('')}</div></div>
+    ${cards.length > 4 ? `<div class="decoys">Decoy${cards.length > 5 ? 's' : ''}: ${cards.slice(4).map((w) => esc(w.join(' · '))).join('; ')}</div>` : ''}
   </div>`;
 }
+/** The end of a round: every clover's answer, one after another. */
+function openRecap() {
+  const s = ui();
+  const boards = scratchJson(X.review());
+  if (!boards.length) return;
+  const solved = boards.filter((b) => b.solved).length;
+  $('recapHead').textContent = solo ? 'All done ☘' : `Round ${s.round} done ☘`;
+  $('recapStats').innerHTML = [[`${solved}/${boards.length}`, 'solved'], [boards.reduce((n, b) => n + b.guesses, 0), 'guesses'],
+    [boards.filter((b) => b.solved && b.guesses === 1).length, 'first try']].map(([v, k]) => `<div class="stat"><b>${v}</b>${k}</div>`).join('');
+  $('recapList').innerHTML = boards.map(cloverHtml).join('');
+  $('recapList').scrollTop = 0;
+  $('recapShare').hidden = solo;
+  $('recapNext').hidden = solo || !s.seated;
+  $('recapNext').disabled = !s.dealable.length;
+  closeSheets();
+  $('recapSheet').classList.add('open');
+}
+$('recapShare').onclick = openShare;
+$('recapNext').onclick = () => { closeSheets(); act(1); };
+$('recapClose').onclick = () => closeSheets();
+let recapShown = null;
 function openLog() {
   const log = readJson(LOG, []);
   const list = $('logList');
@@ -952,7 +982,21 @@ requestAnimationFrame(tick);
 // ---- harness hooks (read-only probes + a settle switch) ------------------------
 
 const probe = (fn, ...a) => { fn(...a); return Array.from(new Float32Array(X.memory.buffer, X.probe_ptr(), 3)); };
+
+// ---- tools for AI assistants (WebMCP; see agent.js) ----------------------------
+
+const tools = agentTools({
+  X, ui, act, joinAs, writeText, probe,
+  agentView: () => scratchJson(X.agent_view()),
+  review: () => scratchJson(X.review()),
+  status: () => $('hint').textContent.replace(/ ▾$/, ''),
+  sync: () => { drainOutbox(); renderUi(true); },
+  trayPoint: () => [canvas.clientWidth / 2, canvas.clientHeight - 60],
+});
+if (!home) offerTools(tools);
+
 window.__cl = {
+  tools: Object.fromEntries(tools.map((t) => [t.name, t.run])),
   agentView: () => scratchJson(X.agent_view()),
   myTables: () => myTables(),
   setTheme: (t) => { themePref = t; applyTheme(); },

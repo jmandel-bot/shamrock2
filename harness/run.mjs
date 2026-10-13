@@ -564,6 +564,14 @@ try {
     await other.close();
     await homePage.close();
   }
+  // The round's recap opens by itself: every clover's answer, one after another.
+  {
+    const open = await A.page.waitForSelector('#recapSheet.open', { timeout: 5000 }).then(() => true, () => false);
+    const rows = await A.page.$$eval('#recapList .mini', (els) => els.length);
+    gate('the end of a round opens a recap of every clover', open && rows === r1.puzzles.length, `open ${open}, ${rows} of ${r1.puzzles.length}`);
+    await A.page.screenshot({ path: `${OUT}5-recap.png` });
+    await A.page.click('#recapClose');
+  }
   await A.page.screenshot({ path: `${OUT}5-end.png` });
 
   // ---- share boards: pick clovers, open the link at a fresh table ------------------------
@@ -622,7 +630,9 @@ try {
   // ---- next round keeps the table and the score -----------------------------------------
   console.log('\n# rounds and games');
   const nextLabel = await B.page.textContent('#go');
-  await B.go(); // Next round
+  // Ben's recap is open over the table; its Next round deals again.
+  await B.page.waitForSelector('#recapSheet.open', { timeout: 5000 });
+  await B.page.click('#recapNext');
   await until(all, (d) => d.phase === 'writing' && d.round === 2);
   gate('next round button names the players', nextLabel === 'Next round with 5 players', nextLabel);
   const r2 = await C.digest();
