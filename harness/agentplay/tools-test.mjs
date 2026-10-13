@@ -76,7 +76,16 @@ try {
     }
     const t = await g.table();
     check(t.clover.solved, `clover ${k + 1} (${t.clover.writer}'s) solved through place_card, turn_card and check_guess`, JSON.stringify(t.clover.solvedSpots));
-    await g.tool('next_clover');
+    if (k === 0) {
+      // Two players move on from the same clover: the second finds it done.
+      const other = P.find((p) => p !== g);
+      const first = await other.tool('next_clover', { from: t.clover.index });
+      await until(async () => (await g.table()).clover.index !== t.clover.index);
+      const second = await g.tool('next_clover', { from: t.clover.index });
+      check(first.ok && second.ok && /already moved the table on/.test(second.result), 'next_clover after someone else moved on reports success, not "not solved"', `${first.result} | ${second.result}`);
+    } else {
+      await g.tool('next_clover', { from: t.clover.index });
+    }
   }
   check(await until(async () => (await P[0].table()).phase === 'end'), 'the round ends');
   const recap = await P[2].tool('get_recap');

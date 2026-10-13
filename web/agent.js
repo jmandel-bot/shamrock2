@@ -143,14 +143,24 @@ export function agentTools(g) {
         if (!u.canCheck) return done(u.phase === 'guessing' ? 'fill all four spots first (and it cannot be your own clover)' : 'nothing to check', false);
         g.act('check');
         const v = view();
-        return done(v.solvedSlots.length === 4 ? 'solved!' : `right so far: spots ${v.solvedSlots.join(', ') || 'none'}`);
+        return done(v.solvedSlots.length === 4 ? `solved clover ${u.k}! (next_clover with from: ${u.k} moves on)` : `right so far: spots ${v.solvedSlots.join(', ') || 'none'}`);
       },
     },
     {
       name: 'next_clover',
-      description: 'Once the clover on screen is solved, move on to the next one (or finish the round after the last).',
-      inputSchema: { type: 'object', properties: {} },
-      run() { if (!g.ui().done) return done('this clover is not solved yet', false); g.act('next'); return done(`now: ${g.ui().phase}`); },
+      description: 'Once the clover on screen is solved, move the whole table on to the next one (or finish the round after the last). '
+        + 'Pass `from`, the index of the clover you solved: if someone already moved the table on from it, that counts as done.',
+      inputSchema: { type: 'object', properties: { from: { type: 'integer', minimum: 0, description: 'Index of the solved clover you are moving on from (clover.index in get_table)' } } },
+      run({ from } = {}) {
+        const u = g.ui();
+        const now = () => { const v = g.ui(); return v.phase === 'end' ? 'the round is over' : `now clover ${v.k} of ${v.n} (${v.writerName}'s)`; };
+        // Everyone shares one current clover: another player may have moved on first.
+        if (from !== undefined && (u.phase !== 'guessing' || u.k !== from) && u.boards[from]?.solved) return done(`someone already moved the table on from clover ${from}; ${now()}`);
+        if (u.phase === 'end') return done('the round is already over');
+        if (!u.done) return done(`clover ${u.k} (${u.writerName}'s) is on screen and isn't solved yet${from === undefined ? '; if you just solved another, someone already moved the table on' : ''}`, false);
+        g.act('next');
+        return done(now());
+      },
     },
     {
       name: 'choose_clover',
