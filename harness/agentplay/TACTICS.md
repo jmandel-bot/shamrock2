@@ -26,7 +26,7 @@ The best clues usually join the two words through *different* kinds of link (a p
 
 ## Writing clues: specificity versus risk
 
-1. **Need both words.** A good clue joins the two words; a clue that fits one word strongly and the other weakly lets guessers place one card but not its partner. (For *climbing* & *clothing*: "harness" — you climb in one and wear it.)
+1. **Link both words, evenly.** Every clue must connect both words on its leaf. The skill is making the link strong for *each*: a clue that fits one word strongly and the other only weakly lets guessers place one card but not its partner. (For *climbing* & *clothing*: "harness" — you climb in one and wear it.)
 2. **Check every other word on your cards.** Each of your four cards has three other words that a guesser could imagine facing your leaf, if the card were turned or put in another spot. Before keeping a clue, scan all 16 words on your board: does the clue fit some *other* pair better, or about as well? If so, it will mislead; find a different angle or a more specific clue.
 3. **Specific beats clever.** Pick the association most people make, not a private or obscure one. A broad clue that fits half the board causes confusion; an over-clever one gets misread.
 4. **Use the corners.** Each card answers two clues. If one clue is necessarily a bit loose, make the clue on that card's other side sharp, so the corner can be pinned down by the intersection.
