@@ -1249,3 +1249,30 @@ fn scrambled_boards_hide_the_layout_and_round_trip_exactly() {
     assert!(unscramble("x\na\nb\nc\nd\n1|2|3|4\n1|2|3|4\n1|2|3|4\n1|2|3|4\n@ 9 0 1 0 2 0 3 0").is_none(), "out of range");
     assert_eq!(turn_words(["t", "r", "b", "l"], 1), ["l", "t", "r", "b"], "a quarter turn moves the top word right");
 }
+
+/// The tray order must not give the answer away: across many deals, the four
+/// answer cards should land in spot order only about 1 time in 24.
+#[test]
+fn tray_order_does_not_follow_the_answer() {
+    let (mut ordered, mut total) = (0, 0);
+    let mut t = Table::new(3);
+    t.apps[0].action(1);
+    t.pump();
+    for _ in 0..60 {
+        let s = &t.apps[0].shared;
+        for &w in s.round.players() {
+            let d = s.deal(w);
+            let n = s.ncards(w);
+            let rank = |i: usize| (0..n).filter(|&j| d.home[j] < d.home[i]).count();
+            total += 1;
+            if (0..3).all(|i| rank(i) < rank(i + 1)) {
+                ordered += 1;
+            }
+        }
+        t.apps[0].action(6); // deal new cards: a fresh round, fresh seed
+        t.pump();
+    }
+    let share = ordered as f64 / total as f64;
+    eprintln!("answer cards in spot order: {ordered} of {total} deals ({:.1}%)", share * 100.0);
+    assert!(share < 0.12, "answer cards in spot order in {ordered} of {total} deals");
+}

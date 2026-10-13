@@ -39,6 +39,11 @@ async function player(k) {
   const at = async (xy) => { const o = await origin(); return [o[0] + xy[0], o[1] + xy[1]]; };
   let shots = 0;
 
+  // Cards are labelled by their shuffled tray order (never the internal
+  // index, whose first entries are the answer in spot order).
+  const view = async () => ev(() => window.__cl.agentView());
+  const index = async (label) => (await view()).cards.find((c) => c.card === label)?._i;
+  const strip = (v) => ({ ...v, cards: v.cards.map(({ _i, ...c }) => c) });
   const state = async () => ev(() => {
     const u = window.__cl.ui(), $ = (id) => document.getElementById(id);
     const btn = (id) => { const b = $(id); return b && !b.hidden ? { label: b.textContent, enabled: !b.disabled } : null; };
@@ -51,7 +56,7 @@ async function player(k) {
       joinFormOpen: $('joinSheet').classList.contains('open'), toast: $('toast').classList.contains('show') ? $('toast').textContent : null,
       clover: window.__cl.agentView(),
     };
-  });
+  }).then((s) => ({ ...s, clover: strip(s.clover) }));
   const key = (s) => JSON.stringify(s);
 
   const actions = {
@@ -99,12 +104,13 @@ async function player(k) {
       }
       return `decoys now ${await ev(() => window.__cl.ui().decoys)}`;
     },
-    async move({ card, slot }) {
+    async move({ card: label, slot }) {
+      const card = await index(label);
+      if (card === undefined) return `no card ${label}`;
       await ev(() => window.__cl.settle());
       const from = await at((await ev((i) => window.__cl.card(i), card)).slice(0, 2));
       let to;
       if (slot === 'tray') {
-        const r = await ev(() => { const t = window.__cl.X; return null; });
         const box = await page.evaluate(() => { const c = document.getElementById('c').getBoundingClientRect(); return [c.left + c.width * 0.5, c.top + c.height - 60]; });
         to = box;
       } else to = await at((await ev((s) => window.__cl.slot(s), slot)).slice(0, 2));
@@ -113,18 +119,20 @@ async function player(k) {
       for (let s = 1; s <= 14; s++) await m.move(from[0] + (to[0] - from[0]) * s / 14, from[1] + (to[1] - from[1]) * s / 14);
       await m.up();
       await sleep(250);
-      const where = (await ev(() => window.__cl.agentView())).cards[card]?.at;
-      return `card ${card} is now at ${where}`;
+      const where = (await view()).cards.find((c) => c._i === card)?.at;
+      return `card ${label} is now at ${where}`;
     },
-    async turn({ card, times = 1 }) {
+    async turn({ card: label, times = 1 }) {
+      const card = await index(label);
+      if (card === undefined) return `no card ${label}`;
       for (let t = 0; t < times; t++) {
         await ev(() => window.__cl.settle());
         const [x, y] = await at((await ev((i) => window.__cl.card(i), card)).slice(0, 2));
         await page.mouse.click(x, y);
         await sleep(120);
       }
-      const c = (await ev(() => window.__cl.agentView())).cards[card];
-      return `card ${card} now reads top/right/bottom/left: ${c?.words.join(' / ')}`;
+      const c = (await view()).cards.find((x) => x._i === card);
+      return `card ${label} now reads top/right/bottom/left: ${c?.words.join(' / ')}`;
     },
     async pick({ clover }) {
       if (!(await page.$('#hint.pick'))) return 'clover picker is only available while guessing';

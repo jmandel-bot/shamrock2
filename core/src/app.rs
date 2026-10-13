@@ -1590,17 +1590,28 @@ impl App {
     }
 
     /// The current clover described for an automated player (the agent
-    /// test harness): whose it is, the four clues (top, right, bottom, left),
+    /// test harness; `_i` is the internal index, for the harness only): whose it is, the four clues (top, right, bottom, left),
     /// each card's location and its words as they currently face (top, right,
     /// bottom, left; board frame, which is the screen's while the view is
     /// upright), which spots are solved, and, while writing, the two words
     /// each leaf links.
     pub fn agent_view_json(&self) -> String {
         let sc = self.scene();
-        let cards: Vec<String> = sc
-            .cards
+        // Cards are numbered by their shuffled tray order, never by internal
+        // index: the first internal indices are the answer, in spot order.
+        let n = sc.cards.len();
+        let rank: Vec<usize> = match sc.writer {
+            Some(w) => {
+                let d = self.shared.deal(w);
+                (0..n).map(|i| (0..n).filter(|&j| d.home[j] < d.home[i]).count()).collect()
+            }
+            None => (0..n).collect(),
+        };
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|&i| rank[i]);
+        let cards: Vec<String> = order
             .iter()
-            .enumerate()
+            .map(|&i| (i, &sc.cards[i]))
             .map(|(i, c)| {
                 let at = match c.loc {
                     Loc::Table { .. } => "\"tray\"".to_string(),
@@ -1608,7 +1619,11 @@ impl App {
                     Loc::Float { .. } => "\"loose on board\"".to_string(),
                 };
                 let words = turn_words(sc.words[i], c.rot).map(json_str).join(",");
-                format!("{{\"card\":{i},\"at\":{at},\"words\":[{words}],\"movable\":{}}}", sc.movable.get(i).copied().unwrap_or(false))
+                format!(
+                    "{{\"card\":{},\"_i\":{i},\"at\":{at},\"words\":[{words}],\"movable\":{}}}",
+                    rank[i],
+                    sc.movable.get(i).copied().unwrap_or(false)
+                )
             })
             .collect();
         let leaves: Vec<String> = (0..4u8).map(|d| self.keywords(&sc, d).map_or("null".into(), |k| json_str(&k))).collect();
