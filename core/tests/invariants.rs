@@ -160,7 +160,7 @@ fn wire_roundtrip() {
     let s = Stamp { clock: 99, peer: 7 };
     let game = Stamp { clock: 1, peer: 2 };
     let round = Round { seed: 42, n: 3, stamp: Stamp { clock: 3, peer: 1 }, ..Round::default() }.with_players(&[9, 4, 7]);
-    let op = |body| Msg::Op(Op { game, round, body });
+    let op = |body| Msg::Op(Op { game, gen: 3, round, body });
     let msgs = vec![
         op(Body::None),
         op(Body::Seat(9, Seat { name: "Ana ☘".into(), active: true, stamp: s })),
@@ -172,7 +172,7 @@ fn wire_roundtrip() {
         op(Body::Check(9, Check { attempts: 1, mask: 0b0101, stamp: s })),
         op(Body::Next(3, s)),
         op(Body::Ledger(3, 9, 6, s)),
-        Msg::Hello { device: 5, seat: 9 },
+        Msg::Hello { device: 5, seat: 9, sum: 0xdead_beef },
         Msg::Cursor { device: 5, seat: 9, kind: 2, x: 10.0, y: -10.0 },
     ];
     let mut b = Vec::new();
@@ -826,18 +826,18 @@ fn newer_rounds_reset_round_state_but_keep_seats_and_scores() {
     let g = Stamp { clock: 1, peer: 1 };
     let r1 = Round { seed: 1, n: 1, stamp: Stamp { clock: 2, peer: 1 }, ..Round::default() };
     let st = |c| Stamp { clock: c, peer: 1 };
-    s.apply(&Op { game: g, round: r1, body: Body::Seat(5, Seat { name: "a".into(), active: true, stamp: st(3) }) });
-    s.apply(&Op { game: g, round: r1, body: Body::Sub(5, Sub { ready: true, stamp: st(4), ..Sub::default() }) });
-    s.apply(&Op { game: g, round: r1, body: Body::Ledger(1, 5, 6, st(5)) });
+    s.apply(&Op { game: g, gen: 0, round: r1, body: Body::Seat(5, Seat { name: "a".into(), active: true, stamp: st(3) }) });
+    s.apply(&Op { game: g, gen: 0, round: r1, body: Body::Sub(5, Sub { ready: true, stamp: st(4), ..Sub::default() }) });
+    s.apply(&Op { game: g, gen: 0, round: r1, body: Body::Ledger(1, 5, 6, st(5)) });
     let r2 = Round { seed: 2, n: 2, stamp: st(6), ..Round::default() };
-    s.apply(&Op { game: g, round: r2, body: Body::None });
+    s.apply(&Op { game: g, gen: 0, round: r2, body: Body::None });
     assert!(s.subs.is_empty());
     assert_eq!((s.players(), s.game_score()), (vec![5], 6));
     // A late op from round 1 doesn't resurrect anything.
-    s.apply(&Op { game: g, round: r1, body: Body::Sub(5, Sub { stamp: st(9), ..Sub::default() }) });
+    s.apply(&Op { game: g, gen: 0, round: r1, body: Body::Sub(5, Sub { stamp: st(9), ..Sub::default() }) });
     assert!(s.subs.is_empty());
     // A newer game wipes the lot.
-    s.apply(&Op { game: st(10), round: Round::default(), body: Body::None });
+    s.apply(&Op { game: st(10), gen: 1, round: Round::default(), body: Body::None });
     assert!(s.seats.is_empty() && s.ledger.is_empty());
 }
 

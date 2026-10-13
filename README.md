@@ -87,9 +87,11 @@ Boards from elsewhere (e.g. read off a screenshot of an old game) become ordinar
 ## Harness
 
 ```bash
-(cd core && cargo test --release)   # 12 native properties, incl. 300-seed convergence fuzz
-node harness/run.mjs                # 23 browser gates + metrics → harness/out/scorecard.json
+(cd core && cargo test --release)   # native properties, incl. the network simulator (300 chaotic games)
+node harness/run.mjs                # browser gates + metrics → harness/out/scorecard.json
 ```
+
+**The network simulator** (`core/tests/network.rs`) plays whole games on a simulated mesh that behaves like the real transport (one connection per pair, in-order delivery per connection, messages lost when a connection closes, a full sync each time one opens) with latency and jitter, links dropping and reconnecting, partitions that heal, devices going offline, reloading (restoring their save and rejoining under their saved name 1.5 s later, as the page does) or closing for good, while 3–5 players act at random: joining, writing, submitting, Proceed, dragging (and abandoning drags), guessing, jumping, dealing again, New game. After the chaos everything heals and goes quiet, and each run must show one state on every device, nobody connected without their seat, no game replaced without a New game, no card left drawn as held, and a round that can still be played to its end. 150 calm and 150 stormy games run with the tests; `SEEDS=2500` soaks longer, and a failure prints its seed and last events (`SEED=n … -- --nocapture` replays it with a full log). It found five real bugs, each now also a fixed scenario test: a fresh page that joined before syncing could start a game that replaced the table (the first deal now creates the game, and games rank by generation, rounds dealt, players dealt in, then age, so a lone device's deal can't overwrite a table in play); a table vanished if every device holding it reloaded (each device now keeps the table in localStorage, restored on load if under 6 hours old); a change that missed one peer could never reach it if its sender left (presence pings now carry a hash of the table, and devices that stay different resync); a phone that died mid-drag left its card drawn as held for everyone; and a round whose dealt-in players had all left, with nobody submitted, could only be escaped through the menu (the strip now offers *Deal again*).
 
 The browser harness drives the real UI through a whole game: 5 players (one phone-sized), a watcher, a seat takeover from a tablet, two rounds, and a New game. Latest scorecard (headless Chromium, WebRTC over loopback):
 

@@ -152,6 +152,9 @@ pub enum Body {
 #[derive(Clone, PartialEq, Debug)]
 pub struct Op {
     pub game: Stamp,
+    /// The game's generation: each New game is one more than the game it
+    /// replaced. Games rank by generation, rounds dealt, players dealt in, age.
+    pub gen: u16,
     pub round: Round,
     pub body: Body,
 }
@@ -168,6 +171,7 @@ pub enum Phase {
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Shared {
     pub game: Stamp,
+    pub gen: u16,
     pub seats: BTreeMap<u32, Seat>,
     /// (round n, writer) → (points, stamp).
     pub ledger: BTreeMap<(u16, u32), (u8, Stamp)>,
@@ -378,8 +382,15 @@ impl Shared {
     /// Merge one op. Returns true if anything changed.
     pub fn apply(&mut self, op: &Op) -> bool {
         let mut changed = false;
-        if op.game > self.game {
-            *self = Shared { game: op.game, ..Shared::default() };
+        // Two games meeting (devices that dealt before hearing from each
+        // other, or a New game made while cut off): the later generation wins
+        // (New game always does); within one, the game further along, then
+        // the one with more players dealt in, then the older. A lone device
+        // that dealt a fresh game can't overwrite a table in play. A device
+        // with no game yet joins any.
+        let rank = |gen: u16, r: &Round, game: Stamp| (game != Stamp::default(), gen, r.n, r.nseats, core::cmp::Reverse(game));
+        if op.game != self.game && rank(op.gen, &op.round, op.game) > rank(self.gen, &self.round, self.game) {
+            *self = Shared { game: op.game, gen: op.gen, ..Shared::default() };
             changed = true;
         }
         if op.game != self.game {
@@ -452,8 +463,8 @@ impl Shared {
 
     /// Every stored register, for full-state sync with a new peer.
     pub fn all_ops(&self) -> Vec<Op> {
-        let (g, r) = (self.game, self.round);
-        let op = |body| Op { game: g, round: r, body };
+        let (g, gen, r) = (self.game, self.gen, self.round);
+        let op = |body| Op { game: g, gen, round: r, body };
         let mut v = vec![op(Body::None)];
         v.extend(self.seats.iter().map(|(id, s)| op(Body::Seat(*id, s.clone()))));
         v.extend(self.ledger.iter().map(|((n, w), (p, s))| op(Body::Ledger(*n, *w, *p, *s))));
@@ -742,7 +753,9 @@ const T_CURSOR: u8 = 21;
 pub enum Msg {
     Op(Op),
     /// Presence heartbeat: a device and the seat it plays (0 = watching).
-    Hello { device: u32, seat: u32 },
+    /// `sum`: a hash of the sender's whole table, so devices that have
+    /// drifted apart notice and resync (see `App::on_packet`).
+    Hello { device: u32, seat: u32, sum: u32 },
     /// kind: 0 hidden, 1 tray coords, 2 board coords.
     Cursor { device: u32, seat: u32, kind: u8, x: f32, y: f32 },
 }
@@ -766,7 +779,7 @@ fn put_f32s(b: &mut Vec<u8>, v: &[f32]) {
 
 pub fn encode(m: &Msg, b: &mut Vec<u8>) {
     match m {
-        Msg::Op(Op { game, round, body }) => {
+        Msg::Op(Op { game, gen, round, body }) => {
             b.push(match body {
                 Body::None => T_NONE,
                 Body::Sub(..) => T_SUB,
@@ -778,6 +791,7 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 Body::Ledger(..) => T_LEDGER,
             });
             put_stamp(b, *game);
+            b.extend_from_slice(&gen.to_le_bytes());
             put_stamp(b, round.stamp);
             b.extend_from_slice(&round.seed.to_le_bytes());
             b.extend_from_slice(&round.n.to_le_bytes());
@@ -837,10 +851,11 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 }
             }
         }
-        Msg::Hello { device, seat } => {
+        Msg::Hello { device, seat, sum } => {
             b.push(T_HELLO);
             b.extend_from_slice(&device.to_le_bytes());
             b.extend_from_slice(&seat.to_le_bytes());
+            b.extend_from_slice(&sum.to_le_bytes());
         }
         Msg::Cursor { device, seat, kind, x, y } => {
             b.push(T_CURSOR);
@@ -899,7 +914,7 @@ impl<'a> Reader<'a> {
     fn msg(&mut self) -> Option<Msg> {
         let tag = self.u8()?;
         if tag == T_HELLO {
-            return Some(Msg::Hello { device: self.u32()?, seat: self.u32()? });
+            return Some(Msg::Hello { device: self.u32()?, seat: self.u32()?, sum: self.u32()? });
         }
         if tag == T_CURSOR {
             let (device, seat) = (self.u32()?, self.u32()?);
@@ -907,6 +922,7 @@ impl<'a> Reader<'a> {
             return Some(Msg::Cursor { device, seat, kind, x: self.f32()?, y: self.f32()? });
         }
         let game = self.stamp()?;
+        let gen = self.u16()?;
         let (stamp, seed, n) = (self.stamp()?, self.u32()?, self.u16()?);
         let nseats = self.u8().filter(|n| (*n as usize) <= MAX_PLAYERS)?;
         let mut seats = [0u32; MAX_PLAYERS];
@@ -968,7 +984,7 @@ impl<'a> Reader<'a> {
             }
             _ => return None,
         };
-        Some(Msg::Op(Op { game, round, body }))
+        Some(Msg::Op(Op { game, gen, round, body }))
     }
 }
 

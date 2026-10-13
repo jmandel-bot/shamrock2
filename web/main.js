@@ -612,6 +612,11 @@ function renderUi(force = false) {
       if ((s.ready || !s.inRound) && s.readyCount > 0 && s.readyCount < s.progress.length) {
         alt = [narrow ? `Proceed · ${s.readyCount}/${s.progress.length}` : `Proceed with ${s.readyCount} of ${s.progress.length}`, () => act(5)];
       }
+      // Everyone dealt in has gone and nobody submitted: nothing to proceed
+      // with, so offer a fresh deal for whoever is here.
+      if (!s.inRound && s.readyCount === 0 && s.progress.every((p) => p.away) && s.dealable.length) {
+        alt = [narrow ? 'Deal again' : `Deal again for ${plural(s.dealable.length, 'player')}`, () => act(6)];
+      }
       break;
     }
     case 'guessing':
@@ -773,6 +778,7 @@ function forgetTable(room) {
   delete t[room];
   remember(TABLES, JSON.stringify(t));
   remember(`shamrock:${room}:name`, null);
+  remember(`shamrock:${room}:state`, null);
 }
 /** Keep a finished round's clovers (answers included) on this device. */
 function logRound(s) {
@@ -941,6 +947,30 @@ async function connect() {
 const RELAYS = params.get('relays')?.split(',').map((h) => (h.includes('://') ? h : `wss://${h}`))
   ?? ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://nostr.mom', 'wss://relay.snort.social', 'wss://offchain.pub'];
 const REJOIN_FIRST_MS = +(params.get('rejoin') ?? 12000);
+
+// ---- this table, kept on the device -------------------------------------------
+
+// The whole table is saved here (every couple of seconds while it changes,
+// and as the page goes away) and restored on load, so a table survives even
+// if every device that held it reloads. A stale save merges like any other
+// sync, so it can't undo newer moves. Saves older than a few hours are
+// ignored: a table name reused another day starts fresh.
+const stateKey = `shamrock:${roomId}:state`;
+const STATE_TTL_MS = 6 * 3600e3;
+let savedState = '';
+function saveTable() {
+  const s = b64.enc(bytes(X.scratch_ptr(), X.snapshot()));
+  if (s !== savedState) { savedState = s; remember(stateKey, JSON.stringify({ at: Date.now(), s })); }
+}
+if (!solo && !home) {
+  const kept = readJson(stateKey, null);
+  if (kept?.s && Date.now() - kept.at < STATE_TTL_MS) {
+    try { X.on_message(writeInbox(b64.dec(kept.s)), 0); savedState = kept.s; } catch {}
+  }
+  setInterval(saveTable, 2000);
+  addEventListener('pagehide', saveTable);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveTable(); });
+}
 
 // Solo play (a share link) never connects to anyone.
 if (!solo && !home) connect().then((n) => { net = n; }, (e) => toast(`Can't connect: ${e.message}`, 10000));

@@ -321,6 +321,15 @@ pub extern "C" fn probe_shown_angle(i: u32) -> f32 {
 }
 
 /// Widest a card word may be (card units) before it would crowd a corner.
+/// The whole table, to keep on this device (see `App::snapshot`); feed it
+/// back with `on_message` after a reload.
+#[no_mangle]
+pub extern "C" fn snapshot() -> u32 {
+    let b = g().app.snapshot();
+    g().scratch = b;
+    g().scratch.len() as u32
+}
+
 /// The current clover for an automated player (see `App::agent_view_json`).
 #[no_mangle]
 pub extern "C" fn agent_view() -> u32 {

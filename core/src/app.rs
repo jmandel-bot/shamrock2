@@ -102,6 +102,8 @@ const FLING_S: f32 = 0.18;
 const FLING_WINDOW_MS: f64 = 120.0;
 const CURSOR_TTL_MS: f64 = 4000.0;
 const HELLO_EVERY_MS: f64 = 2000.0;
+/// At most one full resync per this long when tables drift apart.
+const RESYNC_EVERY_MS: f64 = 5000.0;
 /// Card word size, board units (a card is 210 across). Words are laid out
 /// per card from their measured widths (the shell measures every word in the
 /// card font, see `set_word_widths`): a word may run into a corner whenever
@@ -320,6 +322,9 @@ pub struct App {
     cursor_dirty: bool,
     last_cursor_ms: f64,
     last_hello_ms: f64,
+    /// Peers whose table hash differed from ours: device → (theirs, ours).
+    drift: BTreeMap<u32, (u32, u32)>,
+    last_resync_ms: f64,
     dirty_cards: BTreeSet<(u32, u8)>,
     last_phase: Phase,
     poses: BTreeMap<(u32, u8), Pose>,
@@ -368,6 +373,8 @@ impl App {
             cursor_dirty: false,
             last_cursor_ms: 0.0,
             last_hello_ms: f64::NEG_INFINITY,
+            drift: BTreeMap::new(),
+            last_resync_ms: f64::NEG_INFINITY,
             dirty_cards: BTreeSet::new(),
             last_phase: Phase::Lobby,
             poses: BTreeMap::new(),
@@ -416,7 +423,7 @@ impl App {
     }
 
     fn op(&self, body: Body) -> Op {
-        Op { game: self.shared.game, round: self.shared.round, body }
+        Op { game: self.shared.game, gen: self.shared.gen, round: self.shared.round, body }
     }
 
     /// Apply a locally-originated op and broadcast it.
@@ -451,8 +458,8 @@ impl App {
 
     fn hello(&mut self) {
         self.last_hello_ms = self.now;
-        let (device, seat) = (self.device, self.seat.unwrap_or(0));
-        self.send(&[Msg::Hello { device, seat }]);
+        let (device, seat, sum) = (self.device, self.seat.unwrap_or(0), self.state_sum());
+        self.send(&[Msg::Hello { device, seat, sum }]);
     }
 
     // ---- network in ---------------------------------------------------------
@@ -477,8 +484,9 @@ impl App {
                         self.new_round_local();
                     }
                 }
-                Msg::Hello { device, seat } if device != self.device => {
+                Msg::Hello { device, seat, sum } if device != self.device => {
                     self.peers.insert(device, (seat, link));
+                    self.compare_sums(device, sum);
                 }
                 Msg::Cursor { device, seat, kind, x, y } if device != self.device => {
                     let now = self.now;
@@ -506,9 +514,45 @@ impl App {
         }
     }
 
+    /// A hash of the whole table (FNV-1a over the snapshot).
+    fn state_sum(&self) -> u32 {
+        self.snapshot().iter().fold(0x811c_9dc5u32, |h, &b| (h ^ b as u32).wrapping_mul(0x0100_0193))
+    }
+
+    /// Changes go straight from whoever made them to each peer, and nobody
+    /// passes them on: one sent while a link was down, by a device that then
+    /// left, would never reach the far side if its other links stayed up.
+    /// So presence pings carry a hash of the table, and when a peer's differs
+    /// from ours twice running with neither side changing in between (not
+    /// just changes in flight), we send everything, at most every few seconds.
+    fn compare_sums(&mut self, device: u32, theirs: u32) {
+        let mine = self.state_sum();
+        if theirs == mine {
+            self.drift.remove(&device);
+            return;
+        }
+        if self.drift.insert(device, (theirs, mine)) == Some((theirs, mine)) && self.now - self.last_resync_ms >= RESYNC_EVERY_MS {
+            self.last_resync_ms = self.now;
+            self.drift.clear();
+            self.on_peer_join();
+        }
+    }
+
+    /// The whole table as one packet, for this device to keep (localStorage)
+    /// and feed back to `on_packet` after a reload: if every device that
+    /// held the table reloads or closes, the table survives. A stale save
+    /// merges like any other sync, so it can't undo newer moves.
+    pub fn snapshot(&self) -> Vec<u8> {
+        let mut b = Vec::new();
+        for op in self.shared.all_ops() {
+            encode(&Msg::Op(op), &mut b);
+        }
+        b
+    }
+
     pub fn on_peer_join(&mut self) {
         let mut msgs: Vec<Msg> = self.shared.all_ops().into_iter().map(Msg::Op).collect();
-        msgs.push(Msg::Hello { device: self.device, seat: self.seat.unwrap_or(0) });
+        msgs.push(Msg::Hello { device: self.device, seat: self.seat.unwrap_or(0), sum: self.state_sum() });
         self.send(&msgs);
     }
 
@@ -520,9 +564,9 @@ impl App {
         if name.is_empty() {
             return;
         }
-        if self.shared.game == Stamp::default() {
-            self.shared.game = self.stamp();
-        }
+        // No game is created here: a device that hasn't heard from its table
+        // yet must not start one, or its game (if later) would replace the
+        // table's when they meet. The first deal creates the game.
         let id = seat_id(&name);
         let stamp = self.stamp();
         self.commit(Body::Seat(id, Seat { name: name.clone(), active: true, stamp }));
@@ -531,16 +575,44 @@ impl App {
         self.hello();
     }
 
-    /// Joining before this device has heard from the table starts a game of
-    /// its own; when the tables meet, the later game replaces the earlier one
-    /// wholesale, seats included. Whoever was seated only in the replaced
-    /// game sits back down under the same name.
+    /// The first deal starts the game: re-sends every seat under it.
+    fn ensure_game(&mut self) {
+        if self.shared.game != Stamp::default() {
+            return;
+        }
+        let seats = std::mem::take(&mut self.shared.seats);
+        self.shared.game = self.stamp();
+        self.commit(Body::None);
+        for (id, seat) in seats {
+            let stamp = self.stamp();
+            self.commit(Body::Seat(id, Seat { stamp, ..seat }));
+        }
+    }
+
+    /// When two tables meet (devices that sat down before hearing from each
+    /// other, or a New game made while cut off), the later game replaces the
+    /// other wholesale, seats included. Whoever was seated only in the
+    /// replaced one sits back down under the same name.
     fn keep_my_seat(&mut self) {
         let (Some(id), Some(name)) = (self.seat, self.my_name.clone()) else { return };
         if self.shared.game != Stamp::default() && !self.shared.seats.contains_key(&id) {
             let stamp = self.stamp();
             self.commit(Body::Seat(id, Seat { name, active: true, stamp }));
         }
+    }
+
+    /// Cards still marked as held by my seat when my finger isn't down (I
+    /// reloaded mid-drag, or the release was lost) are let go where they lie.
+    fn let_go_of_stale_holds(&mut self) {
+        let (Some(me), None) = (self.seat, self.press.as_ref()) else { return };
+        let Phase::Guessing(k) = self.shared.phase() else { return };
+        let w = self.shared.puzzles()[k];
+        let stale: Vec<(usize, Card)> =
+            self.shared.layout(w).0.into_iter().enumerate().filter(|(_, c)| c.held == me).collect();
+        for (i, c) in stale {
+            self.set_card(w, i, c.loc, c.rot, 0);
+        }
+        self.flush_cards();
     }
 
     pub fn watch(&mut self) {
@@ -628,7 +700,15 @@ impl App {
             Phase::Guessing(k) => {
                 let w = s.puzzles()[k];
                 let d = s.deal(w);
-                let (cards, claim) = s.layout(w);
+                let (mut cards, claim) = s.layout(w);
+                // A hold only shows while its player is here: a phone that
+                // dropped mid-drag can't let go.
+                let here = self.present();
+                for c in &mut cards {
+                    if c.held != 0 && !here.contains(&c.held) {
+                        c.held = 0;
+                    }
+                }
                 let check = s.check(w);
                 let locked = if check.done() { 0b1111 } else { check.mask };
                 let can = self.seat.is_some_and(|me| me != w) && !check.done();
@@ -991,6 +1071,14 @@ impl App {
 
     /// Whether a press at this point would pick up a card (so the shell
     /// knows a one-finger drag elsewhere can pan its zoom instead).
+    /// Which card a touch at (px, py) would pick up (tests).
+    pub fn card_at_point(&self, px: f32, py: f32) -> Option<usize> {
+        match self.hit(px, py) {
+            Target::Card(i) => Some(i),
+            _ => None,
+        }
+    }
+
     pub fn on_card(&self, px: f32, py: f32) -> bool {
         matches!(self.hit(px, py), Target::Card(_))
     }
@@ -1317,12 +1405,13 @@ impl App {
         if self.custom_room && self.shared.round.n == 0 && !customs.is_empty() {
             return self.start_custom(customs, players);
         }
+        self.ensure_game();
         let prev = self.shared.round;
         // Draw down the deck: this round deals after the cards the last one used.
         let deck = if prev.n == 0 { 0 } else { prev.deck + (prev.nseats as usize * MAX_CARDS) as u32 };
         let round = Round { seed: self.rng.next() as u32, n: prev.n + 1, stamp: self.stamp(), deck, ..Round::default() }
             .with_players(&players);
-        let op = Op { game: self.shared.game, round, body: Body::None };
+        let op = Op { game: self.shared.game, gen: self.shared.gen, round, body: Body::None };
         self.shared.apply(&op);
         self.new_round_local();
         self.send(&[Msg::Op(op)]);
@@ -1330,11 +1419,12 @@ impl App {
 
     /// Round 1 of a room with imported clovers: straight to guessing them.
     fn start_custom(&mut self, customs: Vec<&'static Custom>, players: Vec<u32>) {
+        self.ensure_game();
         let mut seats: Vec<u32> = customs.iter().map(|c| c.writer()).collect();
         seats.extend(players);
         let round =
             Round { seed: self.rng.next() as u32, n: 1, stamp: self.stamp(), custom: 1, ..Round::default() }.with_players(&seats);
-        let op = Op { game: self.shared.game, round, body: Body::None };
+        let op = Op { game: self.shared.game, gen: self.shared.gen, round, body: Body::None };
         self.shared.apply(&op);
         self.new_round_local();
         self.send(&[Msg::Op(op)]);
@@ -1394,8 +1484,8 @@ impl App {
             .into_iter()
             .filter_map(|s| self.shared.seats.get(&s).map(|x| (s, x.name.clone())))
             .collect();
-        let game = self.stamp();
-        self.shared = Shared { game, ..Shared::default() };
+        let (game, gen) = (self.stamp(), self.shared.gen + 1);
+        self.shared = Shared { game, gen, ..Shared::default() };
         self.new_round_local();
         self.commit(Body::None);
         for (id, name) in here {
@@ -1467,6 +1557,7 @@ impl App {
             self.hello();
         }
         self.keep_my_seat();
+        self.let_go_of_stale_holds();
         self.maybe_start_guessing();
         let phase = self.shared.phase();
         // A clover just got finished: let the leaves glow briefly.

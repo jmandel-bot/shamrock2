@@ -93,6 +93,16 @@ try {
   await P[0].page.click('#recapClose');
   await P[0].page.click('#hint');
   check(await P[0].page.waitForSelector('#recapSheet.open', { timeout: 3000 }).then(() => true, () => false), 'tapping the status reopens the recap');
+
+  // Every page goes away; the table comes back from the device's own save.
+  {
+    for (const p of P) await p.page.close({ runBeforeUnload: true });
+    const again = await P[0].page.context().newPage();
+    await again.goto(`http://localhost:${PORT}/?signal=ws://localhost:${RELAY}#${room}`);
+    await again.waitForFunction(() => window.__cl?.tools);
+    const t = await again.evaluate(() => window.__cl.tools.get_table({}));
+    check(t.phase === 'end' && t.round === 1 && t.players.length === 3, 'with every page closed, a reopened page restores the table from this device', JSON.stringify({ phase: t.phase, round: t.round, players: t.players.length }));
+  }
 } finally {
   await browser.close();
   await srv.close();
