@@ -80,6 +80,7 @@
   #alt, #side { padding: 9px 12px; }
   .stepper { display: inline-flex; align-items: center; gap: 2px; background: var(--chip); border-radius: 999px; padding: 2px; font-size: 15px; font-weight: 600; }
   .stepper button { min-height: 40px; min-width: 38px; padding: 0; background: transparent; font-size: 22px; }
+  .stepper button:disabled { opacity: .3; }
   .stepper span { padding: 0 2px; white-space: nowrap; }
   @media (max-width: 480px) { .go { padding: 10px 16px; } #hint { font-size: 15px; } }
   .prefs { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -171,6 +172,7 @@
       <span class="stepper" id="size" title="Card size on your screen only"><button id="sizeDown" aria-label="Smaller cards">−</button><span>Card size</span><button id="sizeUp" aria-label="Bigger cards">+</button></span>
       <button id="fullBtn" hidden>Full screen</button>
     </div>
+    <p id="sizeNote" class="tip" hidden>That's as big as cards get while every card still fits. Pinch the board to zoom in further.</p>
     <div id="tipText" class="tip"></div>
     <div id="tableItems">
     <h2>Table</h2>

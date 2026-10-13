@@ -422,6 +422,7 @@ $('menuBtn').onclick = () => {
     return row;
   }));
   $('watchMenuBtn').hidden = !s.seated;
+  syncSize();
   $('menuSheet').classList.add('open');
 };
 $('closeMenu').onclick = closeSheets;
@@ -438,7 +439,24 @@ $('newGameBtn').onclick = () => { closeSheets(); act(7); };
 // Card size is per device (display only): bigger cards just overlap more.
 const zoomKey = 'shamrock:zoom';
 let zoom = X.set_zoom(+(recall(zoomKey) ?? (Math.min(innerWidth, innerHeight) < 520 ? 1.25 : 1)));
-const setZoom = (z) => { stats.presses++; zoom = X.set_zoom(z); remember(zoomKey, zoom); };
+const setZoom = (z) => { stats.presses++; zoom = X.set_zoom(z); remember(zoomKey, zoom); syncSize(); };
+// The size buttons step from what's drawn (a saved size can exceed what fits
+// right now) and grey out when a step would change nothing; past the limit,
+// pinch zoom takes over.
+const SIZE_STEP = 0.15;
+function sizeWouldChange(dz) {
+  const was = X.card_zoom(), saved = zoom;
+  X.set_zoom(was + dz);
+  const changed = Math.abs(X.card_zoom() - was) > 1e-3;
+  X.set_zoom(saved);
+  return changed;
+}
+function syncSize() {
+  const up = sizeWouldChange(SIZE_STEP), down = sizeWouldChange(-SIZE_STEP);
+  $('sizeUp').disabled = !up;
+  $('sizeDown').disabled = !down;
+  $('sizeNote').hidden = up;
+}
 // Full screen where the browser allows it (Android, desktop; not iPhone,
 // where "Add to Home Screen" gives the same via the manifest).
 const fullBtn = $('fullBtn');
@@ -451,8 +469,8 @@ fullBtn.onclick = () => {
   (document.fullscreenElement ? document.exitFullscreen() : fsEl.requestFullscreen({ navigationUI: 'hide' })).catch(() => {});
 };
 syncFull();
-$('sizeDown').onclick = () => setZoom(zoom - 0.15);
-$('sizeUp').onclick = () => setZoom(zoom + 0.15);
+$('sizeDown').onclick = () => setZoom(X.card_zoom() - SIZE_STEP);
+$('sizeUp').onclick = () => setZoom(X.card_zoom() + SIZE_STEP);
 
 const setDecoys = (d) => { X.set_decoys(Math.max(0, Math.min(4, d))); drainOutbox(); renderUi(true); };
 $('decDown').onclick = () => { stats.presses++; setDecoys(ui().decoys - 1); };

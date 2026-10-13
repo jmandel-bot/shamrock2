@@ -297,7 +297,9 @@ try {
     const w0 = await E.ev(() => window.__cl.wordPx());
     await E.page.click('#menuBtn');
     await E.page.waitForSelector('#menuSheet.open');
-    for (let k = 0; k < 4; k++) await E.page.click('#sizeUp');
+    for (let k = 0; k < 8 && !(await E.page.isDisabled('#sizeUp')); k++) await E.page.click('#sizeUp');
+    const atLimit = await E.page.isDisabled('#sizeUp') && await E.page.isVisible('#sizeNote') && !(await E.page.isDisabled('#sizeDown'));
+    gate('at the size limit, + greys out and the menu says to pinch for more', atLimit);
     await E.page.click('#closeMenu');
     const w1 = await E.ev(() => window.__cl.wordPx());
     metric('word_px_phone_max_size', w1, ' px');

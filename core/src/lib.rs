@@ -162,6 +162,12 @@ pub extern "C" fn remove_seat(id: u32) {
     g().app.remove_seat(id);
 }
 
+/// Card zoom as drawn now: the chosen size, capped so tray cards fit.
+#[no_mangle]
+pub extern "C" fn card_zoom() -> f32 {
+    g().app.card_zoom()
+}
+
 /// Local card size (display only). Returns the clamped value.
 #[no_mangle]
 pub extern "C" fn set_zoom(z: f32) -> f32 {
