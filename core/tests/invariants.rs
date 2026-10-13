@@ -1,6 +1,6 @@
 //! Native harness: properties the game must satisfy, independent of browsers.
 
-use cloverleaf::app::{App, EV_EDIT_CLUE, EV_NET, EV_SET_ASIDE, ZOOM_MAX, ZOOM_MIN};
+use cloverleaf::app::{App, EV_EDIT_CLUE, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE, EV_OUTDATED, ZOOM_MAX, ZOOM_MIN};
 use cloverleaf::model::*;
 
 const TAU: f32 = std::f32::consts::TAU;
@@ -158,7 +158,8 @@ fn solve(t: &mut Table, k: usize, decoy_in_spot0: bool) {
 #[test]
 fn wire_roundtrip() {
     let s = Stamp { clock: 99, peer: 7 };
-    let round = Round { epoch: 2, seed: 42, n: 3, stamp: Stamp { clock: 3, peer: 1 }, deck: 16, deck_seed: 77, ..Round::default() }
+    let st = |c, p| Stamp { clock: c, peer: p };
+    let round = Round { epoch: 2, seed: 42, n: 3, stamp: st(3, 1), deck: 16, table: st(1, 5), parent: st(2, 6), dealer: 9, ..Round::default() }
         .with_players(&[9, 4, 7]);
     let op = |body| Msg::Op(Op { round, body });
     let msgs = vec![
@@ -171,7 +172,8 @@ fn wire_roundtrip() {
         op(Body::Card(9, 4, Card { loc: Loc::Float { x: -3.0, y: 4.0 }, rot: 0, stamp: s })),
         op(Body::Check(9, Check { attempts: 1, mask: 0b0101, stamp: s })),
         op(Body::Next(3, s)),
-        Msg::Hello { device: 5, seat: 9, sum: 0xdead_beef },
+        op(Body::Move(st(1, 5), Moved { room: "quiet-heron-dell".into(), by: 9, stamp: s })),
+        Msg::Hello { device: 5, seat: 9, sum: 0xdead_beef, ver: PROTOCOL },
         Msg::Cursor { device: 5, seat: 9, kind: 2, x: 10.0, y: -10.0, card: Some(3) },
         Msg::Cursor { device: 5, seat: 9, kind: 1, x: 0.5, y: 0.5, card: None },
     ];
@@ -949,7 +951,7 @@ fn deals_are_whole_cards_from_a_draw_down_deck() {
     }
     assert_eq!(seen.len(), 4 * 3 * MAX_CARDS);
     // Every position maps to a card, and a full pass uses each card once.
-    let g = t.apps[0].shared.round.deck_seed;
+    let g = t.apps[0].shared.round.deck_seed();
     let pass: std::collections::HashSet<usize> = (0..220).map(|p| deck_card(g, p)).collect();
     assert_eq!(pass.len(), 220);
 }
@@ -1390,42 +1392,170 @@ fn pump_events(t: &mut Table) -> Vec<(usize, u8, String)> {
     events
 }
 
+/// Events of `kind` per device, as (device, JSON).
+fn of(events: &[(usize, u8, String)], kind: u8) -> Vec<(usize, String)> {
+    events.iter().filter(|e| e.1 == kind).map(|e| (e.0, e.2.clone())).collect()
+}
+
+/// Two devices that sat down apart, with a round dealt (one table).
+fn pair(names: [&str; 2], seed: u64) -> Table {
+    let mut t = Table { apps: vec![app(seed), app(seed + 1)], t: 0.0 };
+    for (k, n) in names.iter().enumerate() {
+        t.apps[k].join(n);
+        t.pump();
+    }
+    t.apps[0].action(1);
+    t.pump();
+    t
+}
+
+/// Merge two tables' devices onto one network: everyone connects.
+fn meet(a: Table, b: Table) -> (Table, Vec<(usize, u8, String)>) {
+    let mut t = Table { apps: a.apps.into_iter().chain(b.apps).collect(), t: a.t.max(b.t) + 1000.0 };
+    for a in t.apps.iter_mut() {
+        a.on_peer_join();
+    }
+    let ev = pump_events(&mut t);
+    (t, ev)
+}
+
+#[test]
+fn every_round_change_is_explained_once_by_what_it_was() {
+    let mut t = Table::new(3);
+    t.apps[0].action(1);
+    pump_events(&mut t);
+    // Dealt by someone else: "next", naming the dealer; the dealer hears nothing.
+    t.apps[1].action(6);
+    let ev = pump_events(&mut t);
+    let n = of(&ev, EV_NOTICE);
+    assert_eq!(n.len(), 2, "{n:?}");
+    assert!(n.iter().all(|(k, j)| *k != 1 && j.contains("\"kind\":\"next\"") && j.contains("\"by\":\"Player 1\"")), "{n:?}");
+    // A New game.
+    t.apps[2].action(7);
+    let n = of(&pump_events(&mut t), EV_NOTICE);
+    assert!(n.len() == 2 && n.iter().all(|(_, j)| j.contains("\"kind\":\"newGame\"") && j.contains("Player 2")), "{n:?}");
+    // Two deals cross while cut off from each other: the loser hears "crossed".
+    t.apps[0].action(1);
+    pump_events(&mut t);
+    t.apps[2].action(6);
+    t.apps[1].action(6); // both before any delivery: neither has seen the other's
+    let n = of(&pump_events(&mut t), EV_NOTICE);
+    assert!(n.iter().any(|(_, j)| j.contains("\"kind\":\"crossed\"")), "{n:?}");
+    // Rounds missed while away: a device that slept through two deals.
+    let mut away = t.apps.pop().unwrap();
+    for k in 0..2 {
+        t.apps[k].on_link_lost(3);
+    }
+    t.apps[0].action(6);
+    t.pump();
+    t.apps[1].action(6);
+    t.pump();
+    drain(&mut away);
+    t.apps.push(away);
+    for a in t.apps.iter_mut() {
+        a.on_peer_join();
+    }
+    let n = of(&pump_events(&mut t), EV_NOTICE);
+    assert!(n.len() == 1 && n[0].0 == 2 && n[0].1.contains("\"kind\":\"missed\""), "{n:?}");
+    assert!(t.digests_equal());
+}
+
 #[test]
 fn two_groups_meeting_in_one_room_merge_and_the_displaced_round_is_kept() {
-    let pair = |names: [&str; 2], seed: u64| {
-        let mut t = Table { apps: vec![app(seed), app(seed + 1)], t: 0.0 };
-        for (k, n) in names.iter().enumerate() {
-            t.apps[k].join(n);
-            t.pump();
-        }
-        t.apps[0].action(1);
-        t.pump();
-        t
-    };
     // Ana and Ben are writing their first round; Cy and Dee are a round ahead.
     let mut ab = pair(["Ana", "Ben"], 81);
     write(&mut ab.apps[0], ["moon", "", "", ""]);
     ab.pump();
     let mut cd = pair(["Cy", "Dee"], 91);
-    cd.apps[1].action(6); // deal new cards: their round 2
-    let quiet = pump_events(&mut cd);
-    assert!(quiet.iter().all(|e| e.1 != EV_SET_ASIDE), "a table's own next round isn't a displacement");
-    // They meet.
-    let mut t = Table { apps: ab.apps.into_iter().chain(cd.apps).collect(), t: 1000.0 };
-    for a in t.apps.iter_mut() {
-        a.on_peer_join();
-    }
-    let events = pump_events(&mut t);
+    cd.apps[1].action(6);
+    cd.pump();
+    let (mut t, events) = meet(ab, cd);
     assert!(t.digests_equal());
     assert_eq!((t.apps[0].shared.round.n, t.apps[0].shared.players().len()), (2, 4), "one table: the round further along, everyone seated");
-    let aside: Vec<&(usize, u8, String)> = events.iter().filter(|e| e.1 == EV_SET_ASIDE).collect();
-    let ana = aside.iter().find(|e| e.0 == 0).expect("Ana is told");
-    assert!(ana.2.contains("\"Cy\"") && ana.2.contains("\"Dee\"") && ana.2.contains("moon") && ana.2.contains("\"newGame\":false"), "{}", ana.2);
-    assert!(aside.iter().all(|e| e.0 < 2), "Cy and Dee lost nothing: {aside:?}");
+    let notices = of(&events, EV_NOTICE);
+    let ana = notices.iter().find(|e| e.0 == 0).expect("Ana is told");
+    assert!(ana.1.contains("\"kind\":\"otherTable\"") && ana.1.contains("\"Cy\"") && ana.1.contains("\"Dee\"") && !ana.1.contains("\"Ben\""), "{}", ana.1);
+    assert!(notices.iter().all(|e| e.0 < 2), "Cy and Dee lost nothing and are told nothing: {notices:?}");
+    let kept = of(&events, EV_KEEP);
+    assert!(kept.iter().any(|(k, j)| *k == 0 && j.contains("moon") && j.contains("\"finished\":false")), "Ana keeps her round: {kept:?}");
+    // A late edit to the replaced round (it crossed the merge) still lands there.
+    let r1 = t.apps[1].aside.as_ref().unwrap().round;
+    let late = Op { round: r1, body: Body::Sub(seat_id("Ben"), Sub { clues: ["late".into(), "".into(), "".into(), "".into()], stamp: Stamp { clock: 999, peer: 3 }, ..Sub::default() }) };
+    let mut b = Vec::new();
+    encode(&Msg::Op(late), &mut b);
+    t.apps[0].on_packet(&b, 2);
+    let (_, ev) = drain(&mut t.apps[0]);
+    assert!(ev.iter().any(|(k, j)| *k == EV_KEEP && String::from_utf8_lossy(j).contains("late")), "the kept round is updated");
     // Next round deals everyone in.
     t.apps[2].action(6);
     t.pump();
     assert_eq!(t.apps[0].shared.round.players().len(), 4);
+}
+
+#[test]
+fn a_moved_group_is_offered_the_move_and_nobody_else_is() {
+    let mut ab = pair(["Ana", "Ben"], 61);
+    write(&mut ab.apps[1], ["kept", "", "", ""]);
+    ab.pump();
+    let mut cd = pair(["Cy", "Dee"], 71);
+    cd.apps[0].action(6);
+    cd.pump();
+    let (mut t, _) = meet(ab, cd);
+    // Cy and Dee came from the winning table: there's nothing to move.
+    assert!(t.apps[2].record_move("nope").is_none());
+    // Ana moves her group.
+    let seed = t.apps[0].record_move("quiet-heron-dell").expect("Ana came from another table");
+    let ev = pump_events(&mut t);
+    let moved = of(&ev, EV_MOVED);
+    assert_eq!(moved.len(), 1, "only Ben is offered it (Ana did it): {moved:?}");
+    assert!(moved[0].0 == 1 && moved[0].1.contains("quiet-heron-dell") && moved[0].1.contains("\"by\":\"Ana\""), "{moved:?}");
+    // The new room, seeded from Ana's copy and Ben's, is their table again,
+    // with Ben's draft; the old room carries on as it was.
+    let mut new_room = Table { apps: vec![app(500), app(501)], t: 0.0 };
+    new_room.apps[0].on_packet(&seed, 0);
+    let bens = t.apps[1].origin_snapshot().unwrap();
+    new_room.apps[1].on_packet(&bens, 0);
+    new_room.apps[0].join("Ana");
+    new_room.apps[1].join("Ben");
+    for a in new_room.apps.iter_mut() {
+        a.on_peer_join();
+    }
+    new_room.pump();
+    assert!(new_room.digests_equal());
+    let s = &new_room.apps[0].shared;
+    assert_eq!((s.round.n, s.players().len()), (1, 2));
+    assert_eq!(s.latest(seat_id("Ben")).map(|x| x.clues[0].clone()), Some("kept".into()));
+    assert_eq!(t.apps[2].shared.round.n, 2, "the old room is untouched");
+}
+
+#[test]
+fn a_page_that_hears_a_newer_protocol_asks_to_reload_and_stops_sending_changes() {
+    let mut t = Table::new(2);
+    let mut b = Vec::new();
+    encode(&Msg::Hello { device: 77, seat: 0, sum: 0, ver: PROTOCOL + 1 }, &mut b);
+    t.apps[0].on_packet(&b, 9);
+    t.apps[0].action(1);
+    let (net, ev) = drain(&mut t.apps[0]);
+    assert!(ev.iter().any(|(k, _)| *k == EV_OUTDATED));
+    assert!(net.iter().all(|p| decode(p).iter().all(|m| !matches!(m, Msg::Op(_)))), "no table changes go out");
+}
+
+#[test]
+fn a_round_that_ends_is_kept_once_finished() {
+    let mut t = table_in_guessing(2);
+    let mut events = Vec::new();
+    for _ in 0..2 {
+        let w = t.writer_now();
+        let g = t.guesser_for(w);
+        solve(&mut t, g, false);
+        t.apps[g].action(3);
+        events.extend(pump_events(&mut t));
+        t.apps[g].action(4);
+        events.extend(pump_events(&mut t));
+    }
+    assert_eq!(t.apps[0].shared.phase(), Phase::End);
+    let kept = of(&events, EV_KEEP);
+    assert!((0..2).all(|k| kept.iter().any(|(d, j)| *d == k && j.contains("\"finished\":true"))), "{kept:?}");
 }
 
 #[test]
@@ -1437,7 +1567,8 @@ fn a_new_game_mid_round_keeps_the_round_it_replaced() {
     t.pump();
     t.apps[0].action(7);
     let events = pump_events(&mut t);
-    let aside: Vec<_> = events.iter().filter(|e| e.1 == EV_SET_ASIDE).collect();
-    assert_eq!(aside.len(), 1, "only the other device is told (the one who pressed knows): {aside:?}");
-    assert!(aside[0].0 == 1 && aside[0].2.contains("\"newGame\":true") && aside[0].2.contains("kept"), "{}", aside[0].2);
+    let kept = of(&events, EV_KEEP);
+    assert!(kept.iter().any(|(k, j)| *k == 0 && j.contains("kept")) && kept.iter().any(|(k, j)| *k == 1 && j.contains("kept")), "both keep it: {kept:?}");
+    let n = of(&events, EV_NOTICE);
+    assert!(n.len() == 1 && n[0].0 == 1 && n[0].1.contains("newGame"), "only the other device is told: {n:?}");
 }

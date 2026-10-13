@@ -110,9 +110,16 @@ const stats = { joins: 0, sentPackets: 0, sentBytes: 0, recvPackets: 0, recvByte
 let net = null;
 
 let toastTimer = 0;
-function toast(msg, ms = 4500) {
+/** A one-line notice; `action` = [label, onclick] adds a button to it. */
+function toast(msg, ms = 4500, action = null) {
   const t = $('toast');
   t.textContent = msg;
+  if (action) {
+    const b = Object.assign(document.createElement('button'), { textContent: action[0] });
+    b.onclick = () => { t.classList.remove('show'); action[1](); };
+    t.append(b);
+  }
+  t.classList.toggle('act', !!action);
   t.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), ms);
@@ -121,6 +128,7 @@ function toast(msg, ms = 4500) {
 function drainOutbox() {
   const len = X.outbox_len();
   if (!len) return;
+  let keptUnfinished = false;
   const out = bytes(X.outbox_ptr(), len).slice();
   X.outbox_clear();
   const dv = new DataView(out.buffer);
@@ -136,8 +144,16 @@ function drainOutbox() {
       openClueEditor(body[0], x, y, w, h, angle, dec.decode(body.subarray(21)));
     } else if (kind === 3) {
       toast(dec.decode(body));
+    } else if (kind === 5) {
+      const k = JSON.parse(dec.decode(body));
+      keepRound(k);
+      if (!k.finished) keptUnfinished = true;
     } else if (kind === 4) {
-      setAside(JSON.parse(dec.decode(body)));
+      notice(JSON.parse(dec.decode(body)), keptUnfinished);
+    } else if (kind === 6) {
+      moved(JSON.parse(dec.decode(body)));
+    } else if (kind === 7) {
+      toast('A newer version of Shamrock is at this table. Reload to keep playing.', 1e9, ['Reload', () => location.reload()]);
     }
   }
 }
@@ -465,6 +481,7 @@ $('joinForm').onsubmit = (e) => {
 $('watchBtn').onclick = watch;
 $('menuBtn').onclick = () => {
   const s = ui();
+  renderHappened();
   $('linkText').textContent = location.href;
   // Everyone at the table, by name, with what they're up to.
   const doing = { writing: 'writing', ready: 'submitted', writer: 'their clover is up' };
@@ -500,6 +517,7 @@ $('switchBtn').onclick = () => { closeSheets(); openJoin(); };
 $('watchMenuBtn').onclick = watch;
 $('redealBtn').onclick = () => { closeSheets(); act(6); };
 $('newGameBtn').onclick = () => { closeSheets(); act(7); };
+$('freshBtn').onclick = () => { closeSheets(); freshTable(); };
 
 // Card size is per device (display only): bigger cards just overlap more.
 const zoomKey = 'shamrock:zoom';
@@ -646,7 +664,6 @@ function renderUi(force = false) {
       side = ['Share', openShare];
       break;
   }
-  if (!solo && !home && s.phase === 'end') logRound(s);
   // When a round ends, its recap opens once by itself; the status reopens it.
   if (!home && s.phase === 'end' && recapShown !== s.round) { recapShown = s.round; setTimeout(openRecap, 600); }
   // Not connected to anyone: say so rather than look normal while broken.
@@ -758,7 +775,11 @@ function startAt(room, name) {
   if (name) { remember(NAME, name); remember(`shamrock:${room}:name`, name); }
   goTo(room);
 }
-const tableUrl = (room) => `${location.origin}${location.pathname}${room ? `#${room}` : ''}`;
+// Links to other tables keep the network this page is on (a private
+// signaling relay, a relay list, test switches), and nothing else.
+const NET_PARAMS = ['signal', 'relays', 'net', 'rejoin', 'chaos'];
+const netQuery = () => { const q = new URLSearchParams(NET_PARAMS.filter((k) => params.has(k)).map((k) => [k, params.get(k)])).toString(); return q ? `?${q}` : ''; };
+const tableUrl = (room) => `${location.origin}${location.pathname}${netQuery()}${room ? `#${room}` : ''}`;
 // The page is one table (or the home page) for its whole life: when the
 // #room changes, as with Back/Forward between the home page and a table,
 // start over as whatever the address now says.
@@ -791,27 +812,100 @@ function forgetTable(room) {
   remember(`shamrock:${room}:state`, null);
 }
 /** Keep a finished round's clovers (answers included) on this device. */
-function logRound(s) {
-  keepRound(scratchJson(X.review()), s.round, s.players.map((p) => p.name));
-}
-function keepRound(boards, round, players, extra = {}) {
-  if (!boards.length) return;
-  const id = boards.map((b) => b.text).join('\n\n');
+/** Keep (or update) a round in Past games, by its key (table and round).
+ *  Rust raises this when a round with anything in it ends or stops being
+ *  current, for any reason, and again if a late change reaches it. */
+function keepRound(k) {
+  if (solo || home || !k.boards.length) return;
   const log = readJson(LOG, []);
-  if (log.some((e) => e.id === id)) return;
-  log.unshift({ id, room: roomId, round, at: Date.now(), players, boards, ...extra });
+  const i = log.findIndex((e) => e.id === k.key);
+  const at = i >= 0 ? log[i].at : Date.now();
+  if (i >= 0) log.splice(i, 1);
+  log.unshift({ id: k.key, room: roomId, round: k.n, at, players: k.players, boards: k.boards, finished: k.finished });
   remember(LOG, JSON.stringify(log.slice(0, LOG_MAX)));
 }
-/** The round I was playing was replaced: by another group's game in this
- *  room (they met), or by a New game. Say what happened, and keep it. */
-function setAside({ newGame, round, names: who, boards }) {
-  if (solo || home) return;
-  keepRound(boards, round, boards.map((b) => b.text.split('\n')[0]), { setAside: true });
-  const kept = boards.length ? ' The round you were playing is saved in Past games.' : '';
-  const dealt = ui().inRound ? '' : " You're dealt in next round.";
-  toast(newGame ? `A new game started here.${kept}`
-    : `${names(who)} ${who.length === 1 ? 'was' : 'were'} already playing here, so you've joined their game.${dealt}${kept}`, 12000);
+
+// ---- what happened at this table ------------------------------------------------
+
+// Every change of round someone else made, as one line, kept on this device
+// (the last 10, in the menu) besides the notice itself.
+const HAPPENED = `shamrock:${roomId}:happened`;
+const ACTIONS = { move: () => moveGroup(), follow: (a) => followMove(a.room) };
+function happened(text, action) {
+  toast(text, action ? 20000 : 8000, action && [action.label, () => ACTIONS[action.kind](action)]);
+  const list = readJson(HAPPENED, []);
+  list.unshift({ at: Date.now(), text, action });
+  remember(HAPPENED, JSON.stringify(list.slice(0, 10)));
 }
+function notice({ kind, by, n, dealtIn, names: others }, kept) {
+  if (solo || home) return;
+  const who = by ?? 'Someone';
+  const later = dealtIn ? '' : " You're in next round.";
+  const text = {
+    next: `${who} dealt round ${n}.${later}`,
+    missed: `${who} dealt round ${n} while you were away.${later}`,
+    crossed: `${who} dealt at the same moment as you; continuing ${who}'s.${later}`,
+    newGame: `${who} started a new game.`,
+    otherTable: `${others.length ? names(others) : 'Others'} ${others.length === 1 ? 'has' : 'have'} also been playing at this table.${later}`,
+  }[kind] + (kept ? ' Your round is in Past games.' : '');
+  happened(text, kind === 'otherTable' ? { label: 'Move us to a new table', kind: 'move' } : null);
+}
+function moved({ room, by }) {
+  happened(`${by} moved your group to #${room}.`, { label: `Go to #${room}`, kind: 'follow', room });
+}
+function renderHappened() {
+  const list = readJson(HAPPENED, []);
+  $('happenedEmpty').hidden = list.length > 0;
+  $('happenedList').replaceChildren(...list.map((e) => {
+    const d = Object.assign(document.createElement('div'), { className: 'happened' });
+    d.innerHTML = `<small>${when(e.at)}</small>${esc(e.text)}`;
+    if (e.action) {
+      const b = Object.assign(document.createElement('button'), { className: 'menuBtn', textContent: e.action.label });
+      b.onclick = () => { closeSheets(); ACTIONS[e.action.kind](e.action); };
+      d.append(b);
+    }
+    return d;
+  }));
+}
+
+// ---- moving to a fresh table ------------------------------------------------------
+
+/** Open `room` with `seed` (a table, as a sync packet) as its saved table,
+ *  and this player's name, so it arrives seated where it left off. */
+function seedRoom(room, seed) {
+  remember(`shamrock:${room}:state`, JSON.stringify({ at: Date.now(), v: X.protocol(), s: b64.enc(seed) }));
+  const name = ui().name ?? myName();
+  if (name) { remember(`shamrock:${room}:name`, name); remember(NAME, name); }
+}
+const scratchBytes = (len) => bytes(X.scratch_ptr(), len).slice();
+/** Two tables met here: take my group (the table I came from) to a new room,
+ *  and leave word here for the rest of the group. */
+function moveGroup() {
+  // Moving says who did it: sit down under your name first if the page
+  // hasn't yet (it rejoins 1.5 s after opening).
+  if (!ui().seated && recall(nameKey)) joinAs(recall(nameKey));
+  const room = suggestRoom();
+  const len = X.record_move(writeText(room));
+  if (!len) return toast('Only a group whose game was set aside here can move.');
+  const seed = scratchBytes(len);
+  drainOutbox();
+  seedRoom(room, seed);
+  setTimeout(() => goTo(room), 800); // let the word reach the others first
+}
+/** Follow my group's move, bringing my own copy of our table. */
+function followMove(room) {
+  const len = X.origin_snapshot();
+  if (len) seedRoom(room, scratchBytes(len));
+  goTo(room);
+}
+/** Split off: this table, as it is, at a new room; send the link to anyone. */
+function freshTable() {
+  const room = suggestRoom();
+  seedRoom(room, scratchBytes(X.snapshot()));
+  try { sessionStorage.setItem('shamrock:fresh', room); } catch {}
+  goTo(room);
+}
+
 /** A finished clover, read-only: each clue on its leaf with the two words
  *  it linked, round the four answer cards showing only their outward words. */
 function cloverHtml(b) {
@@ -857,10 +951,12 @@ function openLog() {
   list.replaceChildren(...log.map((e, i) => {
     const d = document.createElement('details');
     d.className = 'logEntry';
-    d.innerHTML = `<summary><b>${when(e.at)}</b> · round ${e.round} at #${esc(e.room)}${e.setAside ? ' · set aside' : ''}<br><small>${esc(e.players.join(', '))} · ${e.boards.length} clover${e.boards.length === 1 ? '' : 's'}</small></summary>
+    const playable = e.boards.filter((b) => b.text.split('\n').slice(1, 5).every((c) => c.trim()));
+    d.innerHTML = `<summary><b>${when(e.at)}</b> · round ${e.round} at #${esc(e.room)}${e.finished === false ? ' · unfinished' : ''}<br><small>${esc(e.players.join(', '))} · ${e.boards.length} clover${e.boards.length === 1 ? '' : 's'}</small></summary>
       ${e.boards.map(cloverHtml).join('')}
-      <div class="row"><button class="go replay">Play these again</button><button class="forget">Delete</button></div>`;
-    d.querySelector('.replay').onclick = async () => { location.href = await shareFromText(e.boards.map((b) => b.text)); };
+      <div class="row"><button class="go replay"${playable.length ? '' : ' hidden'}>Play ${playable.length === e.boards.length ? 'these' : 'the finished clovers'} again</button><button class="forget">Delete</button></div>`;
+    // Only clovers with all four clues can be played; half-written ones are for reading.
+    d.querySelector('.replay').onclick = async () => { location.href = await shareFromText(playable.map((b) => b.text)); };
     d.querySelector('.forget').onclick = () => {
       remember(LOG, JSON.stringify(readJson(LOG, []).filter((x) => x.id !== e.id)));
       d.remove();
@@ -982,11 +1078,12 @@ const STATE_TTL_MS = 6 * 3600e3;
 let savedState = '';
 function saveTable() {
   const s = b64.enc(bytes(X.scratch_ptr(), X.snapshot()));
-  if (s !== savedState) { savedState = s; remember(stateKey, JSON.stringify({ at: Date.now(), s })); }
+  if (s !== savedState) { savedState = s; remember(stateKey, JSON.stringify({ at: Date.now(), v: X.protocol(), s })); }
 }
 if (!solo && !home) {
   const kept = readJson(stateKey, null);
-  if (kept?.s && Date.now() - kept.at < STATE_TTL_MS) {
+  // Only a save in this page's message format (an older one starts fresh).
+  if (kept?.s && kept.v === X.protocol() && Date.now() - kept.at < STATE_TTL_MS) {
     try { X.on_message(writeInbox(b64.dec(kept.s)), 0); savedState = kept.s; } catch {}
   }
   setInterval(saveTable, 2000);
@@ -1014,6 +1111,13 @@ if (home) {
   if (saved) setTimeout(() => joinAs(saved), 1500);
   else if (saved === null) setTimeout(() => { if (!ui().seated) openJoin(); }, 900);
 }
+// Just split off to this fresh table: say where we are and offer the invite.
+try {
+  if (!home && sessionStorage.getItem('shamrock:fresh') === roomId) {
+    sessionStorage.removeItem('shamrock:fresh');
+    setTimeout(() => toast(`Your game is here at #${roomId}. Send the link to whoever should join.`, 15000, ['Invite', () => $('invite').onclick()]), 1700);
+  }
+} catch {}
 
 // ---- frame loop ---------------------------------------------------------------
 

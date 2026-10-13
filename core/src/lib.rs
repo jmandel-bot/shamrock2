@@ -330,6 +330,39 @@ pub extern "C" fn snapshot() -> u32 {
     g().scratch.len() as u32
 }
 
+/// Move this device's group to the room named in the inbox (see
+/// `App::record_move`). Returns the group's table to seed the new room with
+/// (in scratch), or 0 if this device didn't come from another table.
+#[no_mangle]
+pub extern "C" fn record_move(len: u32) -> u32 {
+    let room = inbox_str(len);
+    match g().app.record_move(&room) {
+        Some(b) => {
+            g().scratch = b;
+            g().scratch.len() as u32
+        }
+        None => 0,
+    }
+}
+
+/// The table this device came from, to follow its group's move (scratch), or 0.
+#[no_mangle]
+pub extern "C" fn origin_snapshot() -> u32 {
+    match g().app.origin_snapshot() {
+        Some(b) => {
+            g().scratch = b;
+            g().scratch.len() as u32
+        }
+        None => 0,
+    }
+}
+
+/// The message format version (saves are kept only for the same one).
+#[no_mangle]
+pub extern "C" fn protocol() -> u32 {
+    crate::model::PROTOCOL as u32
+}
+
 /// Cards other players are dragging right now, as JSON {card: seat} (tests).
 #[no_mangle]
 pub extern "C" fn holds() -> u32 {

@@ -17,7 +17,7 @@
 //! `SEED=123 cargo test --release --test network -- --nocapture` replays one
 //! run with its event log.
 
-use cloverleaf::app::{App, EV_NET};
+use cloverleaf::app::{keep_json, App, EV_KEEP, EV_NET, EV_NOTICE};
 use cloverleaf::model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,18 +30,26 @@ fn app(seed: u64) -> App {
     a
 }
 
-/// Network packets from an outbox (other events are dropped).
-fn packets(a: &mut App) -> Vec<Vec<u8>> {
+/// An outbox split into network packets and the other events.
+fn packets(a: &mut App) -> (Vec<Vec<u8>>, Vec<(u8, String)>) {
     let b = std::mem::take(&mut a.outbox);
-    let (mut out, mut p) = (Vec::new(), 0);
+    let (mut out, mut ev, mut p) = (Vec::new(), Vec::new(), 0);
     while p < b.len() {
         let len = u32::from_le_bytes(b[p + 1..p + 5].try_into().unwrap()) as usize;
+        let body = &b[p + 5..p + 5 + len];
         if b[p] == EV_NET {
-            out.push(b[p + 5..p + 5 + len].to_vec());
+            out.push(body.to_vec());
+        } else {
+            ev.push((b[p], String::from_utf8_lossy(body).into_owned()));
         }
         p += 5 + len;
     }
-    out
+    (out, ev)
+}
+
+/// A round's Past games key, as `keep_json` writes it.
+fn round_key(r: &Round) -> String {
+    format!("{}.{}/{}.{}", r.table.clock, r.table.peer, r.stamp.clock, r.stamp.peer)
 }
 
 struct Dev {
@@ -57,6 +65,14 @@ struct Dev {
     /// The furthest this device's table has got (epoch, round): what a
     /// merge must never take away from it.
     best: (u16, u16),
+    /// Rounds it has kept in Past games (EV_KEEP), and the first round that
+    /// had something in it when it was replaced but wasn't kept.
+    kept: BTreeSet<String>,
+    lost: Option<String>,
+    /// Notices raised (EV_NOTICE), and the first round change that didn't
+    /// raise exactly one.
+    notices: u32,
+    notice_bad: Option<String>,
 }
 
 struct Packet {
@@ -92,6 +108,8 @@ struct Sim {
     rough: Rough,
     seed: u64,
     log: Vec<String>,
+    /// Notices raised in this run, by kind (coverage).
+    kinds: BTreeMap<String, u32>,
     loads: u64,
 }
 
@@ -102,7 +120,7 @@ fn pair(i: usize, j: usize) -> (usize, usize) {
 impl Sim {
     fn new(seed: u64, n: usize, rough: Rough) -> Sim {
         let devs = (0..n)
-            .map(|k| Dev { app: Some(app(seed * 100 + k as u64 + 1)), name: None, join_at: None, online: true, dragging: false, saved: Vec::new(), best: (0, 0) })
+            .map(|k| Dev { app: Some(app(seed * 100 + k as u64 + 1)), name: None, join_at: None, online: true, dragging: false, saved: Vec::new(), best: (0, 0), kept: BTreeSet::new(), lost: None, notices: 0, notice_bad: None })
             .collect();
         Sim {
             devs,
@@ -116,6 +134,7 @@ impl Sim {
             rough,
             seed,
             log: Vec::new(),
+            kinds: BTreeMap::new(),
             loads: 0,
         }
     }
@@ -134,7 +153,21 @@ impl Sim {
     /// Send everything device `k` has queued on each of its open connections.
     fn flush(&mut self, k: usize) {
         let Some(a) = self.devs[k].app.as_mut() else { return };
-        let out = packets(a);
+        let (out, events) = packets(a);
+        for (kind, json) in events {
+            match kind {
+                EV_NOTICE => {
+                    self.devs[k].notices += 1;
+                    let kind = json.split("\"kind\":\"").nth(1).and_then(|t| t.split('"').next()).unwrap_or("?");
+                    *self.kinds.entry(kind.to_string()).or_default() += 1;
+                }
+                EV_KEEP => {
+                    let key = json.split("\"key\":\"").nth(1).and_then(|t| t.split('"').next()).unwrap_or_default();
+                    self.devs[k].kept.insert(key.to_string());
+                }
+                _ => {}
+            }
+        }
         if out.is_empty() {
             return;
         }
@@ -151,6 +184,15 @@ impl Sim {
                 self.last_at.insert((k, to), at);
                 self.inflight.push(Packet { at, to, conn, bytes: bytes.clone() });
             }
+        }
+    }
+
+    /// A round with anything in it that just stopped being current must be
+    /// in the device's Past games.
+    fn check_kept(&mut self, k: usize, before: Round, after: Round, had: bool) {
+        let d = &mut self.devs[k];
+        if had && before.stamp != after.stamp && !d.kept.contains(&round_key(&before)) && d.lost.is_none() {
+            d.lost = Some(round_key(&before));
         }
     }
 
@@ -200,6 +242,7 @@ impl Sim {
                 self.devs[k].app.as_mut().unwrap().frame(now);
                 let r = self.devs[k].app.as_ref().unwrap().shared.round;
                 self.devs[k].best = self.devs[k].best.max((r.epoch, r.n));
+
                 if (now / TICK) as u64 % 100 == k as u64 {
                     self.devs[k].saved = self.devs[k].app.as_ref().unwrap().snapshot();
                 }
@@ -212,7 +255,20 @@ impl Sim {
         for p in self.inflight.drain(..due).collect::<Vec<_>>() {
             if open.contains(&p.conn) {
                 if let Some(a) = self.devs[p.to].app.as_mut() {
+                    // Exactly one notice per change of round from outside
+                    // (none when arriving: no table yet), none otherwise.
+                    let before = a.shared.round;
+                    let had = keep_json(&a.shared).is_some();
                     a.on_packet(&p.bytes, p.conn);
+                    let after = a.shared.round;
+                    let n0 = self.devs[p.to].notices;
+                    self.flush(p.to);
+                    self.check_kept(p.to, before, after, had);
+                    let want = (before.stamp != after.stamp && before.table != Stamp::default()) as u32;
+                    let got = self.devs[p.to].notices - n0;
+                    if got != want && self.devs[p.to].notice_bad.is_none() {
+                        self.devs[p.to].notice_bad = Some(format!("{got} notices for a change {:?} → {:?}", (before.epoch, before.n), (after.epoch, after.n)));
+                    }
                 }
             }
         }
@@ -244,7 +300,20 @@ impl Sim {
         }
     }
 
+    /// Player `k` does something; a round it replaces locally (a deal, a New
+    /// game) must be kept too.
     fn act(&mut self, k: usize) {
+        let a = self.devs[k].app.as_ref().unwrap();
+        let (before, had) = (a.shared.round, keep_json(&a.shared).is_some());
+        self.act_inner(k);
+        if let Some(a) = self.devs[k].app.as_ref() {
+            let after = a.shared.round;
+            self.flush(k);
+            self.check_kept(k, before, after, had);
+        }
+    }
+
+    fn act_inner(&mut self, k: usize) {
         let r = self.r.below(100);
         let dev = &mut self.devs[k];
         let a = dev.app.as_mut().unwrap();
@@ -452,6 +521,10 @@ struct Coverage {
     reloads: u32,
     partitions: u32,
     finished: u32,
+    /// The largest table seen, in bytes.
+    biggest: usize,
+    /// Notices by kind, and in how many runs each kind occurred.
+    kinds: BTreeMap<String, (u32, u32)>,
 }
 
 /// One run: set up a table, play through chaos, heal, check, then play the
@@ -496,6 +569,11 @@ fn run(seed: u64, rough: Rough, cov: &mut Coverage) {
     }
     cov.guessing_reached += guessed as u32;
     cov.reloads += s.log.iter().filter(|l| l.contains("reloads")).count() as u32;
+    for (k, n) in &s.kinds {
+        let e = cov.kinds.entry(k.clone()).or_default();
+        e.0 += n;
+        e.1 += 1;
+    }
     cov.partitions += s.log.iter().filter(|l| l.contains("partition [")).count() as u32;
 
     // Every hand lets go; then heal and go quiet.
@@ -536,6 +614,24 @@ fn run(seed: u64, rough: Rough, cov: &mut Coverage) {
         let r = s.devs[k].app.as_ref().unwrap().shared.round;
         if (r.epoch, r.n) < s.devs[k].best {
             s.fail(&format!("device {k}'s table went back from {:?} to {:?}", s.devs[k].best, (r.epoch, r.n)));
+        }
+    }
+    // 6. Every round a device had anything written in is in its Past games
+    // once it stopped being current; every change from outside was
+    // explained exactly once; and the table stays small.
+    for &k in &live {
+        let d = &s.devs[k];
+        let a = d.app.as_ref().unwrap();
+        if let Some(lost) = &d.lost {
+            s.fail(&format!("device {k} never kept round {lost} in Past games"));
+        }
+        if let Some(why) = &d.notice_bad {
+            s.fail(&format!("device {k}: {why}"));
+        }
+        let size = a.snapshot().len();
+        cov.biggest = cov.biggest.max(size);
+        if size > 50_000 {
+            s.fail(&format!("device {k}'s table is {size} bytes, over the 50 KB budget"));
         }
     }
     // 4. No card is still drawn as held once every hand has let go.

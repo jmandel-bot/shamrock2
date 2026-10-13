@@ -103,12 +103,12 @@ footer { margin-top: 40px; font-size: 13.5px; color: var(--dim) }
 <body>
 
 <main>
-  <div class="eyebrow">Shamrock · design for review</div>
+  <div class="eyebrow">Shamrock · how sync works</div>
   <h1>How a Shamrock table stays one table</h1>
-  <p class="lede">One model for keeping every phone at a table in agreement, whatever the network, the timing or the people do. It gathers everything we've worked out into one place, so it can be reviewed and then built.</p>
+  <p class="lede">One model for keeping every phone at a table in agreement, whatever the network, the timing or the people do. Everything about it is in this one document, and the code follows it.</p>
   <div class="status">
-    <span class="chip exists">exists</span><span>built and tested today</span>
-    <span class="chip new">new</span><span>what this proposal adds or changes, with its tests</span>
+    <span class="chip exists">exists</span><span>was already built and tested</span>
+    <span class="chip new">new</span><span>added in this build, with its tests</span>
   </div>
 
   <nav class="toc" aria-label="Contents">
@@ -253,14 +253,14 @@ moves   table id → { room, stamp }                last writer wins; where a gr
     <li><b>Limit:</b> the last 60 rounds per device <span class="chip exists">exists</span>.</li>
   </ul>
   <h3>Late edits to a round that was just replaced</h3>
-  <p>Each device keeps the last round it was pushed out of, alive in the background, until it next deals or joins a new round of its own (and at most 10 minutes). Any change that arrives for that round merges into it rather than being ignored. The device's Past games copy is updated, and so is what a Move would carry. A teammate's last clue edit that crossed the switch in flight still lands where it belongs.</p>
+  <p>Each device keeps the last round it was pushed out of, alive in the background, until its round changes again (one table's worth of memory). Any change that arrives for that round merges into it rather than being ignored. The device's Past games copy is updated, and so is what a Move would carry. A teammate's last clue edit that crossed the switch in flight still lands where it belongs.</p>
   <p><b>What this deliberately doesn't do:</b> share old rounds with the table. A newcomer has no use for rounds from before they arrived, and the people who care about a replaced round were in it, so their devices already hold it. Older rounds than the last one are only on the devices that played them.</p>
 
   <h2 id="move">Moving your group <span class="chip new">new</span></h2>
   <p>When two tables meet in one room, playing together is the default, and it needs nothing from anyone. But the two groups may be strangers, or may simply want their own games back. The notice on the outranked side offers <b>Move us to a new table</b>.</p>
   <ol>
     <li><b>One tap, by anyone in the group.</b> Their device picks a fresh room name and opens it, seeded with its copy of the group's table: the round they were in and their seats. They arrive already seated, mid-round, exactly where they were.</li>
-    <li><b>The table remembers the move.</b> A small shared record goes into the old room: the moved group's table id → the new room name. It's last-writer-wins and a few bytes long. Because it's in the room's table, every device of that group sees it, whenever it next connects: now, after a reload, or tomorrow from its save.</li>
+    <li><b>The table remembers the move.</b> A small shared record goes into the old room: the moved group's table id → the new room name. It's last-writer-wins and a few bytes long. Because it's in the room's table, every device of that group sees it, whenever it next connects: now, after a reload, or later from its save (saves are restored for 6 hours).</li>
     <li><b>The rest of the group gets one tap to follow.</b> Their notice reads <span class="notice">"Ana moved your group to #quiet-heron-dell. Go there?"</span> Following opens the new room seeded with <em>their own</em> copy too. Copies of the same round from the same table merge, so everyone's drafts arrive.</li>
     <li><b>Nobody is moved without choosing.</b> The other group isn't affected at all and keeps the room. A group member who ignores the prompt simply stays at the merged table.</li>
   </ol>
@@ -346,7 +346,7 @@ moves   table id → { room, stamp }                last writer wins; where a gr
     <li><b>The shared table:</b> the seats plus one round. The only growth inside a round is clue versions, about 60–100 bytes per edit, so a chatty six-player round is about 15 KB. It never accumulates across rounds, so syncs, fingerprints and saves stay that size however long a table plays. No compaction is needed.</li>
     <li><b>Seats:</b> one per name ever used at the table, at about 30 bytes each. Even a room used by a hundred different names adds 3 KB. Rather than prune them, which a merge would undo, the size is measured: the simulator checks that the table stays under a fixed budget (50 KB) through its longest games.</li>
     <li><b>Move records:</b> one per group that ever moved out of a room, a few bytes each.</li>
-    <li><b>The last replaced round</b> kept for late edits: at most one round per device, dropped after 10 minutes.</li>
+    <li><b>The last replaced round</b> kept for late edits: at most one table per device, in memory, until the round changes again.</li>
     <li><b>Past games:</b> 60 rounds per device.</li>
   </ul>
 
@@ -383,7 +383,7 @@ moves   table id → { room, stamp }                last writer wins; where a gr
         <li>being alone;</li>
         <li>two groups meeting.</li>
       </ul>
-      <p><span class="chip new">new</span> Each scenario also checks the notice and the Past games entry. A new scenario moves a group: one taps <b>Move</b>, another follows from the prompt, a third reopens the old room the next day and is offered the move from its save. It checks both rooms afterwards, and that the other group was never offered it. Two more check that round changes appear under <b>What happened</b>, and that a page on an older protocol version is told to reload rather than drifting.</p>
+      <p><span class="chip new">new</span> Each scenario also checks the notice and the Past games entry. A new scenario moves a group: one taps <b>Move</b>, another follows from the prompt, a third reopens the old room later from its save and is offered the move. It checks both rooms afterwards, and that the other group was never offered it. Two more check that round changes appear under <b>What happened</b>, and that a page on an older protocol version is told to reload rather than drifting.</p>
     </div>
   </div>
 
@@ -413,7 +413,7 @@ moves   table id → { room, stamp }                last writer wins; where a gr
     </div>
   </div>
 
-  <footer>Today's sync code passes every check above that isn't marked new; everything marked new is proposed for this build, with its tests.</footer>
+  <footer>Built as described: every check above passes, in the native tests (<code>core/tests</code>), the network simulator (<code>core/tests/network.rs</code>) and the browser fault scenarios (<code>harness/faults.mjs</code>).</footer>
 </main>
 </body>
 </html>

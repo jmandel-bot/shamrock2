@@ -39,6 +39,9 @@ pub const SNAP_R: f32 = 40.0;
 pub const CLAIM_R: f32 = 100.0;
 
 pub const MAX_TEXT: usize = 60;
+/// The message format's version. Bump it whenever the wire format changes:
+/// pages hearing a newer one ask their player to reload.
+pub const PROTOCOL: u16 = 2;
 pub const MAX_PLAYERS: usize = 12;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Hash)]
@@ -80,8 +83,14 @@ pub struct Round {
     /// Where this round starts dealing in the game's deck (each dealt-in
     /// player takes `MAX_CARDS` cards).
     pub deck: u32,
-    /// The game's deck shuffle (0 until the game's first deal picks one).
-    pub deck_seed: u32,
+    /// The table this round belongs to: the stamp of the table's very first
+    /// deal, inherited by every round after it, across New games. Default
+    /// until the first deal.
+    pub table: Stamp,
+    /// The round this one followed (default for a table's first deal).
+    pub parent: Stamp,
+    /// The seat that dealt it (0 = unknown).
+    pub dealer: u32,
     /// 1 = this round guesses the imported clover (see `Custom`).
     pub custom: u8,
 }
@@ -96,6 +105,11 @@ impl Round {
     }
     pub fn players(&self) -> &[u32] {
         &self.seats[..(self.nseats as usize).min(MAX_PLAYERS)]
+    }
+    /// The game's deck shuffle: one per table and epoch.
+    pub fn deck_seed(&self) -> u32 {
+        let k = self.table.clock ^ ((self.table.peer as u64) << 32) ^ (self.epoch as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        (k ^ (k >> 32)) as u32
     }
     pub fn with_players(mut self, players: &[u32]) -> Round {
         let n = players.len().min(MAX_PLAYERS);
@@ -137,11 +151,22 @@ impl Check {
     }
 }
 
+/// Where a group that played at this room went: its table moved to `room`.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub struct Moved {
+    pub room: String,
+    /// The seat that moved it.
+    pub by: u32,
+    pub stamp: Stamp,
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub enum Body {
     /// Just announces the round.
     None,
     Seat(u32, Seat),
+    /// The group whose table id this is moved to another room.
+    Move(Stamp, Moved),
     Sub(u32, Sub),
     /// Writing is over; guessing begins.
     Start(Stamp),
@@ -170,6 +195,8 @@ pub enum Phase {
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Shared {
     pub seats: BTreeMap<u32, Seat>,
+    /// Groups that moved out of this room: their table id → where to.
+    pub moves: BTreeMap<Stamp, Moved>,
     pub round: Round,
     /// Every version of every writer's clues, keyed (writer, stamp). Keeping
     /// versions makes "what was submitted when guessing started" well
@@ -384,6 +411,12 @@ impl Shared {
                 changed = true;
             }
         }
+        if let Body::Move(t, m) = &op.body {
+            if self.moves.get(t).is_none_or(|c| m.stamp > c.stamp) {
+                self.moves.insert(*t, m.clone());
+                changed = true;
+            }
+        }
         if op.round.rank() > self.round.rank() {
             self.round = op.round;
             self.subs.clear();
@@ -439,6 +472,7 @@ impl Shared {
         let op = |body| Op { round: r, body };
         let mut v = vec![op(Body::None)];
         v.extend(self.seats.iter().map(|(id, s)| op(Body::Seat(*id, s.clone()))));
+        v.extend(self.moves.iter().map(|(t, m)| op(Body::Move(*t, m.clone()))));
         v.extend(self.subs.iter().map(|((w, _), s)| op(Body::Sub(*w, s.clone()))));
         v.extend(self.start.map(|s| op(Body::Start(s))));
         v.extend(self.cards.iter().map(|((w, i), c)| op(Body::Card(*w, *i, *c))));
@@ -458,7 +492,7 @@ impl Shared {
     pub fn deal(&self, writer: u32) -> Deal {
         let seat = self.round.players().iter().position(|p| *p == writer).unwrap_or(writer as usize % MAX_PLAYERS);
         let base = self.round.deck + (seat * MAX_CARDS) as u32;
-        let cards: [usize; MAX_CARDS] = core::array::from_fn(|i| deck_card(self.round.deck_seed, base + i as u32));
+        let cards: [usize; MAX_CARDS] = core::array::from_fn(|i| deck_card(self.round.deck_seed(), base + i as u32));
         let mut rng = Rng::new(((self.round.seed as u64) << 32 | writer as u64) ^ 0x9e37_79b9_7f4a_7c15);
         let mut home: [u8; MAX_CARDS] = core::array::from_fn(|i| i as u8);
         for k in (1..MAX_CARDS).rev() {
@@ -607,6 +641,7 @@ impl Shared {
         };
         let seats: Vec<String> =
             self.seats.iter().map(|(id, s)| format!("[{id},{},{}]", json_str(&s.name), s.active)).collect();
+        let moves: Vec<String> = self.moves.iter().map(|(t, m)| format!("[\"{}.{}\",{}]", t.clock, t.peer, json_str(&m.room))).collect();
         let subs: Vec<String> = self
             .round
             .players()
@@ -643,12 +678,13 @@ impl Shared {
             })
             .collect();
         format!(
-            "{{\"phase\":\"{phase}\",\"epoch\":{},\"round\":{},\"seed\":{},\"dealt\":{:?},\"seats\":[{}],\"subs\":[{}],\"puzzles\":[{}]}}",
+            "{{\"phase\":\"{phase}\",\"epoch\":{},\"round\":{},\"seed\":{},\"dealt\":{:?},\"seats\":[{}],\"moves\":[{}],\"subs\":[{}],\"puzzles\":[{}]}}",
             self.round.epoch,
             self.round.n,
             self.round.seed,
             self.round.players(),
             seats.join(","),
+            moves.join(","),
             subs.join(","),
             puzzles.join(",")
         )
@@ -702,6 +738,7 @@ const T_CARD: u8 = 4;
 const T_CHECK: u8 = 5;
 const T_NEXT: u8 = 6;
 const T_SEAT: u8 = 7;
+const T_MOVE: u8 = 8;
 const T_HELLO: u8 = 20;
 const T_CURSOR: u8 = 21;
 
@@ -711,7 +748,8 @@ pub enum Msg {
     /// Presence heartbeat: a device and the seat it plays (0 = watching).
     /// `sum`: a hash of the sender's whole table, so devices that have
     /// drifted apart notice and resync (see `App::on_packet`).
-    Hello { device: u32, seat: u32, sum: u32 },
+    /// `ver`: the sender's `PROTOCOL`, so a page on an older one knows to reload.
+    Hello { device: u32, seat: u32, sum: u32, ver: u16 },
     /// kind: 0 hidden, 1 tray coords, 2 board coords.
     /// `card`: the card (of the clover on screen) this pointer is dragging,
     /// if any. Holds live here, not in the table: they end when the device
@@ -747,6 +785,7 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 Body::Check(..) => T_CHECK,
                 Body::Next(..) => T_NEXT,
                 Body::Seat(..) => T_SEAT,
+                Body::Move(..) => T_MOVE,
             });
             b.extend_from_slice(&round.epoch.to_le_bytes());
             put_stamp(b, round.stamp);
@@ -757,7 +796,9 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 b.extend_from_slice(&p.to_le_bytes());
             }
             b.extend_from_slice(&round.deck.to_le_bytes());
-            b.extend_from_slice(&round.deck_seed.to_le_bytes());
+            put_stamp(b, round.table);
+            put_stamp(b, round.parent);
+            b.extend_from_slice(&round.dealer.to_le_bytes());
             b.push(round.custom);
             match body {
                 Body::None => {}
@@ -766,6 +807,12 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                     put_stamp(b, s.stamp);
                     b.push(s.active as u8);
                     put_str(b, &s.name);
+                }
+                Body::Move(t, m) => {
+                    put_stamp(b, *t);
+                    put_stamp(b, m.stamp);
+                    b.extend_from_slice(&m.by.to_le_bytes());
+                    put_str(b, &m.room);
                 }
                 Body::Sub(w, s) => {
                     b.extend_from_slice(&w.to_le_bytes());
@@ -802,11 +849,12 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                 }
             }
         }
-        Msg::Hello { device, seat, sum } => {
+        Msg::Hello { device, seat, sum, ver } => {
             b.push(T_HELLO);
             b.extend_from_slice(&device.to_le_bytes());
             b.extend_from_slice(&seat.to_le_bytes());
             b.extend_from_slice(&sum.to_le_bytes());
+            b.extend_from_slice(&ver.to_le_bytes());
         }
         Msg::Cursor { device, seat, kind, x, y, card } => {
             b.push(T_CURSOR);
@@ -866,7 +914,7 @@ impl<'a> Reader<'a> {
     fn msg(&mut self) -> Option<Msg> {
         let tag = self.u8()?;
         if tag == T_HELLO {
-            return Some(Msg::Hello { device: self.u32()?, seat: self.u32()?, sum: self.u32()? });
+            return Some(Msg::Hello { device: self.u32()?, seat: self.u32()?, sum: self.u32()?, ver: self.u16()? });
         }
         if tag == T_CURSOR {
             let (device, seat) = (self.u32()?, self.u32()?);
@@ -882,8 +930,9 @@ impl<'a> Reader<'a> {
         for p in seats.iter_mut().take(nseats as usize) {
             *p = self.u32()?;
         }
-        let (deck, deck_seed) = (self.u32()?, self.u32()?);
-        let round = Round { epoch, stamp, seed, n, seats, nseats, deck, deck_seed, custom: self.lt(2)? };
+        let deck = self.u32()?;
+        let (table, parent, dealer) = (self.stamp()?, self.stamp()?, self.u32()?);
+        let round = Round { epoch, stamp, seed, n, seats, nseats, deck, table, parent, dealer, custom: self.lt(2)? };
         let body = match tag {
             T_NONE => Body::None,
             T_SEAT => {
@@ -891,6 +940,10 @@ impl<'a> Reader<'a> {
                 let stamp = self.stamp()?;
                 let active = self.bool()?;
                 Body::Seat(id, Seat { name: self.str()?, active, stamp })
+            }
+            T_MOVE => {
+                let (t, stamp, by) = (self.stamp()?, self.stamp()?, self.u32()?);
+                Body::Move(t, Moved { room: self.str()?, by, stamp })
             }
             T_SUB => {
                 let w = self.u32()?;

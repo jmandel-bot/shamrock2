@@ -208,15 +208,19 @@ await scenario('left alone, then joined again', async () => {
   await done(ps);
 });
 
-await scenario('two groups played apart in one room, then meet', async () => {
+await scenario('two groups played apart in one room, then meet, and one moves away', async () => {
   const room = `two-${Date.now().toString(36)}`;
-  // Ana and Ben start writing, then put their phones away.
-  const ab = await table(room, ['Ana', 'Ben']);
+  const happenedAt = (p, r) => p.page.evaluate((r) => JSON.parse(localStorage.getItem(`shamrock:${r}:happened`) ?? '[]').map((e) => e.text), r);
+  const toastText = (p) => p.page.evaluate(() => document.getElementById('toast').textContent);
+  // Ana, Ben and Eve start writing, then put their phones away.
+  const ab = await table(room, ['Ana', 'Ben', 'Eve']);
+  const eve = ab.pop();
   await ab[0].tool('start_round');
   await until(async () => (await ab[0].table()).phase === 'writing');
   await ab[0].tool('write_clue', { leaf: 'top', text: 'moonlight' });
+  await ab[1].tool('write_clue', { leaf: 'top', text: 'starlight' });
   await sleep(2500);
-  for (const p of ab) await p.page.close({ runBeforeUnload: true });
+  for (const p of [...ab, eve]) await p.page.close({ runBeforeUnload: true });
   // Later Cy and Dee use the same room and get a round further.
   const cd = await table(room, ['Cy', 'Dee']);
   await cd[0].tool('start_round');
@@ -226,22 +230,66 @@ await scenario('two groups played apart in one room, then meet', async () => {
   await until(async () => (await cd[1].table()).round === 2);
   await sleep(2500);
   for (const p of cd) await p.page.close({ runBeforeUnload: true });
-  // Everyone comes back at once, each phone with its own saved table.
-  await Promise.all([...ab, ...cd].map((p) => p.open('')));
+  // Ana, Ben, Cy and Dee come back at once, each phone with its own save.
   const all = [...ab, ...cd];
+  await Promise.all(all.map((p) => p.open('')));
   check(await until(() => agree(all), 30000), 'one table on every screen');
   const t = await ab[0].table();
-  check(t.round === 2 && t.players.length === 4, 'the game further along carries on, with all four seated', JSON.stringify({ round: t.round, players: t.players.length }));
-  const toastText = () => ab[0].page.evaluate(() => document.getElementById('toast').textContent);
-  await until(async () => /Past games/.test(await toastText()), 5000);
-  const toast = await toastText();
-  check(/Cy and Dee were already playing here/.test(toast) && /Past games/.test(toast), 'Ana is told what happened', toast);
+  check(t.round === 2 && t.players.length === 5, 'the game further along carries on, with everyone seated', JSON.stringify({ round: t.round, players: t.players.length }));
+  await until(async () => /Past games/.test(await toastText(ab[0])), 5000);
+  const toast = await toastText(ab[0]);
+  check(/Cy and Dee have also been playing at this table/.test(toast) && /Past games/.test(toast) && /Move us/.test(toast), 'Ana is told what happened, and offered a move', toast);
+  check((await happenedAt(ab[0], room)).some((x) => /also been playing/.test(x)), 'and it is listed under What happened');
   const log = await ab[0].page.evaluate(() => JSON.parse(localStorage.getItem('shamrock:log') ?? '[]'));
-  const kept = log.find((e) => e.setAside);
-  check(kept && kept.boards.some((b) => b.text.includes('moonlight')), "and her half-written clover is in Past games, marked set aside");
-  const cyLog = await cd[0].page.evaluate(() => JSON.parse(localStorage.getItem('shamrock:log') ?? '[]'));
-  check(!cyLog.some((e) => e.setAside), 'Cy and Dee lost nothing, so are told nothing');
-  await done(all);
+  check(log.some((e) => e.finished === false && e.boards.some((b) => b.text.includes('moonlight'))), 'her half-written round is in Past games, marked unfinished');
+  for (const p of cd) check(!(await happenedAt(p, room)).some((x) => /also been playing/.test(x)), `${p.name} lost nothing to the merge, so is told nothing about it`);
+
+  // Ana moves her group.
+  await ab[0].page.click('#toast button');
+  check(await until(() => ab[0].page.evaluate((r) => location.hash.slice(1) !== r, room), 10000), 'Ana goes to a new table');
+  const newRoom = await ab[0].page.evaluate(() => decodeURIComponent(location.hash.slice(1)));
+  await ab[0].page.waitForFunction(() => window.__cl?.tools);
+  await until(async () => (await ab[0].table()).you === 'Ana', 5000); // rejoins under her name
+  const at = await ab[0].table();
+  check(at.round === 1 && at.phase === 'writing' && at.you === 'Ana' && at.clover.clues.top === 'moonlight', `at #${newRoom} she is back in round 1, seated, her clue there`, JSON.stringify({ round: at.round, phase: at.phase, you: at.you, top: at.clover.clues.top }));
+  // Ben is offered the move, and follows.
+  check(await until(async () => new RegExp(`Ana moved your group to #${newRoom}`).test(await toastText(ab[1])), 10000), 'Ben is told where his group went', await toastText(ab[1]));
+  check((await happenedAt(ab[1], room)).some((x) => /moved your group/.test(x)), 'and it is listed under What happened');
+  await ab[1].page.click('#toast button');
+  await until(() => ab[1].page.evaluate((r) => location.hash.slice(1) === r, newRoom), 10000);
+  await ab[1].page.waitForFunction(() => window.__cl?.tools);
+  await until(async () => (await ab[1].table()).you === 'Ben', 5000);
+  check(await until(() => agree(ab), 20000), 'Ana and Ben are one table again at the new room');
+  const bt = await ab[1].table();
+  check(bt.clover.clues.top === 'starlight' && bt.players.length === 3, "Ben's clue is there, with their group's seats", JSON.stringify({ top: bt.clover.clues.top, players: bt.players.map((x) => x.name) }));
+  // Nobody else was offered it, and the old room carries on.
+  for (const p of cd) check(!(await happenedAt(p, room)).some((x) => /moved/.test(x)), `${p.name} was never offered the move`);
+  check((await cd[0].table()).round === 2, 'the old room is untouched');
+  // Eve was away through all this. Opening the room later, from her save,
+  // she is offered the move too.
+  await eve.open('');
+  check(await until(async () => (await happenedAt(eve, room)).some((x) => new RegExp(`moved your group to #${newRoom}`).test(x)), 20000), 'Eve, back later from her save, is offered the move', JSON.stringify(await happenedAt(eve, room)));
+  await done([...all, eve]);
+});
+
+await scenario('a page on an older version', async () => {
+  const room = `ver-${Date.now().toString(36)}`;
+  const [ana, ben] = await table(room, ['Ana', 'Ben']);
+  await ana.tool('start_round');
+  await until(async () => (await ben.table()).phase === 'writing');
+  // Ben's page hears a Hello from a newer version of the game.
+  await ben.page.evaluate(() => {
+    const { X } = window.__cl;
+    const b = new Uint8Array(15), v = new DataView(b.buffer);
+    b[0] = 20; v.setUint32(1, 12345, true); v.setUint32(5, 0, true); v.setUint32(9, 0, true); v.setUint16(13, X.protocol() + 1, true);
+    new Uint8Array(X.memory.buffer, X.inbox_reserve(b.length), b.length).set(b);
+    X.on_message(b.length, 99);
+  });
+  check(await until(async () => /newer version/.test(await ben.page.evaluate(() => document.getElementById('toast').textContent)), 5000), 'it is asked to reload');
+  await ben.tool('write_clue', { leaf: 'top', text: 'unsent' });
+  await sleep(2500);
+  check((await ana.table()).readyCount === 0 && !(await ana.digest()).includes('unsent'), 'and its changes no longer go out (they could be misread)');
+  await done([ana, ben]);
 });
 
 check(errors.length === 0, 'no page errors', errors.slice(0, 3).join(' | '));

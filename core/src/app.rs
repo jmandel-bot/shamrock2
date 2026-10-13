@@ -10,10 +10,20 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const EV_NET: u8 = 1;
 pub const EV_EDIT_CLUE: u8 = 2;
 pub const EV_STATUS: u8 = 3;
-/// A round of mine with progress was replaced by another table's round (two
-/// groups met in one room) or by a New game: JSON {newGame, round, names, boards},
-/// boards as in `review_json`, for the shell to explain and keep.
-pub const EV_SET_ASIDE: u8 = 4;
+/// The round changed under this device (not by its own hand): JSON
+/// {kind, by, n, dealtIn, names}; kind is next | missed | crossed | newGame |
+/// otherTable. One per change, for the shell's notice and history.
+pub const EV_NOTICE: u8 = 4;
+/// A round to keep (or update) in this device's Past games, by `key`: JSON
+/// {key, n, finished, players, boards}. Raised when a round with anything in
+/// it ends or stops being current, for any reason, and again when a late
+/// change reaches it.
+pub const EV_KEEP: u8 = 5;
+/// Someone moved this device's group (the table it came from) to another
+/// room: JSON {room, by}. Raised once.
+pub const EV_MOVED: u8 = 6;
+/// A peer speaks a newer protocol: this page should reload. Raised once.
+pub const EV_OUTDATED: u8 = 7;
 
 // Draw commands.
 const C_XFORM: f32 = 1.0;
@@ -328,6 +338,18 @@ pub struct App {
     last_hello_ms: f64,
     /// Peers whose table hash differed from ours: device → (theirs, ours).
     drift: BTreeMap<u32, (u32, u32)>,
+    /// The table as it was just before the round started changing (set by
+    /// `begin_change`, consumed by `finish_change`).
+    before_change: Option<Shared>,
+    /// The last table this device was pushed out of, kept so late changes
+    /// to its round still land (and update Past games).
+    pub aside: Option<Shared>,
+    /// The table this device came from when it last joined another table in
+    /// this room: its group, for moving (`record_move`, `EV_MOVED`).
+    pub origin: Option<Shared>,
+    move_prompted: bool,
+    /// A peer speaks a newer protocol: stop sending table changes.
+    pub outdated: bool,
     last_resync_ms: f64,
     dirty_cards: BTreeSet<(u32, u8)>,
     last_phase: Phase,
@@ -377,6 +399,11 @@ impl App {
             last_cursor_ms: 0.0,
             last_hello_ms: f64::NEG_INFINITY,
             drift: BTreeMap::new(),
+            before_change: None,
+            aside: None,
+            origin: None,
+            move_prompted: false,
+            outdated: false,
             last_resync_ms: f64::NEG_INFINITY,
             dirty_cards: BTreeSet::new(),
             last_phase: Phase::Lobby,
@@ -415,8 +442,12 @@ impl App {
 
     fn send(&mut self, msgs: &[Msg]) {
         let mut b = Vec::new();
-        for m in msgs {
+        // On an outdated page, table changes stay local (they could be misread).
+        for m in msgs.iter().filter(|m| !(self.outdated && matches!(m, Msg::Op(_)))) {
             encode(m, &mut b);
+        }
+        if b.is_empty() {
+            return;
         }
         self.event(EV_NET, &b);
     }
@@ -462,36 +493,45 @@ impl App {
     fn hello(&mut self) {
         self.last_hello_ms = self.now;
         let (device, seat, sum) = (self.device, self.seat.unwrap_or(0), self.state_sum());
-        self.send(&[Msg::Hello { device, seat, sum }]);
+        self.send(&[Msg::Hello { device, seat, sum, ver: PROTOCOL }]);
     }
 
     // ---- network in ---------------------------------------------------------
 
     /// A packet from the peer on connection `link`.
     pub fn on_packet(&mut self, bytes: &[u8], link: u32) {
-        let mut aside = None;
+        let mut late = false;
         for m in decode(bytes) {
             match m {
                 Msg::Op(op) => {
                     let s = match &op.body {
                         Body::Sub(_, s) => s.stamp,
                         Body::Seat(_, s) => s.stamp,
+                        Body::Move(_, m) => m.stamp,
                         Body::Start(s) | Body::Next(_, s) => *s,
                         Body::Card(_, _, c) => c.stamp,
                         Body::Check(_, c) => c.stamp,
                         Body::None => op.round.stamp,
                     };
                     self.clock = self.clock.max(s.clock).max(op.round.stamp.clock);
-                    let before = self.shared.round.stamp;
-                    let kept = (op.round.rank() > self.shared.round.rank()).then(|| self.set_aside(&op.round)).flatten();
-                    self.shared.apply(&op);
-                    if self.shared.round.stamp != before {
-                        self.new_round_local();
-                        aside = kept.or(aside);
+                    // A late change to a round this device was pushed out of
+                    // still lands there.
+                    for kept in [&mut self.aside, &mut self.origin].into_iter().flatten() {
+                        if op.round.stamp == kept.round.stamp && op.round.stamp != self.shared.round.stamp {
+                            late |= kept.apply(&op);
+                        }
                     }
+                    if op.round.rank() > self.shared.round.rank() {
+                        self.begin_change();
+                    }
+                    self.shared.apply(&op);
                 }
-                Msg::Hello { device, seat, sum } if device != self.device => {
+                Msg::Hello { device, seat, sum, ver } if device != self.device => {
                     self.peers.insert(device, (seat, link));
+                    if ver > PROTOCOL && !self.outdated {
+                        self.outdated = true;
+                        self.event(EV_OUTDATED, b"{}");
+                    }
                     self.compare_sums(device, sum);
                 }
                 Msg::Cursor { device, seat, kind, x, y, card } if device != self.device => {
@@ -502,39 +542,108 @@ impl App {
                 _ => {}
             }
         }
-        // Named once the whole packet is in: a full sync sends the round
+        // Explained once the whole packet is in: a full sync sends the round
         // before the seats of the players in it.
-        if let Some((new_game, n, boards)) = aside {
-            let names: Vec<String> = self
-                .shared
-                .round
-                .players()
-                .iter()
-                .filter(|p| Some(**p) != self.seat)
-                .map(|p| json_str(&self.name_of(*p)))
-                .collect();
-            let json = format!("{{\"newGame\":{new_game},\"round\":{n},\"names\":[{}],\"boards\":{boards}}}", names.join(","));
-            self.event(EV_SET_ASIDE, json.as_bytes());
+        self.finish_change(false);
+        if late {
+            if let Some(json) = self.aside.as_ref().and_then(keep_json) {
+                self.event(EV_KEEP, json.as_bytes());
+            }
+        }
+        self.check_moved();
+    }
+
+    /// The round is about to change: remember the table as it was.
+    fn begin_change(&mut self) {
+        if self.before_change.is_none() {
+            self.before_change = Some(self.shared.clone());
         }
     }
 
-    /// If `new` would replace a round of this table that's under way, not as
-    /// its next round but as another table's game (a different deck: two
-    /// groups met in one room) or a New game: what to tell the player and
-    /// the clovers to keep. Clovers still being written count too.
-    fn set_aside(&self, new: &Round) -> Option<(bool, u16, String)> {
-        let (old, s) = (self.shared.round, &self.shared);
-        let other_game = new.epoch > old.epoch || new.deck_seed != old.deck_seed;
-        let under_way = old.n > 0 && s.phase() != Phase::End && s.subs.values().any(|x| x.clues.iter().any(|c| !c.is_empty()));
-        if !other_game || !under_way {
-            return None;
+    /// The round changed (or didn't, after all). Keep the round that left in
+    /// Past games, keep it aside for late changes, and unless this device did
+    /// it, explain what happened: one rule for every cause.
+    fn finish_change(&mut self, by_me: bool) {
+        let Some(old) = self.before_change.take() else { return };
+        if old.round.stamp == self.shared.round.stamp {
+            return;
         }
-        let writers: Vec<u32> = if s.start.is_some() {
-            s.puzzles()
+        self.new_round_local();
+        let new = self.shared.round;
+        if let Some(json) = keep_json(&old) {
+            self.event(EV_KEEP, json.as_bytes());
+        }
+        let from = old.round;
+        let kind = if from.table == Stamp::default() {
+            None // arriving: this device had no table yet
+        } else if new.table != from.table {
+            Some("otherTable")
+        } else if new.epoch > from.epoch {
+            Some("newGame")
+        } else if new.parent == from.stamp {
+            Some("next")
+        } else if new.parent == from.parent {
+            Some("crossed")
         } else {
-            old.players().iter().copied().filter(|w| s.latest(*w).is_some_and(|x| x.clues.iter().any(|c| !c.is_empty()))).collect()
+            Some("missed")
         };
-        Some((new.epoch > old.epoch, old.n, self.boards_json(&writers)))
+        if kind == Some("otherTable") {
+            self.origin = Some(old.clone());
+            self.move_prompted = false;
+        }
+        if from.table != Stamp::default() {
+            self.aside = Some(old.clone());
+        }
+        let Some(kind) = kind.filter(|_| !by_me) else { return };
+        // The other group: seated here now, but not at the table we had.
+        let names: Vec<String> = if kind == "otherTable" {
+            self.shared
+                .seats
+                .iter()
+                .filter(|(id, x)| x.active && !old.seats.get(id).is_some_and(|o| o.active) && Some(**id) != self.seat)
+                .map(|(_, x)| json_str(&x.name))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let by = if new.dealer != 0 { json_str(&self.name_of(new.dealer)) } else { "null".into() };
+        let dealt_in = self.seat.is_some_and(|me| new.players().contains(&me));
+        let json = format!(
+            "{{\"kind\":\"{kind}\",\"by\":{by},\"n\":{},\"dealtIn\":{dealt_in},\"names\":[{}]}}",
+            new.n,
+            names.join(",")
+        );
+        self.event(EV_NOTICE, json.as_bytes());
+    }
+
+    /// If this device's group has moved to another room, say so, once.
+    fn check_moved(&mut self) {
+        if self.move_prompted {
+            return;
+        }
+        let Some(t) = self.origin.as_ref().map(|o| o.round.table) else { return };
+        if let Some(m) = self.shared.moves.get(&t).cloned() {
+            self.move_prompted = true;
+            let json = format!("{{\"room\":{},\"by\":{}}}", json_str(&m.room), json_str(&self.name_of(m.by)));
+            self.event(EV_MOVED, json.as_bytes());
+        }
+    }
+
+    /// Move this device's group (the table it came from) to `room`: record
+    /// it here for the rest of the group, and return that table, to seed the
+    /// new room with. None if this device didn't come from another table.
+    pub fn record_move(&mut self, room: &str) -> Option<Vec<u8>> {
+        let origin = self.origin.as_ref()?;
+        let (t, snap) = (origin.round.table, snapshot_of(origin));
+        let (by, stamp) = (self.seat.unwrap_or(0), self.stamp());
+        self.move_prompted = true;
+        self.commit(Body::Move(t, Moved { room: clamp_text(room, MAX_TEXT), by, stamp }));
+        Some(snap)
+    }
+
+    /// The table this device came from (to follow a move with its own copy).
+    pub fn origin_snapshot(&self) -> Option<Vec<u8>> {
+        self.origin.as_ref().map(snapshot_of)
     }
 
     fn new_round_local(&mut self) {
@@ -582,16 +691,12 @@ impl App {
     /// held the table reloads or closes, the table survives. A stale save
     /// merges like any other sync, so it can't undo newer moves.
     pub fn snapshot(&self) -> Vec<u8> {
-        let mut b = Vec::new();
-        for op in self.shared.all_ops() {
-            encode(&Msg::Op(op), &mut b);
-        }
-        b
+        snapshot_of(&self.shared)
     }
 
     pub fn on_peer_join(&mut self) {
         let mut msgs: Vec<Msg> = self.shared.all_ops().into_iter().map(Msg::Op).collect();
-        msgs.push(Msg::Hello { device: self.device, seat: self.seat.unwrap_or(0), sum: self.state_sum() });
+        msgs.push(Msg::Hello { device: self.device, seat: self.seat.unwrap_or(0), sum: self.state_sum(), ver: PROTOCOL });
         self.send(&msgs);
     }
 
@@ -1413,28 +1518,20 @@ impl App {
             return self.start_custom(customs, players);
         }
         let prev = self.shared.round;
-        // Draw down the deck: this round deals after the cards the last one
-        // used. A game's first deal shuffles its deck.
+        // Draw down the deck: this round deals after the cards the last one used.
         let deck = if prev.n == 0 { 0 } else { prev.deck + (prev.nseats as usize * MAX_CARDS) as u32 };
-        let deck_seed = if prev.deck_seed == 0 { self.rng.next() as u32 | 1 } else { prev.deck_seed };
         let (seed, n, stamp) = (self.rng.next() as u32, prev.n + 1, self.stamp());
-        let round = Round { epoch: prev.epoch, seed, n, stamp, deck, deck_seed, ..Round::default() }.with_players(&players);
-        let op = Op { round, body: Body::None };
-        self.shared.apply(&op);
-        self.new_round_local();
-        self.send(&[Msg::Op(op)]);
+        let round = Round { epoch: prev.epoch, seed, n, stamp, deck, ..self.lineage(stamp) }.with_players(&players);
+        self.deal(round);
     }
 
     /// Round 1 of a room with imported clovers: straight to guessing them.
     fn start_custom(&mut self, customs: Vec<&'static Custom>, players: Vec<u32>) {
         let mut seats: Vec<u32> = customs.iter().map(|c| c.writer()).collect();
         seats.extend(players);
-        let (epoch, seed, deck_seed, stamp) = (self.shared.round.epoch, self.rng.next() as u32, self.rng.next() as u32 | 1, self.stamp());
-        let round = Round { epoch, seed, n: 1, stamp, deck_seed, custom: 1, ..Round::default() }.with_players(&seats);
-        let op = Op { round, body: Body::None };
-        self.shared.apply(&op);
-        self.new_round_local();
-        self.send(&[Msg::Op(op)]);
+        let (epoch, seed, stamp) = (self.shared.round.epoch, self.rng.next() as u32, self.stamp());
+        let round = Round { epoch, seed, n: 1, stamp, custom: 1, ..self.lineage(stamp) }.with_players(&seats);
+        self.deal(round);
         for c in customs {
             let w = c.writer();
             // Their authors aren't at the table: an inactive seat carries the name.
@@ -1446,6 +1543,24 @@ impl App {
         }
         let s = self.stamp();
         self.commit(Body::Start(s));
+    }
+
+    /// Where a round dealt here now comes from: this table (or, for the
+    /// table's first deal, a new table named by this deal), the current
+    /// round as its parent, and this seat as its dealer.
+    fn lineage(&self, stamp: Stamp) -> Round {
+        let cur = self.shared.round;
+        let table = if cur.table == Stamp::default() { stamp } else { cur.table };
+        Round { table, parent: cur.stamp, dealer: self.seat.unwrap_or(0), ..Round::default() }
+    }
+
+    /// Make `round` current here and announce it.
+    fn deal(&mut self, round: Round) {
+        let op = Op { round, body: Body::None };
+        self.begin_change();
+        self.shared.apply(&op);
+        self.finish_change(true);
+        self.send(&[Msg::Op(op)]);
     }
 
     /// This round's clovers selected by `mask`, each as a scrambled,
@@ -1470,15 +1585,7 @@ impl App {
     }
 
     fn boards_json(&self, writers: &[u32]) -> String {
-        let rows: Vec<String> = writers
-            .iter()
-            .filter_map(|&w| {
-                let text = self.shared.export_board(w, &self.name_of(w))?;
-                let c = self.shared.check(w);
-                Some(format!("{{\"text\":{},\"guesses\":{},\"solved\":{}}}", json_str(&text), c.attempts, c.done()))
-            })
-            .collect();
-        format!("[{}]", rows.join(","))
+        boards_json(&self.shared, writers)
     }
 
     /// Scramble boards given in answer order (e.g. typed in from a screenshot).
@@ -1489,11 +1596,8 @@ impl App {
     /// Start over with whoever is here: the next epoch's lobby (it outranks
     /// every round of this game), and players who aren't here leave the table.
     fn new_game(&mut self) {
-        let round = Round { epoch: self.shared.round.epoch + 1, stamp: self.stamp(), ..Round::default() };
-        let op = Op { round, body: Body::None };
-        self.shared.apply(&op);
-        self.new_round_local();
-        self.send(&[Msg::Op(op)]);
+        let stamp = self.stamp();
+        self.deal(Round { epoch: self.shared.round.epoch + 1, stamp, ..self.lineage(stamp) });
         let here = self.present();
         let gone: Vec<(u32, Seat)> =
             self.shared.seats.iter().filter(|(id, s)| s.active && !here.contains(id)).map(|(id, s)| (*id, s.clone())).collect();
@@ -1602,6 +1706,13 @@ impl App {
         self.last_done = done_now;
         self.glow = (self.glow - self.dt / 1.8).max(0.0);
         if phase != self.last_phase {
+            // A round that ends is kept in Past games (and again if it's
+            // replaced later; the same key updates the same entry).
+            if phase == Phase::End {
+                if let Some(json) = keep_json(&self.shared) {
+                    self.event(EV_KEEP, json.as_bytes());
+                }
+            }
             // New phase or new clover: spin back upright the short way.
             self.last_phase = phase;
             self.q = (self.q as f32 / 4.0).round() as i32 * 4;
@@ -2120,4 +2231,51 @@ fn gauss(mut m: Vec<Vec<f64>>) -> Option<Vec<f64>> {
         }
     }
     Some((0..n).map(|r| m[r][n] / m[r][r]).collect())
+}
+
+/// The whole of a table as one packet (see `App::snapshot`).
+fn snapshot_of(sh: &Shared) -> Vec<u8> {
+    let mut b = Vec::new();
+    for op in sh.all_ops() {
+        encode(&Msg::Op(op), &mut b);
+    }
+    b
+}
+
+/// Clovers of `writers` in answer order (the share-link text), with guesses.
+fn boards_json(sh: &Shared, writers: &[u32]) -> String {
+    let name = |w: u32| sh.seats.get(&w).map(|s| s.name.clone()).unwrap_or_else(|| "someone".into());
+    let rows: Vec<String> = writers
+        .iter()
+        .filter_map(|&w| {
+            let text = sh.export_board(w, &name(w))?;
+            let c = sh.check(w);
+            Some(format!("{{\"text\":{},\"guesses\":{},\"solved\":{}}}", json_str(&text), c.attempts, c.done()))
+        })
+        .collect();
+    format!("[{}]", rows.join(","))
+}
+
+/// A round for Past games, if anything was written in it: its key (table and
+/// round), number, whether it finished, who was in it, and its clovers
+/// (those being guessed, or while writing, whoever had written anything).
+pub fn keep_json(sh: &Shared) -> Option<String> {
+    let r = sh.round;
+    let written = |w: &u32| sh.latest(*w).is_some_and(|x| x.clues.iter().any(|c| !c.is_empty()));
+    if r.n == 0 || !(sh.start.is_some() || r.players().iter().any(written)) {
+        return None;
+    }
+    let writers: Vec<u32> = if sh.start.is_some() { sh.puzzles() } else { r.players().iter().copied().filter(written).collect() };
+    let name = |w: &u32| json_str(&sh.seats.get(w).map(|s| s.name.clone()).unwrap_or_else(|| "someone".into()));
+    Some(format!(
+        "{{\"key\":\"{}.{}/{}.{}\",\"n\":{},\"finished\":{},\"players\":[{}],\"boards\":{}}}",
+        r.table.clock,
+        r.table.peer,
+        r.stamp.clock,
+        r.stamp.peer,
+        r.n,
+        sh.phase() == Phase::End,
+        r.players().iter().map(name).collect::<Vec<_>>().join(","),
+        boards_json(sh, &writers)
+    ))
 }

@@ -75,6 +75,11 @@
   #toast { position: absolute; left: 50%; bottom: 12px; transform: translate(-50%, 8px); max-width: calc(100% - 24px); background: var(--toast); color: var(--toast-fg);
            padding: 10px 16px; border-radius: 14px; font-size: 16px; font-weight: 600; pointer-events: none; opacity: 0; transition: opacity .25s, transform .25s; text-align: center; box-shadow: 0 6px 20px #0008; }
   #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #toast.show.act { pointer-events: auto; }
+  #toast button { display: block; margin: 8px auto 0; font: 700 15px var(--sans); background: var(--go); color: var(--go-fg); border: 0; border-radius: 10px; padding: 7px 14px; }
+  .happened { font-size: 15px; color: var(--fg); background: var(--menu-item); border-radius: 12px; padding: 8px 12px; }
+  .happened small { color: var(--dim); display: block; }
+  .happened button { margin-top: 6px; }
 
   /* The dock is one thin strip: a one-line status, the controls this moment
      needs, and the main button. Everything else lives in the ⋯ menu. */
@@ -253,6 +258,10 @@
     <button class="menuBtn" id="shareMenuBtn" hidden>Share boards from this round…</button>
     <button class="menuBtn" id="redealBtn">Deal new cards (new round)</button>
     <button class="menuBtn danger" id="newGameBtn">New game with whoever is here</button>
+    <button class="menuBtn" id="freshBtn">Start a fresh table with this group</button>
+    <h2>What happened</h2>
+    <p id="happenedEmpty">Nothing yet: changes at this table made by others show up here.</p>
+    <div class="list" id="happenedList"></div>
     <h2>Players</h2>
     <div class="list" id="playerList"></div>
     </div>
