@@ -546,7 +546,7 @@ try {
     await homePage.click('#homeNew');
     const started = await homePage.waitForFunction(() => location.hash === '#family-night' && window.__cl?.ui?.().seated, null, { timeout: 8000 }).then(() => true, () => false);
     gate('starting a table suggests a name and uses my usual name; a typed name is kept (link-safe) and I join on arrival',
-      /^[a-z]+-[a-z]+-\d\d$/.test(suggested) && myName === 'Ana' && started, `${suggested} | ${myName} | started ${started}`);
+      /^[a-z]+-[a-z]+-[a-z]+$/.test(suggested) && myName === 'Ana' && started, `${suggested} | ${myName} | started ${started}`);
     // Opening another table's link: one tap, my name already filled in.
     const other = await A.page.context().newPage();
     await other.goto(`http://localhost:${PORT}/?signal=ws://localhost:${RELAY}#someone-elses-table`);
