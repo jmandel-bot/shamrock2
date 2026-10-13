@@ -692,7 +692,9 @@ async function connect() {
   addEventListener('pagehide', () => room.leave());
   return { send: (u8) => peers.size && action.send(u8), rejoin };
 }
-const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://nostr.mom', 'wss://relay.snort.social', 'wss://offchain.pub'];
+// ?relays=host1,host2 overrides the list (for testing from a phone).
+const RELAYS = params.get('relays')?.split(',').map((h) => (h.includes('://') ? h : `wss://${h}`))
+  ?? ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net', 'wss://nostr.mom', 'wss://relay.snort.social', 'wss://offchain.pub'];
 const REJOIN_FIRST_MS = +(params.get('rejoin') ?? 12000);
 
 // Solo play (a share link) never connects to anyone.
