@@ -153,8 +153,8 @@ try {
 
   // ---- writing ----------------------------------------------------------------------
   console.log('\n# writing (everyone at once)');
-  const startLabel = await A.page.textContent('#go');
-  gate('starting names how many players will be dealt in', startLabel === 'Start with 5 players', startLabel);
+  const startLabel = await A.page.textContent('#go'), lobbyLine = await A.page.textContent('#hint');
+  gate('the lobby says how many players will be dealt in', startLabel === 'Start' && lobbyLine.includes('5 players here'), `${lobbyLine} | ${startLabel}`);
   await A.go(); // Start
   await until([...players, W], (d) => d.phase === 'writing' && d.round === 1 && d.dealt.length === 5);
   gate('one press deals everyone in, and fixes the roster', true);
@@ -254,7 +254,10 @@ try {
   const label = await A.page.textContent('#hint');
   const proceed = await A.page.textContent('#alt');
   const eAlt = await E.page.evaluate(() => document.getElementById('alt').hidden);
-  gate('progress names who is left; override reads "Proceed with 4 of 5"', label.includes('4/5') && label.includes('Eve') && proceed === 'Proceed with 4 of 5' && eAlt, `${label} | ${proceed} | Eve's own Proceed hidden: ${eAlt}`);
+  gate('the status names who is still writing; the override reads "Start without Eve"', label.includes('Waiting for Eve') && proceed === 'Start without Eve' && eAlt, `${label} | ${proceed} | Eve's own override hidden: ${eAlt}`);
+  // Plain words that still fit: on the phone, the status line isn't cut off.
+  const fits = await E.page.evaluate(() => { const h = document.getElementById('hint'); return [h.scrollWidth <= h.clientWidth + 1, h.textContent]; });
+  gate("on a phone, the status line fits without being cut off", fits[0], fits[1]);
   // Submitted players can still edit.
   await A.settle();
   await A.tap((await A.petal(2)).slice(0, 2));
@@ -576,7 +579,7 @@ try {
 
   // ---- share boards: pick clovers, open the link at a fresh table ------------------------
   console.log('\n# share boards');
-  await A.page.click('#side'); // Share boards
+  await A.page.evaluate(() => document.getElementById('shareMenuBtn').click()); // Share boards (menu)
   await A.page.waitForSelector('#shareSheet.open');
   await A.page.click('#shareList .item:nth-child(2) input'); // leave one out
   await A.page.waitForFunction(() => !document.getElementById('shareCopy').disabled && document.getElementById('shareText').textContent.includes('?b='));
@@ -634,7 +637,7 @@ try {
   await B.page.waitForSelector('#recapSheet.open', { timeout: 5000 });
   await B.page.click('#recapNext');
   await until(all, (d) => d.phase === 'writing' && d.round === 2);
-  gate('next round button names the players', nextLabel === 'Next round with 5 players', nextLabel);
+  gate('the next round button says what it does', nextLabel === 'Next round', nextLabel);
   const r2 = await C.digest();
   gate('next round: same players', r2.seats.filter((s) => s[2]).length === 5);
 

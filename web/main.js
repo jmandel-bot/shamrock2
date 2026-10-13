@@ -482,6 +482,7 @@ $('watchBtn').onclick = watch;
 $('menuBtn').onclick = () => {
   const s = ui();
   renderHappened();
+  $('unsubmitBtn').hidden = !(s.phase === 'writing' && s.ready);
   $('linkText').textContent = location.href;
   // Everyone at the table, by name, with what they're up to.
   const doing = { writing: 'writing', ready: 'submitted', writer: 'their clover is up' };
@@ -517,6 +518,7 @@ $('switchBtn').onclick = () => { closeSheets(); openJoin(); };
 $('watchMenuBtn').onclick = watch;
 $('redealBtn').onclick = () => { closeSheets(); act(6); };
 $('newGameBtn').onclick = () => { closeSheets(); act(7); };
+$('unsubmitBtn').onclick = () => { closeSheets(); act(2); };
 $('freshBtn').onclick = () => { closeSheets(); freshTable(); };
 
 // Card size is per device (display only): bigger cards just overlap more.
@@ -592,15 +594,20 @@ function renderUi(force = false) {
   if (!force && key === lastUi) return;
   lastUi = key;
 
-  // One short line of status; how-to tips show once per device (see `tip`).
+  // One short line in plain words: who or what, and its state. Buttons
+  // carry the actions, so the text never repeats them; things that would
+  // crowd it (decoys, withdrawing a submitted clover, sharing) live on the
+  // board, in the menu or in the recap. How-to tips show once per device.
   let hint = '', go = null, alt = null, side = null, decoys = false;
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
-  const narrow = innerWidth < 480;
-  const clover = s.n ? `<b>${esc(s.writerName ?? '')}</b> · ${s.k + 1}/${s.n} · ${plural(s.writerDecoys, 'decoy')}` : '';
+  const ORDINAL = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth'];
+  const whose = `<b>${esc(s.writerName ?? '')}'s</b> clover`;
+  const clover = s.n ? `${whose}, ${ORDINAL[s.k] ?? `number ${s.k + 1}`} of ${s.n}` : '';
+  const solved = `Solved <b>${esc(s.writerName ?? '')}'s</b> clover!`;
   if (s.phase === 'guessing' && !(s.isWriter && !s.done) && (solo || s.seated)) tip('guess');
   if (solo) {
     if (s.phase === 'guessing' && s.done) {
-      hint = `<b>${esc(s.writerName ?? '')}</b> · solved`;
+      hint = solved;
       go = [s.k + 1 < s.n ? 'Next clover' : 'Done', true, () => act(4)];
     } else if (s.phase === 'guessing') {
       hint = clover;
@@ -611,7 +618,7 @@ function renderUi(force = false) {
     }
   } else if (!s.seated) {
     hint = !s.players.length ? "No one's playing yet"
-      : s.phase === 'guessing' ? `Watching ${clover}` : 'Watching';
+      : s.phase === 'guessing' ? `Watching ${whose}` : 'Watching';
     go = ['Join', true, openJoin];
   } else switch (s.phase) {
     case 'lobby':
@@ -620,48 +627,48 @@ function renderUi(force = false) {
         go = ['Start guessing', s.dealable.length > 0, () => act(1)];
         break;
       }
-      hint = s.dealable.length < 2 ? 'Invite friends' : esc(names(s.dealable));
-      go = [narrow ? `Start (${s.dealable.length})` : `Start with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
+      hint = s.dealable.length < 2 ? 'Just you here' : `${s.dealable.length} players here`;
+      go = ['Start', s.dealable.length > 0, () => act(1)];
       break;
     case 'writing': {
       const left = s.progress.filter((p) => !p.ready).map((p) => p.name);
-      const waiting = `${s.readyCount}/${s.progress.length} in${left.length && left.length <= 2 ? ` · waiting for ${esc(names(left))}` : ''}`;
+      const who = left.length ? names(left.map((n) => `<b>${esc(n)}</b>`)) : 'the others';
       if (!s.inRound) {
-        hint = `Next round for you · ${waiting}`;
+        hint = "You're in the next round";
       } else if (!s.ready) {
         tip('write');
-        hint = s.filled < 4 ? `Your clover · clues ${s.filled}/4` : 'Decoys?';
-        decoys = s.filled >= 4;
+        hint = s.filled < 4 ? `${s.filled} of 4 clues written` : `Clues done · ${plural(s.decoys, 'decoy')}`;
         go = ['Submit', s.canReady, () => act(2)];
       } else {
-        hint = waiting;
-        go = [narrow ? '✓' : 'Submitted ✓', true, () => act(2), 'on'];
+        hint = `Submitted · waiting for ${who}`;
       }
+      decoys = s.inRound && s.filled >= 4;
       if ((s.ready || !s.inRound) && s.readyCount > 0 && s.readyCount < s.progress.length) {
-        alt = [narrow ? `Proceed · ${s.readyCount}/${s.progress.length}` : `Proceed with ${s.readyCount} of ${s.progress.length}`, () => act(5)];
+        alt = [left.length === 1 ? `Start without ${left[0]}` : 'Start without them', () => act(5)];
+        if (s.ready) hint = `Waiting for ${who}`;
       }
-      // Everyone dealt in has gone and nobody submitted: nothing to proceed
+      // Everyone dealt in has gone and nobody submitted: nothing to start
       // with, so offer a fresh deal for whoever is here.
       if (!s.inRound && s.readyCount === 0 && s.progress.every((p) => p.away) && s.dealable.length) {
-        alt = [narrow ? 'Deal again' : `Deal again for ${plural(s.dealable.length, 'player')}`, () => act(6)];
+        hint = 'The writers have left';
+        go = ['Deal again', true, () => act(6)];
       }
       break;
     }
     case 'guessing':
       if (s.done) {
-        hint = `<b>${esc(s.writerName)}</b> · solved`;
+        hint = solved;
         go = [s.k + 1 < s.n ? 'Next clover' : 'Finish round', true, () => act(4)];
       } else if (s.isWriter) {
-        hint = 'Your clover · no hints!';
+        hint = "They're guessing your clover";
       } else {
         hint = clover;
         go = ['Guess', s.canCheck, () => act(3)];
       }
       break;
     case 'end':
-      hint = `Round ${s.round} done`;
-      go = [narrow ? `Next round (${s.dealable.length})` : `Next round with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
-      side = ['Share', openShare];
+      hint = `Round ${s.round} is over`;
+      go = ['Next round', s.dealable.length > 0, () => act(1)];
       break;
   }
   // When a round ends, its recap opens once by itself; the status reopens it.
@@ -669,7 +676,7 @@ function renderUi(force = false) {
   // Not connected to anyone: say so rather than look normal while broken.
   if (!solo && !peers.size) {
     const others = s.players.some((p) => !p.you);
-    hint = `<span class="pulse"></span>${others ? 'Reconnecting…' : 'Waiting for others'}`;
+    hint = `<span class="pulse"></span>${others ? 'Reconnecting to the table…' : 'Waiting for others'}`;
   }
   // Submission progress: a thin bar along the top of the strip.
   const segs = $('segs');
@@ -690,7 +697,6 @@ function renderUi(force = false) {
   const recap = !home && s.phase === 'end' && s.boards.length > 0;
   $('hint').classList.toggle('pick', picking || recap);
   $('hint').onclick = picking ? openClovers : recap ? openRecap : null;
-  if (picking || recap) $('hint').innerHTML += ' ▾';
   // Invite sits in the strip itself in the lobby, or whenever you're alone.
   $('invite').hidden = solo || home || !(s.phase === 'lobby' || !peers.size);
   const goBtn = $('go');
