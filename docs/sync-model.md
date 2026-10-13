@@ -1,6 +1,6 @@
 # Shamrock sync model
 
-Status: **proposed**. It replaces the special cases added along the way (set-aside detection by deck shuffle, separate end-of-round logging) with one model. The parts marked *(exists)* are already built and tested; *(new)* is what this proposal adds or changes.
+Status: **proposed**. It replaces the special cases added along the way (set-aside detection by deck shuffle, separate end-of-round logging) with one model. The parts marked *(exists)* are already built and tested; *(new)* is what this proposal adds or changes, each with its tests. Nothing is deferred.
 
 ## What it has to handle
 
@@ -29,6 +29,7 @@ The model should treat each case by its *relationship*, never by the story that 
 
 ```
 seats:   seat id → { name, active, stamp }          last writer wins per seat
+moves:   table id → { room, stamp }                where a group moved to (new)
 round:   header + body
   header { table, epoch, n, parent, dealer,         which round this is, and where it came from
            players, seed, deck, stamp, custom }
@@ -61,7 +62,7 @@ When two rounds meet, one total order decides, the same on every device:
 
 The winner becomes current. On a device whose round lost, the round body is cleared and the seats are untouched.
 
-This order is the *mechanism*. It is meaningful for one table (cases 1–2). For two tables it is merely deterministic, which is why case 3 also gets a human choice (below).
+This order is the *mechanism*. It is meaningful for one table (cases 1–2). For two tables it is merely deterministic, which is why case 3 also gets a human choice (see "Moving your group").
 
 ## Explaining a change *(new)*
 
@@ -73,7 +74,7 @@ Whenever a device's current round is replaced by one it didn't deal, it compares
 | `parent` is my round | The table moved on | "Cy dealt round 3." / "Cy dealt round 3; you're in next round." |
 | Same `table` and `epoch`, `parent` isn't mine | I missed rounds, or two deals crossed | "Ben dealt round 3 while you were away." or, if mine was also a fresh deal, "Ben dealt at the same moment; continuing Ben's." |
 | Same `table`, higher `epoch` | Someone started a New game | "Ana started a new game." |
-| Different `table` | Another group has been playing in this room | "Cy and Dee have also been playing at this table." plus a choice (below) |
+| Different `table` | Another group has been playing in this room | "Cy and Dee have also been playing at this table." plus **Move us to a new table** |
 
 Whenever the round I'm leaving had anything in it, the notice adds "Your round is in Past games."
 
@@ -85,7 +86,19 @@ Whenever the round I'm leaving had anything in it, the notice adds "Your round i
 - A finished round is recorded as finished. Anything else is marked *unfinished*, with each clover marked done, guessed so far, or not guessed.
 - *Play these again* offers only clovers that have all four clues. Half-written ones can be read but not replayed.
 - Past games is capped at the last 60 rounds per device *(exists)*.
-- What isn't covered: an edit that reaches a device after its round has already been replaced. The author's device still has it, which is the point of "personal".
+- **Late edits** *(new)*: each device keeps the last round it was pushed out of alive in the background, until it next deals or joins a new round of its own (at most 10 minutes). A change that arrives for that round merges into it, updating the Past games copy and what a Move would carry. A teammate's last edit that crossed the switch in flight still lands.
+- Older rounds than that are only on the devices that played them. The table never shares the past.
+
+## Moving your group *(new)*
+
+When two tables meet in one room, playing together is the default and needs nothing. The notice on the outranked side offers **Move us to a new table**:
+
+1. **One tap, by anyone in the group.** Their device opens a fresh room under a suggested name, seeded with its copy of the group's table (the round they were in, and their seats). They arrive seated, mid-round, where they were.
+2. **The room remembers the move.** A small shared record goes into the old room: `moves[group's table id] = new room`, last writer wins, a few bytes. Every device of that group sees it whenever it next connects: now, after a reload, or later from its save.
+3. **The rest of the group gets one tap to follow:** "Ana moved your group to #quiet-heron-dell. Go there?" Following seeds the new room with *their own* copy too. Copies of the same round merge, so everyone's drafts arrive.
+4. **Nobody moves without choosing.** The other group isn't affected and keeps the room. Anyone who ignores the prompt stays at the merged table.
+
+The same action is in the ⋯ menu at any time: **Start a fresh table with this group**.
 
 ## Presence and pointers *(exists)*
 
@@ -109,7 +122,8 @@ A restored save is not trusted. It merges like any other sync and is classified 
 |---|---|
 | A round changes under you | The notice above (one line, about 8 s), naming who and what. |
 | Your round is replaced | It's in Past games, marked unfinished, readable, with complete clovers replayable. |
-| Two tables meet in one room *(new)* | Default: play together. Nothing blocks, the next deal includes everyone. The notice offers **Move us to a new table**: it opens a fresh room under a suggested name, carrying this device's game (its save), and copies the link to send to your group. Step 2 (see below). |
+| Two tables meet in one room *(new)* | Default: play together. Nothing blocks, the next deal includes everyone. The notice offers **Move us to a new table**: you arrive at a fresh room seated and mid-round, and your group is offered one tap to follow. |
+| You want your own table *(new)* | **Start a fresh table with this group** in the ⋯ menu: the same Move, any time. |
 | Everyone dealt in has left, nobody submitted | **Deal again** in the strip *(exists)*. |
 | Some players stuck writing | **Proceed with N of M** *(exists)*. |
 | Alone or disconnected | Status says *Waiting for others* / *Reconnecting…*; the page retries on its own *(exists)*. |
@@ -118,7 +132,9 @@ A restored save is not trusted. It merges like any other sync and is classified 
 ## Bounds
 
 - **Shared table:** the seats plus one round. The only growth inside a round is clue versions (about 60–100 bytes per edit), so a chatty six-player round is about 15 KB. It never accumulates across rounds, so syncs, hashes and saves stay that size however long a table plays. No compaction needed.
-- **Seats:** one per name ever used at the table. Negligible; prune inactive ones later if a table is used by many people over months.
+- **Seats:** one per name ever used, about 30 bytes each; a hundred names is 3 KB. Rather than prune them (which a merge would undo), the simulator checks the table stays under a fixed budget (50 KB) through its longest games.
+- **Moves:** one per group that ever moved out of a room, a few bytes each.
+- **The last replaced round**, kept for late edits: at most one round per device, dropped after 10 minutes.
 - **Past games:** 60 rounds per device.
 
 ## Guarantees, and how they're checked
@@ -131,9 +147,12 @@ The network simulator (`core/tests/network.rs`, 300 chaotic games per run, 5,000
 - no hold outlives its hand;
 - the round can be played to its end;
 - *(new)* every round a device was in is in its Past games once replaced, with that device's last view of it;
-- *(new)* every round change a device didn't cause produces exactly one notice, classified correctly (the simulator knows the true cause).
+- *(new)* every round change a device didn't cause produces exactly one notice, classified correctly (the simulator knows the true cause);
+- *(new)* a late edit to a just-replaced round reaches every device that was in it, in Past games;
+- *(new)* a moved group, once everyone follows, has one table at the new room with every member's work, and the old room is untouched;
+- *(new)* the shared table stays under its size budget.
 
-Fault scenarios in real browsers (`harness/faults.mjs`) cover the page's own handling: join storm, cut-off phone, lag, reload, everyone leaving, relay outage, death mid-drag, being alone, two groups meeting. *(new)* Each also checks the notice and the Past games entry.
+Fault scenarios in real browsers (`harness/faults.mjs`) cover the page's own handling: join storm, cut-off phone, lag, reload, everyone leaving, relay outage, death mid-drag, being alone, two groups meeting. *(new)* Each also checks the notice and the Past games entry. A new scenario moves a group: one taps Move, another follows from the prompt, a third reopens the old room later and is offered the move from its save; both rooms are checked afterwards.
 
 ## Changes from today
 
@@ -143,5 +162,6 @@ Fault scenarios in real browsers (`harness/faults.mjs`) cover the page's own han
 | `deck_seed` (derived from table and epoch instead) | One classifier and one notice for every round change |
 | End-of-round logging as a separate path | One rule: a round leaving current goes to Past games |
 | | Past games: unfinished marks; replay only complete clovers |
-
-**Step 2**, once we see how often it happens: **Move us to a new table** for two tables meeting in one room.
+| | The last replaced round kept briefly, so late edits land in it |
+| | **Move us to a new table**: a move record in the room, a prompt to follow, and the same action in the menu |
+| | A size budget for the table, checked by the simulator |
