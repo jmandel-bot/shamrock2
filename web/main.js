@@ -8,6 +8,9 @@ const params = new URLSearchParams(location.search);
 // device's tables and past games, with a button to start a new table.
 const home = !location.hash.slice(1) && !params.has('b');
 const roomId = decodeURIComponent(location.hash.slice(1));
+// Fault tests (?chaos): `cut` silences this page both ways while its
+// connections stay up (a phone in a tunnel); `delayMs` lags what arrives.
+const chaos = params.has('chaos') ? { cut: false, delayMs: 0 } : null;
 
 const $ = (id) => document.getElementById(id);
 const canvas = $('c'), ctx = canvas.getContext('2d'), clueInput = $('clue');
@@ -126,7 +129,7 @@ function drainOutbox() {
     p += 5 + n;
     if (kind === 1) {
       stats.sentPackets++; stats.sentBytes += n;
-      net?.send(body);
+      if (!chaos?.cut) net?.send(body);
     } else if (kind === 2) {
       const b = new DataView(body.buffer, body.byteOffset, body.byteLength);
       const [x, y, w, h, angle] = [1, 5, 9, 13, 17].map((o) => b.getFloat32(o, true));
@@ -141,6 +144,11 @@ function drainOutbox() {
 const linkId = (s) => { let h = 0x811c9dc5; for (const c of String(s)) h = Math.imul(h ^ c.charCodeAt(0), 0x01000193); return (h >>> 0) || 1; };
 
 function receive(u8, link) {
+  if (chaos?.cut) return;
+  if (chaos?.delayMs) return void setTimeout(() => deliver(u8, link), chaos.delayMs);
+  deliver(u8, link);
+}
+function deliver(u8, link) {
   stats.recvPackets++; stats.recvBytes += u8.length;
   X.on_message(writeInbox(u8), link);
 }
@@ -1026,6 +1034,8 @@ const tools = agentTools({
 if (!home) offerTools(tools);
 
 window.__cl = {
+  chaos,
+  holds: () => scratchJson(X.holds()),
   tools: Object.fromEntries(tools.map((t) => [t.name, t.run])),
   toolSpecs: () => tools.map(({ run, ...spec }) => spec),
   agentView: () => scratchJson(X.agent_view()),

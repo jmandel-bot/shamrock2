@@ -330,6 +330,13 @@ pub extern "C" fn snapshot() -> u32 {
     g().scratch.len() as u32
 }
 
+/// Cards other players are dragging right now, as JSON {card: seat} (tests).
+#[no_mangle]
+pub extern "C" fn holds() -> u32 {
+    let h = g().app.holds();
+    to_scratch(format!("{{{}}}", h.iter().map(|(i, s)| format!("\"{i}\":{s}")).collect::<Vec<_>>().join(",")))
+}
+
 /// The current clover for an automated player (see `App::agent_view_json`).
 #[no_mangle]
 pub extern "C" fn agent_view() -> u32 {

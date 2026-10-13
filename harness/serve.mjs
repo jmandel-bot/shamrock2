@@ -22,13 +22,19 @@ export async function serve({ port = 8787, relayPort = 8788, quiet = false } = {
     }
   });
   await new Promise((r) => http.listen(port, '127.0.0.1', r));
-  const relay = createWsRelayServer({ port: relayPort, host: '127.0.0.1' });
+  let relay = createWsRelayServer({ port: relayPort, host: '127.0.0.1' });
   await relay.ready;
   if (!quiet) {
     console.log(`game:   http://localhost:${port}/?signal=ws://localhost:${relayPort}#myroom`);
     console.log(`        (open in several windows; omit ?signal=… to use public Nostr relays instead)`);
   }
-  return { close: async () => { http.close(); await relay.close(); } };
+  return {
+    close: async () => { http.close(); await relay?.close(); },
+    // For fault tests: the signaling relay goes down (players already
+    // connected keep playing over WebRTC; nobody new can find the table).
+    stopRelay: async () => { await relay?.close(); relay = null; },
+    startRelay: async () => { relay = createWsRelayServer({ port: relayPort, host: '127.0.0.1' }); await relay.ready; },
+  };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
