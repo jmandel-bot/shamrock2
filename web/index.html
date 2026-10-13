@@ -54,7 +54,11 @@
   #menuBtn { min-width: 44px; padding: 8px 10px; font-size: 20px; line-height: 1; pointer-events: auto; background: var(--bar); }
 
   #stage { position: relative; flex: 1; min-height: 0; }
-  canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: pinch-zoom; display: block; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+  /* Pinches zoom the board (in-app), never the page: a page zoomed past the
+     dock leaves the board filling the screen with no way back. */
+  html, body { touch-action: pan-x pan-y; }
+  #unzoom { pointer-events: auto; min-width: 44px; padding: 8px 10px; font-size: 15px; background: var(--bar); }
   #clue { position: absolute; display: none; transform-origin: center; text-align: center; font: 600 22px var(--serif);
           border: 3px solid var(--go); border-radius: 16px; background: #f6fcf6; color: #0b2414; outline: none; padding: 0 12px;
           box-shadow: 0 8px 24px #0006; }
@@ -130,6 +134,7 @@
   <div id="top">
     <button id="menuBtn" aria-label="Menu">⋯</button>
     <div id="roster"></div>
+    <button id="unzoom" hidden aria-label="Reset zoom">1×</button>
   </div>
   <input id="clue" maxlength="40" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="next" aria-label="Clue">
   <div id="toast" role="status"></div>

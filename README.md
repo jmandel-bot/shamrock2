@@ -54,7 +54,7 @@ node harness/serve.mjs # prints a URL
 
 **The bottom bar is one thin strip**: a one-line status (whose clover, how many are in), the controls the moment needs and the main button; while writing, a thin coloured bar along its top fills as players submit. How-to tips show once per device (the next touch on the board dismisses them) and stay in the ⋯ menu. The menu also has **Full screen** where the browser supports it (Android, desktop); on iPhone, Add to Home Screen opens it full screen via the web manifest.
 
-**Pinch zoom** is the browser's own: the page doesn't cap zoom, and the board lets two-finger pinches through (`touch-action: pinch-zoom`) while one finger plays. A second finger cancels whatever the first started (a dragged card goes back, nothing turns).
+**Pinch zoom** is the board's own, per device: two fingers (or ctrl+wheel / a trackpad pinch) zoom and pan the board area up to 4×, while the bottom bar and menu stay normal size, so you can't get stranded zoomed in. One finger keeps playing through the zoom; **1×** (top-left, shown while zoomed) resets it. A second finger cancels whatever the first started (a dragged card goes back, nothing turns). The page itself doesn't pinch-zoom: zooming the whole page past the dock left the board filling the screen with no way back.
 
 **Card size** is per device: − / + in the ⋯ menu (narrow screens start larger). Positions on the board are shared; bigger cards just overlap more on your screen. At the largest size, cards in neighbouring spots touch edge to edge. In the tray, cards never grow past a third of the tray's width, so a saved big size can't make them overlap.
 

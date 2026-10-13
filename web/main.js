@@ -52,7 +52,9 @@ function paint(n) {
   ctx.textBaseline = 'middle';
   for (let i = 0; i < n; ) {
     switch (f[i]) {
-      case 1: ctx.setTransform(f[i + 1], f[i + 2], f[i + 3], f[i + 4], f[i + 5], f[i + 6]); i += 7; break;
+      case 1: // Rust's transform, under this device's zoom camera.
+        ctx.setTransform(cam.s, 0, 0, cam.s, cam.x * devicePixelRatio, cam.y * devicePixelRatio);
+        ctx.transform(f[i + 1], f[i + 2], f[i + 3], f[i + 4], f[i + 5], f[i + 6]); i += 7; break;
       case 2: { // rrect x y w h r fill stroke lw
         ctx.beginPath(); ctx.roundRect(f[i + 1], f[i + 2], f[i + 3], f[i + 4], f[i + 5]);
         if (u[i + 6] & 255) { ctx.fillStyle = css(u[i + 6]); ctx.fill(); }
@@ -135,29 +137,84 @@ function receive(u8, link) {
 
 // ---- input ------------------------------------------------------------------
 
-const local = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-// One finger plays; two fingers are the browser's pinch zoom (the canvas
-// allows `touch-action: pinch-zoom`). A second finger cancels whatever the
-// first one started, and nothing acts again until every finger has lifted.
-const fingers = new Set();
+// Zoom is the app's own, per device, on the board area only: two fingers
+// (or ctrl+wheel / a trackpad pinch) zoom and pan a camera over the canvas,
+// so the dock and menu stay put and you can't get stuck zoomed in. Rust
+// never knows: drawing goes through the camera and pointers come back
+// through its inverse. One finger always plays. A second finger cancels
+// whatever the first started, and nothing acts again until all have lifted.
+const cam = { s: 1, x: 0, y: 0 };
+const CAM_MAX = 4;
+const view = () => canvas.getBoundingClientRect();
+const local = (e) => { const r = view(); return [(e.clientX - r.left - cam.x) / cam.s, (e.clientY - r.top - cam.y) / cam.s]; };
+function setCam(s, x, y) {
+  const r = view();
+  cam.s = Math.min(CAM_MAX, Math.max(1, s));
+  // Keep the board area covered: no blank edges past the content.
+  cam.x = Math.min(0, Math.max(r.width * (1 - cam.s), x));
+  cam.y = Math.min(0, Math.max(r.height * (1 - cam.s), y));
+  if (cam.s < 1.01) Object.assign(cam, { s: 1, x: 0, y: 0 });
+  $('unzoom').hidden = cam.s === 1;
+  if (editing >= 0) placeEditor();
+}
+/** Zoom by `k` about the canvas point (px, py), CSS px. */
+const zoomAt = (k, px, py) => {
+  const s = Math.min(CAM_MAX, Math.max(1, cam.s * k));
+  setCam(s, px - (px - cam.x) * s / cam.s, py - (py - cam.y) * s / cam.s);
+};
+$('unzoom').onclick = () => setCam(1, 0, 0);
+
+const fingers = new Map();
+let pinch = null; // { d, mx, my, s, x, y } at the start of a two-finger gesture
 let pinching = false;
-const cancelGesture = () => { if (!pinching) { pinching = true; X.pointer_cancel(); drainOutbox(); } };
+const at = (e) => { const r = view(); return [e.clientX - r.left, e.clientY - r.top]; };
+const spread = () => {
+  const [a, b] = [...fingers.values()];
+  return { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, mx: (a[0] + b[0]) / 2, my: (a[1] + b[1]) / 2 };
+};
 canvas.addEventListener('pointerdown', (e) => {
-  fingers.add(e.pointerId);
-  if (fingers.size > 1) return cancelGesture();
-  pinching = false;
   try { canvas.setPointerCapture(e.pointerId); } catch {}
+  fingers.set(e.pointerId, at(e));
+  if (fingers.size === 2) {
+    if (!pinching) { X.pointer_cancel(); drainOutbox(); }
+    pinching = true;
+    pinch = { ...spread(), s: cam.s, x: cam.x, y: cam.y };
+    return;
+  }
+  if (fingers.size > 2 || pinching) return;
   X.pointer_down(...local(e));
 });
-canvas.addEventListener('pointermove', (e) => { if (!pinching) X.pointer_move(...local(e)); });
+canvas.addEventListener('pointermove', (e) => {
+  if (!fingers.has(e.pointerId)) { if (e.pointerType === 'mouse') X.pointer_move(...local(e)); return; }
+  fingers.set(e.pointerId, at(e));
+  if (!pinching) return X.pointer_move(...local(e));
+  if (fingers.size !== 2 || !pinch) return;
+  const now = spread(), s = pinch.s * now.d / pinch.d;
+  // The board point under the fingers' midpoint follows the midpoint.
+  setCam(s, now.mx - (pinch.mx - pinch.x) * s / pinch.s, now.my - (pinch.my - pinch.y) * s / pinch.s);
+});
 const lift = (e, act) => {
-  const was = fingers.delete(e.pointerId);
-  if (pinching || !was) { if (!fingers.size) pinching = false; return; }
+  if (!fingers.delete(e.pointerId)) return;
+  if (pinching) {
+    if (fingers.size === 2) pinch = { ...spread(), s: cam.s, x: cam.x, y: cam.y };
+    if (!fingers.size) { pinching = false; pinch = null; }
+    return;
+  }
   if (act) { stats.presses++; X.pointer_up(...local(e)); } else X.pointer_cancel();
   drainOutbox();
 };
 canvas.addEventListener('pointerup', (e) => lift(e, true));
 canvas.addEventListener('pointercancel', (e) => lift(e, false));
+canvas.addEventListener('wheel', (e) => {
+  // ctrl+wheel and trackpad pinches zoom the board; a plain wheel pans when zoomed.
+  if (!e.ctrlKey && cam.s === 1) return;
+  e.preventDefault();
+  const [px, py] = at(e);
+  if (e.ctrlKey) zoomAt(Math.exp(-e.deltaY / 200), px, py);
+  else setCam(cam.s, cam.x - e.deltaX, cam.y - e.deltaY);
+}, { passive: false });
+// Safari's own page pinch: the board handles pinches itself.
+for (const g of ['gesturestart', 'gesturechange']) document.addEventListener(g, (e) => e.preventDefault());
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLInputElement) return;
@@ -167,13 +224,21 @@ addEventListener('keydown', (e) => {
 const act = (code) => { stats.presses++; X.action(code); drainOutbox(); renderUi(true); };
 
 let editing = -1;
+let editorAt = null;
+function placeEditor() {
+  if (!editorAt) return;
+  const [x, y, w, h, angle] = editorAt;
+  // Under the zoom camera: centre moves with it, the box scales with it.
+  Object.assign(clueInput.style, {
+    display: 'block', left: `${cam.x + x * cam.s - w / 2}px`, top: `${cam.y + y * cam.s - h / 2}px`, width: `${w}px`, height: `${h}px`,
+    transform: `rotate(${angle}rad) scale(${cam.s})`,
+  });
+}
 function openClueEditor(idx, x, y, w, h, angle, text) {
   const reposition = editing === idx && clueInput.style.display === 'block';
   editing = idx;
-  Object.assign(clueInput.style, {
-    display: 'block', left: `${x - w / 2}px`, top: `${y - h / 2}px`, width: `${w}px`, height: `${h}px`,
-    transform: `rotate(${angle}rad)`,
-  });
+  editorAt = [x, y, w, h, angle];
+  placeEditor();
   if (reposition) return; // keep what's being typed
   clueInput.value = text;
   clueInput.focus();
@@ -200,6 +265,7 @@ new ResizeObserver(() => {
   canvas.width = Math.round(r.width * dpr);
   canvas.height = Math.round(r.height * dpr);
   X.resize(r.width, r.height, dpr);
+  setCam(cam.s, cam.x, cam.y);
   // Layout shifts must not interrupt typing.
   if (editing >= 0) { X.edit_clue(editing); drainOutbox(); }
 }).observe(canvas);
@@ -580,6 +646,7 @@ requestAnimationFrame(tick);
 
 const probe = (fn, ...a) => { fn(...a); return Array.from(new Float32Array(X.memory.buffer, X.probe_ptr(), 3)); };
 window.__cl = {
+  camera: () => ({ ...cam }),
   device, X, stats, peers, ui, joinAs, watch,
   digest: () => scratchJson(X.digest()),
   card: (i) => probe(X.probe_card, i),

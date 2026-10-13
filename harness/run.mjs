@@ -319,30 +319,44 @@ try {
     gate('at the largest card size every card is still on screen', onScreen);
   }
 
-  // Pinch zoom belongs to the browser: the page allows it, and a second
-  // finger cancels a drag (card goes back, nothing turns).
+  // Pinch zoom is the board's own: two fingers zoom a camera over the board
+  // (never the page, which could strand you), one finger keeps playing
+  // through it, and 1× resets. A second finger cancels a drag in progress.
   {
-    const meta = await E.ev(() => document.querySelector('meta[name=viewport]').content);
-    const ta = await E.ev(() => getComputedStyle(document.getElementById('c')).touchAction);
+    const ptr = (list) => E.ev((list) => {
+      const c = document.getElementById('c'), r = c.getBoundingClientRect();
+      for (const [type, id, px, py] of list) c.dispatchEvent(new PointerEvent(type, { pointerId: id, pointerType: 'touch', isPrimary: id === 1, clientX: r.left + px, clientY: r.top + py, bubbles: true }));
+    }, list);
     await E.settle();
     const before = JSON.stringify(cur(await E.digest()).cards);
     const i = cur(await E.digest()).cards.findIndex((c) => c[0] === 'table');
     const [x, y] = await E.card(i);
     const [sx, sy] = await E.slot(0);
-    await E.ev(([x, y, sx, sy]) => {
-      const c = document.getElementById('c'), r = c.getBoundingClientRect();
-      const ev = (type, id, px, py) => c.dispatchEvent(new PointerEvent(type, { pointerId: id, pointerType: 'touch', isPrimary: id === 1, clientX: r.left + px, clientY: r.top + py, bubbles: true }));
-      ev('pointerdown', 1, x, y);
-      for (let k = 1; k <= 6; k++) ev('pointermove', 1, x + (sx - x) * k / 10, y + (sy - y) * k / 10);
-      ev('pointerdown', 2, x + 80, y + 80);   // second finger: the browser pinches
-      ev('pointermove', 1, sx, sy);
-      ev('pointercancel', 1, sx, sy);
-      ev('pointercancel', 2, x + 120, y + 120);
-    }, [x, y, sx, sy]);
+    const drag = [['pointerdown', 1, x, y]];
+    for (let k = 1; k <= 6; k++) drag.push(['pointermove', 1, x + (sx - x) * k / 10, y + (sy - y) * k / 10]);
+    await ptr([...drag, ['pointerdown', 2, x + 80, y + 80], ['pointermove', 1, sx, sy], ['pointerup', 1, sx, sy], ['pointerup', 2, x + 120, y + 120]]);
     await sleep(300);
-    const after = JSON.stringify(cur(await E.digest()).cards);
-    gate('pinch zoom is allowed (no maximum-scale; the board lets the browser pinch)', !/maximum-scale|user-scalable=no/.test(meta) && ta.includes('pinch-zoom'), `${meta} | ${ta}`);
-    gate('a second finger cancels a drag: the card goes back, nothing turns', after === before, after === before ? '' : 'moved');
+    gate('a second finger cancels a drag: the card goes back, nothing turns', JSON.stringify(cur(await E.digest()).cards) === before);
+    // Pinch out around the card.
+    const steps = [['pointerdown', 1, x - 20, y - 20], ['pointerdown', 2, x + 20, y + 20]];
+    for (let k = 1; k <= 8; k++) steps.push(['pointermove', 1, x - 20 - 4 * k, y - 20 - 4 * k], ['pointermove', 2, x + 20 + 4 * k, y + 20 + 4 * k]);
+    await ptr([...steps, ['pointerup', 1, x - 52, y - 52], ['pointerup', 2, x + 52, y + 52]]);
+    await sleep(100);
+    const cam = await E.ev(() => window.__cl.camera());
+    const page = await E.ev(() => visualViewport.scale);
+    gate('pinching the board zooms the board, not the page', cam.s > 2 && page === 1 && JSON.stringify(cur(await E.digest()).cards) === before
+      && await E.page.isVisible('#unzoom'), `board ${cam.s.toFixed(2)}×, page ${page}×`);
+    // One finger still plays through the zoom: tapping the zoomed card turns it.
+    const rot0 = cur(await E.digest()).cards[i][3];
+    const [zx, zy] = [cam.x + x * cam.s, cam.y + y * cam.s];
+    await ptr([['pointerdown', 1, zx, zy], ['pointerup', 1, zx, zy]]);
+    await sleep(200);
+    const rot1 = cur(await E.digest()).cards[i][3];
+    for (let k = 0; k < 3; k++) await ptr([['pointerdown', 1, zx, zy], ['pointerup', 1, zx, zy]]);
+    await sleep(200);
+    gate('while zoomed, one finger still plays (a tap turns the card under it)', rot1 === (rot0 + 1) % 4 && JSON.stringify(cur(await E.digest()).cards) === before, `${rot0} → ${rot1}`);
+    await E.page.click('#unzoom');
+    gate('1× resets the board zoom', (await E.ev(() => window.__cl.camera().s)) === 1 && !(await E.page.isVisible('#unzoom')));
   }
 
   const wd = JSON.stringify(await Wr.digest());
