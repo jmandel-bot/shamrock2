@@ -128,6 +128,27 @@
   /* Solo play from a share link: no table, so no roster or table menu. */
   body.solo #roster, body.solo #tableItems { display: none; }
   .tip { color: var(--dim); font-size: 15px; }
+  body.home #top, body.home #dock { visibility: hidden; }
+  .tableRow { text-decoration: none; color: var(--fg); background: var(--menu-item); border-radius: 14px; padding: 10px 14px; }
+  .tableRow small, .logEntry small { color: var(--dim); font-size: 14px; }
+  .logEntry { background: var(--menu-item); border-radius: 14px; padding: 10px 12px; }
+  .logEntry summary { cursor: pointer; font-size: 15px; line-height: 1.35; }
+  .logEntry .row { margin-top: 10px; }
+  .mini { margin-top: 14px; }
+  .mini .who { font-size: 15px; margin-bottom: 6px; }
+  .mclover { display: grid; grid-template: auto auto auto / auto auto auto; grid-template-areas: ". t ." "l g r" ". b ."; align-items: center; justify-items: center; gap: 4px; }
+  .mclover > span { font: 600 17px var(--serif); color: var(--fg); max-width: 240px; text-align: center; }
+  .mclover .ct { grid-area: t; } .mclover .cb { grid-area: b; } .mgrid { grid-area: g; }
+  .mclover .cl { grid-area: l; writing-mode: vertical-rl; transform: rotate(180deg); }
+  .mclover .cr { grid-area: r; writing-mode: vertical-rl; }
+  .mgrid { display: grid; grid-template-columns: repeat(2, 108px); gap: 4px; }
+  .mc { position: relative; height: 108px; background: #fcf8ee; border: 1px solid #cdbf9a; border-radius: 10px; color: #1c1710; font: 700 14px var(--sans); }
+  .mc span { position: absolute; white-space: nowrap; }
+  .mc .t { top: 5px; left: 50%; transform: translateX(-50%); }
+  .mc .b { bottom: 5px; left: 50%; transform: translateX(-50%) rotate(180deg); }
+  .mc .r { right: 4px; top: 50%; writing-mode: vertical-rl; transform: translateY(-50%); }
+  .mc .l { left: 4px; top: 50%; writing-mode: vertical-rl; transform: translateY(-50%) rotate(180deg); }
+  .decoys { font-size: 14px; color: var(--dim); margin-top: 6px; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition: none !important; animation: none !important; }
   }
@@ -196,6 +217,7 @@
     </div>
     <p id="sizeNote" class="tip" hidden>That's as big as cards get while every card still fits. Pinch the board to zoom in further.</p>
     <div id="tipText" class="tip"></div>
+    <div class="row"><button class="menuBtn" id="logMenuBtn">Past games…</button><button class="menuBtn" id="homeMenuBtn">All my tables</button></div>
     <div id="tableItems">
     <h2>Table</h2>
     <div class="row"><button class="menuBtn" id="copyLink">Copy invite link</button></div>
@@ -208,6 +230,28 @@
     <div class="list" id="playerList"></div>
     </div>
     <button id="closeMenu">Close</button>
+  </div>
+</div>
+<div class="overlay" id="homeSheet">
+  <div class="sheet">
+    <div class="brand">
+      <svg class="bloom"><use href="#mark"/></svg>
+      <h1>shamrock</h1>
+      <p>Clue your clover. Guess your friends'.</p>
+    </div>
+    <button class="go" id="homeNew">Start a new table</button>
+    <h2 id="tablesHead">Your tables</h2>
+    <div class="list" id="tableList"></div>
+    <button class="menuBtn" id="homeLog" hidden>Past games</button>
+  </div>
+</div>
+<div class="overlay" id="logSheet">
+  <div class="sheet">
+    <h2>Past games</h2>
+    <p>Finished rounds are kept on this device, answers included.</p>
+    <p id="logEmpty">Nothing yet: finish a round and it shows up here.</p>
+    <div class="list" id="logList"></div>
+    <button id="logClose">Close</button>
   </div>
 </div>
 <div class="overlay" id="shareSheet">

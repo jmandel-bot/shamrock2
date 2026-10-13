@@ -2,7 +2,9 @@
 // hit-testing, animation and drawing decisions live in core.wasm (Rust).
 
 const params = new URLSearchParams(location.search);
-if (!location.hash.slice(1)) location.hash = Math.random().toString(36).slice(2, 8);
+// No room in the link (and no shared boards): the home page, listing this
+// device's tables and past games, with a button to start a new table.
+const home = !location.hash.slice(1) && !params.has('b');
 const roomId = decodeURIComponent(location.hash.slice(1));
 
 const $ = (id) => document.getElementById(id);
@@ -380,6 +382,7 @@ function joinAs(name) {
   X.join(writeText(name));
   drainOutbox();
   remember(nameKey, name);
+  noteTable(name);
   closeSheets();
   renderUi(true);
 }
@@ -426,7 +429,11 @@ $('menuBtn').onclick = () => {
   $('menuSheet').classList.add('open');
 };
 $('closeMenu').onclick = closeSheets;
-document.querySelectorAll('.overlay').forEach((o) => o.addEventListener('click', (e) => e.target === o && closeSheets()));
+document.querySelectorAll('.overlay').forEach((o) => o.addEventListener('click', (e) => {
+  if (e.target !== o || o.id === 'homeSheet') return;
+  closeSheets();
+  if (home) openHome();
+}));
 $('copyLink').onclick = async () => {
   try { await navigator.clipboard.writeText(location.href); toast('Invite link copied'); }
   catch { getSelection().selectAllChildren($('linkText')); toast('Select the link above and copy it'); }
@@ -585,6 +592,7 @@ function renderUi(force = false) {
       side = ['Share', openShare];
       break;
   }
+  if (!solo && !home && s.phase === 'end') logRound(s);
   // Not connected to anyone: say so rather than look normal while broken.
   if (!solo && !peers.size) {
     const others = s.players.some((p) => !p.you);
@@ -635,6 +643,96 @@ function tip(kind) {
   setTimeout(() => toast(TIPS[kind], 9000), 300);
 }
 canvas.addEventListener('pointerdown', () => $('toast').classList.remove('show'));
+
+// ---- this device's tables and game log (localStorage only) ------------------------
+
+const TABLES = 'shamrock:tables', LOG = 'shamrock:log', LOG_MAX = 60;
+const readJson = (k, d) => { try { return JSON.parse(recall(k)) ?? d; } catch { return d; } };
+const newRoom = () => Math.random().toString(36).slice(2, 8);
+const tableUrl = (room) => `${location.origin}${location.pathname}${room ? `#${room}` : ''}`;
+const goTo = (room) => { location.href = tableUrl(room); location.reload(); };
+const when = (t) => (t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'earlier');
+const guesses = (n) => `${n} guess${n === 1 ? '' : 'es'}`;
+function noteTable(name) {
+  const t = readJson(TABLES, {});
+  t[roomId] = { name, at: Date.now() };
+  remember(TABLES, JSON.stringify(t));
+}
+function myTables() {
+  const t = readJson(TABLES, {});
+  try { // Visits from before this list only left a saved name.
+    for (let i = 0; i < localStorage.length; i++) {
+      const m = localStorage.key(i).match(/^shamrock:(.+):name$/);
+      if (m && !t[m[1]]) t[m[1]] = { name: recall(m[0]), at: 0 };
+    }
+  } catch {}
+  return Object.entries(t).map(([room, v]) => ({ room, ...v })).sort((a, b) => b.at - a.at);
+}
+/** Keep a finished round's clovers (answers included) on this device. */
+function logRound(s) {
+  const boards = scratchJson(X.review());
+  if (!boards.length) return;
+  const id = boards.map((b) => b.text).join('\n\n');
+  const log = readJson(LOG, []);
+  if (log.some((e) => e.id === id)) return;
+  log.unshift({ id, room: roomId, round: s.round, at: Date.now(), players: s.players.map((p) => p.name), boards });
+  remember(LOG, JSON.stringify(log.slice(0, LOG_MAX)));
+}
+/** A small read-only clover: clues around four answer cards, decoys below. */
+function cloverHtml(b) {
+  const [name, ...rest] = b.text.split('\n');
+  const clues = rest.slice(0, 4), cards = rest.slice(4).map((l) => l.split('|'));
+  const card = (w) => `<div class="mc">${['t', 'r', 'b', 'l'].map((k, i) => `<span class="${k}">${esc(w?.[i] ?? '')}</span>`).join('')}</div>`;
+  const [tl, tr, br, bl] = cards;
+  return `<div class="mini">
+    <div class="who"><b>${esc(name)}</b> · ${b.solved ? `solved in ${guesses(b.guesses)}` : 'not solved'}</div>
+    <div class="mclover"><span class="ct">${esc(clues[0])}</span><span class="cr">${esc(clues[1])}</span>
+      <div class="mgrid">${card(tl)}${card(tr)}${card(bl)}${card(br)}</div>
+      <span class="cb">${esc(clues[2])}</span><span class="cl">${esc(clues[3])}</span></div>
+    ${cards.length > 4 ? `<div class="decoys">Decoys: ${cards.slice(4).map((w) => esc(w.join(' · '))).join('; ')}</div>` : ''}
+  </div>`;
+}
+function openLog() {
+  const log = readJson(LOG, []);
+  const list = $('logList');
+  list.replaceChildren(...log.map((e, i) => {
+    const d = document.createElement('details');
+    d.className = 'logEntry';
+    d.innerHTML = `<summary><b>${when(e.at)}</b> · round ${e.round} at #${esc(e.room)}<br><small>${esc(e.players.join(', '))} · ${e.boards.length} clover${e.boards.length === 1 ? '' : 's'}</small></summary>
+      ${e.boards.map(cloverHtml).join('')}
+      <div class="row"><button class="go replay">Play these again</button><button class="forget">Delete</button></div>`;
+    d.querySelector('.replay').onclick = async () => { location.href = await shareFromText(e.boards.map((b) => b.text)); };
+    d.querySelector('.forget').onclick = () => {
+      remember(LOG, JSON.stringify(readJson(LOG, []).filter((x) => x.id !== e.id)));
+      d.remove();
+    };
+    return d;
+  }));
+  $('logEmpty').hidden = log.length > 0;
+  closeSheets();
+  $('logSheet').classList.add('open');
+}
+function openHome() {
+  const tables = myTables();
+  $('tableList').replaceChildren(...tables.map((t) => {
+    const a = document.createElement('a');
+    a.className = 'item tableRow';
+    a.href = tableUrl(t.room);
+    a.onclick = (e) => { e.preventDefault(); goTo(t.room); };
+    a.innerHTML = `<span class="grow"><b>#${esc(t.room)}</b><br><small>as ${esc(t.name ?? '?')} · ${when(t.at)}</small></span><span aria-hidden="true">›</span>`;
+    return a;
+  }));
+  $('tablesHead').hidden = !tables.length;
+  const n = readJson(LOG, []).length;
+  $('homeLog').hidden = !n;
+  $('homeLog').textContent = `Past games (${n})`;
+  $('homeSheet').classList.add('open');
+}
+$('homeNew').onclick = () => goTo(newRoom());
+$('homeLog').onclick = openLog;
+$('logClose').onclick = () => { closeSheets(); if (home) openHome(); };
+$('logMenuBtn').onclick = openLog;
+$('homeMenuBtn').onclick = () => goTo('');
 
 // ---- network ----------------------------------------------------------------
 
@@ -698,11 +796,14 @@ const RELAYS = params.get('relays')?.split(',').map((h) => (h.includes('://') ? 
 const REJOIN_FIRST_MS = +(params.get('rejoin') ?? 12000);
 
 // Solo play (a share link) never connects to anyone.
-if (!solo) connect().then((n) => { net = n; }, (e) => toast(`Can't connect: ${e.message}`, 10000));
+if (!solo && !home) connect().then((n) => { net = n; }, (e) => toast(`Can't connect: ${e.message}`, 10000));
 
 // Returning to this room re-takes your seat; a first visit asks. Wait a
 // moment first so we've heard the table's state (and existing names).
-if (solo) {
+if (home) {
+  document.body.classList.add('home');
+  openHome();
+} else if (solo) {
   // Just play: an anonymous local seat, straight into the shared clovers.
   document.body.classList.add('solo');
   X.join(writeText('You'));
@@ -710,6 +811,7 @@ if (solo) {
   drainOutbox();
 } else {
   const saved = params.has('fresh') ? null : recall(nameKey);
+  if (saved) noteTable(saved);
   if (saved) setTimeout(() => joinAs(saved), 1500);
   else if (saved === null) setTimeout(() => { if (!ui().seated) openJoin(); }, 900);
 }

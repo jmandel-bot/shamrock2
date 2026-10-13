@@ -1126,6 +1126,23 @@ impl App {
         boards.iter().map(|b| scramble(b, &mut self.rng)).collect::<Vec<_>>().join("\n\n")
     }
 
+    /// This round's clovers for the device's game log: each in answer order
+    /// (the share-link text format, unscrambled) with how many guesses it
+    /// took and whether it was solved.
+    pub fn review_json(&self) -> String {
+        let rows: Vec<String> = self
+            .shared
+            .puzzles()
+            .iter()
+            .filter_map(|&w| {
+                let text = self.shared.export_board(w, &self.name_of(w))?;
+                let c = self.shared.check(w);
+                Some(format!("{{\"text\":{},\"guesses\":{},\"solved\":{}}}", json_str(&text), c.attempts, c.done()))
+            })
+            .collect();
+        format!("[{}]", rows.join(","))
+    }
+
     /// Scramble boards given in answer order (e.g. typed in from a screenshot).
     pub fn scramble_boards(&mut self, text: &str) -> String {
         text.split("\n\n").map(|b| scramble(b.trim(), &mut self.rng)).collect::<Vec<_>>().join("\n\n")
@@ -1407,12 +1424,10 @@ impl App {
             let clue = sc.clues[d as usize].clone();
             let keys = self.keywords(&sc, d);
             let maxw = 2.0 * LEAF_HALF_W - 30.0;
+            // The writer sees "a & b" on an empty leaf as a prompt; once a clue
+            // is written the two words are right there on the cards beside it.
             match (clue.is_empty(), keys) {
-                (false, Some(k)) => {
-                    self.text(0.0, mid - 18.0, 48.0, self.pal.clue_ink, F_SERIF, &clue, maxw);
-                    self.text(0.0, mid + 30.0, 30.0, self.pal.keyword_ink, F_SANS_BOLD, &k, maxw);
-                }
-                (false, None) => self.text(0.0, mid, 54.0, self.pal.clue_ink, F_SERIF, &clue, maxw),
+                (false, _) => self.text(0.0, mid, 54.0, self.pal.clue_ink, F_SERIF, &clue, maxw),
                 (true, Some(k)) => self.text(0.0, mid, 38.0, self.pal.keyword_ink, F_SANS_BOLD, &k, maxw),
                 (true, None) => {}
             }

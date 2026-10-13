@@ -491,6 +491,20 @@ try {
   await until(all, (d) => d.phase === 'end');
   const r1 = await A.digest();
   gate('every clover solved, same state everywhere', r1.puzzles.every((p) => p.mask === 15) && (await same(all)));
+  // The finished round is kept on this device, and the home page lists the table.
+  {
+    await A.page.waitForFunction(() => JSON.parse(localStorage.getItem('shamrock:log') ?? '[]').length > 0, null, { timeout: 5000 }).catch(() => {});
+    const log = await A.ev(() => JSON.parse(localStorage.getItem('shamrock:log') ?? '[]'));
+    gate('a finished round is saved to this device\'s game log, answers included',
+      log.length === 1 && log[0].boards.length === r1.puzzles.length && log[0].boards.every((b) => b.solved && b.text.split('\n').length >= 9), `${log.length} entries; ${JSON.stringify(log[0]?.boards.map((b) => [b.solved, b.guesses, b.text.split('\n').length]))} of ${r1.puzzles.length}`);
+    const homePage = await A.page.context().newPage();
+    await homePage.goto(`http://localhost:${PORT}/?signal=ws://localhost:${RELAY}`);
+    await homePage.waitForSelector('#homeSheet.open');
+    const rows = await homePage.$$eval('#tableList .tableRow b', (els) => els.map((e) => e.textContent));
+    const pastGames = await homePage.textContent('#homeLog');
+    gate('the home page lists my tables and past games', rows.includes(`#${room}`) && pastGames.includes('(1)'), `${rows.join(' ')} | ${pastGames}`);
+    await homePage.close();
+  }
   await A.page.screenshot({ path: `${OUT}5-end.png` });
 
   // ---- share boards: pick clovers, open the link at a fresh table ------------------------

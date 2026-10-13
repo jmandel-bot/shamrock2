@@ -206,6 +206,12 @@ pub extern "C" fn export_boards(mask: u32) -> u32 {
     to_scratch(g().app.export_boards(mask))
 }
 
+/// This round's clovers for the game log (see `App::review_json`).
+#[no_mangle]
+pub extern "C" fn review() -> u32 {
+    to_scratch(g().app.review_json())
+}
+
 /// An imported clover (text in the inbox; see `model::Custom::load`).
 /// Returns 1 if accepted.
 #[no_mangle]

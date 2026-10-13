@@ -669,6 +669,11 @@ fn writers_see_the_two_keywords_each_leaf_links() {
     let strs = String::from_utf8_lossy(&a.strs).into_owned();
     assert!(strs.contains(&label), "{label} not drawn");
     assert!(!strs.contains("tap to write"));
+    // Once the leaf has a clue, the reminder goes: the words are on the cards.
+    write(a, ["alpha", "beta", "gamma", "delta"]);
+    a.frame(2000.0);
+    let strs = String::from_utf8_lossy(&a.strs).into_owned();
+    assert!(strs.contains("alpha") && !strs.contains(&label), "{label} still drawn under a written clue");
 }
 
 #[test]
@@ -1073,6 +1078,19 @@ fn a_cancelled_gesture_puts_the_card_back_and_acts_on_nothing() {
     a.pointer_down(from.0, from.1);
     a.pointer_cancel();
     assert_eq!(a.shared.layout(w).0[NSLOTS].rot, before.rot);
+}
+
+/// The game log gets each clover as multi-line text, so JSON strings must
+/// escape control characters rather than drop them.
+#[test]
+fn review_keeps_board_lines_intact() {
+    assert_eq!(json_str("a\nb\u{1}\"c"), "\"a\\nb\\u0001\\\"c\"");
+    let t = table_in_guessing(2);
+    let json = t.apps[0].review_json();
+    let w = t.writer_now();
+    let text = t.apps[0].shared.export_board(w, "x").unwrap();
+    assert!(text.lines().count() >= 9);
+    assert!(json.contains("\\n") && !json.contains('\n'), "newlines escaped, not dropped: {json}");
 }
 
 /// One test owns the process-wide imported-clover registry.

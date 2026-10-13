@@ -678,7 +678,8 @@ pub fn json_str(s: &str) -> String {
                 out.push('\\');
                 out.push(ch)
             }
-            c if (c as u32) < 0x20 => {}
+            '\n' => out.push_str("\\n"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
             c => out.push(c),
         }
     }
