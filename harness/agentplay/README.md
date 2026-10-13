@@ -13,6 +13,7 @@ Player k listens on `apiBasePort + k`. Logs and screenshots go to `out/`.
 | Call | What it does |
 |---|---|
 | `GET /state[?wait=N&since=ETAG]` | The `get_table` tool's answer (phase, status, players, and the current clover: clues by leaf, each card's location — `tray`, `slot N`, or `board` when set down outside a spot — and words as they face now, solved spots, and while writing the two words each leaf links), plus the main and other buttons. `wait` holds up to N s until something changes. |
+| `GET /tools` | The agent tools' names, descriptions and input schemas. |
 | `POST /join {name}` | Join the table. |
 | `POST /go` | Press the main button (Start, Submit, Guess, Next clover…). |
 | `POST /other` | Press the secondary button (e.g. Proceed). |

@@ -87,6 +87,8 @@ async function player(k) {
     const u = new URL(req.url, 'http://x');
     const reply = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body, null, 1)); };
     try {
+      // The tools as an assistant would see them: names, descriptions, input schemas.
+      if (req.method === 'GET' && u.pathname === '/tools') return reply(200, await ev(() => window.__cl.toolSpecs()));
       if (req.method === 'GET' && u.pathname === '/state') {
         // ?wait=N: hold up to N seconds until something changes since ?since=<etag>.
         const wait = Math.min(+(u.searchParams.get('wait') ?? 0), 60), since = u.searchParams.get('since');
@@ -109,7 +111,7 @@ async function player(k) {
         await log(tag, `${u.pathname.slice(1)} ${body} -> ${result}`);
         return reply(200, { result });
       }
-      reply(404, { error: 'GET /state[?wait=N&since=ETAG] or POST /join /go /other /clue /decoys /move /turn /pick /recap /screenshot /tool/<name>' });
+      reply(404, { error: 'GET /state[?wait=N&since=ETAG], GET /tools, or POST /join /go /other /clue /decoys /move /turn /pick /recap /screenshot /tool/<name>' });
     } catch (e) {
       await log(tag, `ERROR ${u.pathname}: ${e.message}`);
       reply(500, { error: e.message.split('\n')[0] });

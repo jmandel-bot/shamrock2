@@ -681,6 +681,28 @@ try {
     await relay.close();
   }
 
+  console.log('\n# tools for AI assistants');
+  {
+    // A stand-in for a browser with WebMCP: record what the page registers.
+    const ctx = await browser.newContext();
+    await ctx.addInitScript(() => {
+      window.__registered = [];
+      document.modelContext = { registerTool: async (t, opts) => { window.__registered.push(t); } };
+    });
+    const pg = await ctx.newPage();
+    await pg.goto(`http://localhost:${PORT}/?net=local#webmcp-check`);
+    await pg.waitForFunction(() => window.__registered?.length > 0, null, { timeout: 8000 }).catch(() => {});
+    const reg = await pg.evaluate(async () => {
+      const ok = window.__registered.filter((t) => /^[a-z_]+$/.test(t.name) && t.description?.length > 20
+        && t.inputSchema?.type === 'object' && typeof t.execute === 'function');
+      const table = window.__registered.find((t) => t.name === 'get_table');
+      const out = table && await table.execute({});
+      return { n: window.__registered.length, ok: ok.length, phase: out && JSON.parse(out.content[0].text).phase };
+    });
+    gate('with WebMCP, the page registers its twelve tools (name, description, schema) and they answer', reg.n === 12 && reg.ok === 12 && reg.phase === 'lobby', JSON.stringify(reg));
+    await ctx.close();
+  }
+
   console.log('\n# perf');
   await sleep(1000);
   const fms = await A.ev(() => window.__cl.stats.frameMs.slice(-300));

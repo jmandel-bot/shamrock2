@@ -997,6 +997,7 @@ if (!home) offerTools(tools);
 
 window.__cl = {
   tools: Object.fromEntries(tools.map((t) => [t.name, t.run])),
+  toolSpecs: () => tools.map(({ run, ...spec }) => spec),
   agentView: () => scratchJson(X.agent_view()),
   myTables: () => myTables(),
   setTheme: (t) => { themePref = t; applyTheme(); },
