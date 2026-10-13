@@ -104,7 +104,7 @@ const HELLO_EVERY_MS: f64 = 2000.0;
 /// card font, see `set_word_widths`): a word may run into a corner whenever
 /// the words on both neighbouring edges are short enough to stay clear of it,
 /// so ~90% of the deck renders at full size; the rest shrink evenly to fit.
-pub const WORD_SIZE: f32 = 33.0;
+pub const WORD_SIZE: f32 = 34.0;
 /// Gap between a card's edge and the top of its words' letters.
 const WORD_EDGE: f32 = 3.0;
 /// Figtree Bold, per unit of size, around the text's centre line (measured):
@@ -274,7 +274,8 @@ pub struct Scene {
 
 pub struct App {
     /// Card-word widths at size 100 in the card font, measured by the shell.
-    word_w: std::collections::HashMap<String, f32>,
+    /// (width, descent below the centre line), both at size 100.
+    word_w: std::collections::HashMap<String, (f32, f32)>,
     /// Solved card-word layouts, keyed by the card's words.
     word_layouts: std::cell::RefCell<std::collections::HashMap<String, [(f32, f32); 4]>>,
     /// Colours for the current theme (display only, per device).
@@ -718,32 +719,28 @@ impl App {
         }
     }
 
-    /// Card-word widths at size 100, one `word\twidth` per line.
+    /// Card-word metrics at size 100, one `word\twidth[\tdescent]` per line
+    /// (descent: how far the word's letters reach below the centre line).
     pub fn set_word_widths(&mut self, text: &str) {
         self.word_layouts.borrow_mut().clear();
         for line in text.lines() {
-            if let Some((w, x)) = line.split_once('\t') {
-                if let Ok(x) = x.parse::<f32>() {
-                    self.word_w.insert(w.to_string(), x);
-                }
-            }
+            let mut f = line.split('\t');
+            let (Some(w), Some(Ok(x))) = (f.next(), f.next().map(str::parse::<f32>)) else { continue };
+            let desc = f.next().and_then(|d| d.parse::<f32>().ok()).unwrap_or((WORD_INK - WORD_ASC) * 100.0);
+            self.word_w.insert(w.to_string(), (x, desc));
         }
     }
 
-    /// Width of a card word at full size (an estimate until measured).
-    fn word_width(&self, w: &str) -> f32 {
-        self.word_w.get(w).copied().unwrap_or(w.chars().count() as f32 * 56.0) * WORD_SIZE / 100.0
+    /// A card word's width and ink depth from the card edge, per unit of
+    /// size (estimates until measured). Letters' tops line up WORD_ASC above
+    /// the centre line, so depth = that plus how far this word descends.
+    fn word_metrics(&self, w: &str) -> (f32, f32) {
+        let (x, desc) = self.word_w.get(w).copied().unwrap_or((w.chars().count() as f32 * 56.0, (WORD_INK - WORD_ASC) * 100.0));
+        (x / 100.0, WORD_ASC + desc / 100.0)
     }
 
     /// Each edge word's size on a card (top, right, bottom, left) and its
     /// offset along the edge (always 0: words stay centred), cached per card.
-    ///
-    /// Everyone starts at full size. Two neighbouring words collide when both
-    /// reach into their shared corner: each end within `WORD_GAP` of the
-    /// other's letters, whose depth depends on its current size. While any
-    /// pair collides (or a word is longer than its edge), the biggest word
-    /// involved shrinks a small step; shallower letters free corner room for
-    /// its neighbours too, so the next round may resolve differently.
     pub fn card_word_layout(&self, words: &[&str; 4]) -> [(f32, f32); 4] {
         let key = words.join("\u{1}");
         if let Some(l) = self.word_layouts.borrow().get(&key) {
@@ -754,74 +751,59 @@ impl App {
         l
     }
 
+    /// Sizes for a card's four centred words, solved exactly.
+    ///
+    /// With x the fraction of full size, a word's half-width is a·x and its
+    /// ink depth from the edge d·x (both measured per word). Two neighbours
+    /// collide when both reach into their shared corner, so at each corner
+    /// one of them must yield: its half-width plus the other's depth fits
+    /// C = HALF − WORD_EDGE − WORD_GAP. That is linear in x. For each of the
+    /// 16 ways to pick who yields at each corner, minimise the squared
+    /// shrinkage Σ(1 − x)² (a deep cut to one word costs more than two light
+    /// trims) under those constraints and x ≤ 1 (and the edge's length), by
+    /// checking the KKT conditions of every small set of tight constraints.
+    /// Keep the best; ties go to the bigger smallest word.
     fn solve_card_words(&self, words: &[&str; 4]) -> [f32; 4] {
-        let full = words.map(|x| self.word_width(x));
-        // Which words are in trouble at these sizes: longer than the edge, or
-        // in a pair that both reach into their shared corner.
-        let trouble = |size: &[f32; 4]| -> [bool; 4] {
-            let half: [f32; 4] = core::array::from_fn(|j| full[j] * size[j] / WORD_SIZE / 2.0);
-            let clear = |k: usize| HALF - WORD_EDGE - WORD_INK * size[k] - WORD_GAP;
-            let mut bad = [false; 4];
-            for j in 0..4 {
-                bad[j] |= half[j] > WORD_REACH;
-                let k = (j + 1) % 4;
-                if half[j] > clear(k) && half[k] > clear(j) {
-                    bad[j] = true;
-                    bad[k] = true;
-                }
-            }
-            bad
+        let m = words.map(|w| self.word_metrics(w));
+        let a: [f32; 4] = core::array::from_fn(|j| m[j].0 * WORD_SIZE / 2.0);
+        let d: [f32; 4] = core::array::from_fn(|j| m[j].1 * WORD_SIZE);
+        let c = HALF - WORD_EDGE - WORD_GAP;
+        let cap: [f32; 4] = core::array::from_fn(|j| (WORD_REACH / a[j]).min(1.0));
+        // Corner k between word k and word k+1; `yields(k, j)`: word j's end
+        // must clear the other's letters.
+        let collides = |x: &[f32; 4], k: usize| {
+            let n = (k + 1) % 4;
+            a[k] * x[k] > c - d[n] * x[n] + 1e-4 && a[n] * x[n] > c - d[k] * x[k] + 1e-4
         };
-        if !trouble(&[WORD_SIZE; 4]).iter().any(|&b| b) {
+        if (0..4).all(|k| !collides(&[1.0; 4], k)) && cap.iter().all(|&u| u >= 1.0) {
             return [WORD_SIZE; 4];
         }
-        // In a colliding pair only one word has to stay out of the corner.
-        // Try each choice of which words may shrink (16): shrink the biggest
-        // of them in trouble a step at a time, then grow them back as far as
-        // the card stays clear. Keep the least squared shrinkage (a deep cut
-        // to one word costs more than two light trims; small trims are
-        // cheap), then the biggest smallest word.
         let mut best: Option<([f32; 4], (f32, f32))> = None;
-        for may in 1..16u32 {
-            let can = |j: usize| may & (1 << j) != 0;
-            let mut size = [WORD_SIZE; 4];
-            let mut ok = false;
-            for _ in 0..80 {
-                let bad = trouble(&size);
-                if !bad.iter().any(|&b| b) {
-                    ok = true;
-                    break;
-                }
-                let Some(j) = (0..4).filter(|&j| bad[j] && can(j)).max_by(|&a, &b| (full[a] * size[a]).total_cmp(&(full[b] * size[b]))) else {
-                    break; // only words that may not shrink are in trouble
-                };
-                size[j] *= 0.97;
+        for who in 0..16u32 {
+            // Constraint rows: coefficients over x, and the bound.
+            let mut rows: Vec<([f32; 4], f32)> = Vec::new();
+            for k in 0..4 {
+                let n = (k + 1) % 4;
+                let (y, o) = if who & (1 << k) != 0 { (k, n) } else { (n, k) };
+                let mut r = [0.0; 4];
+                r[y] = a[y];
+                r[o] = d[o];
+                rows.push((r, c));
             }
-            if !ok {
-                continue;
+            for j in 0..4 {
+                let mut r = [0.0; 4];
+                r[j] = 1.0;
+                rows.push((r, cap[j]));
             }
-            loop {
-                let mut grew = false;
-                let mut order: Vec<usize> = (0..4).filter(|&j| size[j] < WORD_SIZE).collect();
-                order.sort_by(|&a, &b| size[a].total_cmp(&size[b]));
-                for j in order {
-                    let mut next = size;
-                    next[j] = (size[j] * 1.01).min(WORD_SIZE);
-                    if !trouble(&next).iter().any(|&b| b) {
-                        size = next;
-                        grew = true;
-                    }
+            if let Some(x) = min_squared_shrink(&rows) {
+                let score = (-x.iter().map(|v| (1.0 - v).powi(2)).sum::<f32>(), x.iter().copied().fold(f32::MAX, f32::min));
+                if best.as_ref().is_none_or(|b| score > b.1) {
+                    best = Some((x, score));
                 }
-                if !grew {
-                    break;
-                }
-            }
-            let score = (-size.iter().map(|&x| (1.0 - x / WORD_SIZE).powi(2)).sum::<f32>(), size.iter().copied().fold(f32::MAX, f32::min));
-            if best.as_ref().is_none_or(|b| score > b.1) {
-                best = Some((size, score));
             }
         }
-        best.map_or([WORD_SIZE * 0.6; 4], |b| b.0)
+        let x = best.map_or([0.6; 4], |b| b.0);
+        x.map(|v| v.max(0.5) * WORD_SIZE)
     }
 
     /// Just the sizes (see `card_word_layout`).
@@ -1823,4 +1805,70 @@ impl App {
         let w = sc.writer.unwrap_or(0);
         self.poses.get(&(w, i as u8)).map_or(f32::NAN, |p| self.pose_m(p).angle())
     }
+}
+
+/// Minimise Σ(1 − x_j)² over x ∈ R⁴ subject to rows·x ≤ bound, exactly: the
+/// optimum is the unique KKT point, found by trying every set of up to four
+/// tight constraints (a few hundred 8×8 solves at most). None if infeasible.
+fn min_squared_shrink(rows: &[([f32; 4], f32)]) -> Option<[f32; 4]> {
+    let n = rows.len();
+    let feasible = |x: &[f64; 4]| rows.iter().all(|(r, b)| (0..4).map(|j| r[j] as f64 * x[j]).sum::<f64>() <= *b as f64 + 1e-6);
+    let mut best: Option<([f64; 4], f64)> = None;
+    for mask in 0u32..(1 << n) {
+        let act: Vec<usize> = (0..n).filter(|&i| mask & (1 << i) != 0).collect();
+        if act.len() > 4 {
+            continue;
+        }
+        // KKT: 2(x − 1) + Σ λ_i r_i = 0, r_i·x = b_i for tight i.
+        let k = act.len();
+        let size = 4 + k;
+        let mut mtx = vec![vec![0.0f64; size + 1]; size];
+        for j in 0..4 {
+            mtx[j][j] = 2.0;
+            for (t, &i) in act.iter().enumerate() {
+                mtx[j][4 + t] = rows[i].0[j] as f64;
+            }
+            mtx[j][size] = 2.0;
+        }
+        for (t, &i) in act.iter().enumerate() {
+            for j in 0..4 {
+                mtx[4 + t][j] = rows[i].0[j] as f64;
+            }
+            mtx[4 + t][size] = rows[i].1 as f64;
+        }
+        let Some(sol) = gauss(mtx) else { continue };
+        let x = [sol[0], sol[1], sol[2], sol[3]];
+        if sol[4..].iter().any(|&l| l < -1e-9) || !feasible(&x) {
+            continue;
+        }
+        let f: f64 = x.iter().map(|v| (1.0 - v).powi(2)).sum();
+        if best.as_ref().is_none_or(|b| f < b.1 - 1e-12) {
+            best = Some((x, f));
+        }
+    }
+    best.map(|(x, _)| x.map(|v| v as f32))
+}
+
+/// Solve a square linear system given as an augmented matrix (partial
+/// pivoting); None if singular.
+fn gauss(mut m: Vec<Vec<f64>>) -> Option<Vec<f64>> {
+    let n = m.len();
+    for col in 0..n {
+        let piv = (col..n).max_by(|&a, &b| m[a][col].abs().total_cmp(&m[b][col].abs()))?;
+        if m[piv][col].abs() < 1e-12 {
+            return None;
+        }
+        m.swap(col, piv);
+        for r in 0..n {
+            if r != col {
+                let f = m[r][col] / m[col][col];
+                if f != 0.0 {
+                    for c in col..=n {
+                        m[r][c] -= f * m[col][c];
+                    }
+                }
+            }
+        }
+    }
+    Some((0..n).map(|r| m[r][n] / m[r][r]).collect())
 }

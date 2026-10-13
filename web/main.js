@@ -344,7 +344,9 @@ async function measureWords() {
   const c = document.createElement('canvas').getContext('2d');
   c.font = FONTS[1](100);
   const list = scratchText(X.word_list()).split('\n');
-  X.set_word_widths(writeText(list.map((w) => `${w}\t${c.measureText(w).width.toFixed(2)}`).join('\n')));
+  c.textBaseline = 'middle';
+  // Width and how far below the centre line each word's letters reach.
+  X.set_word_widths(writeText(list.map((w) => { const t = c.measureText(w); return `${w}\t${t.width.toFixed(2)}\t${t.actualBoundingBoxDescent.toFixed(2)}`; }).join('\n')));
   wordsMeasured = true;
 }
 
