@@ -10,6 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const EV_NET: u8 = 1;
 pub const EV_EDIT_CLUE: u8 = 2;
 pub const EV_STATUS: u8 = 3;
+/// A round of mine with progress was replaced by another table's round (two
+/// groups met in one room) or by a New game: JSON {newGame, round, names, boards},
+/// boards as in `review_json`, for the shell to explain and keep.
+pub const EV_SET_ASIDE: u8 = 4;
 
 // Draw commands.
 const C_XFORM: f32 = 1.0;
@@ -465,6 +469,7 @@ impl App {
 
     /// A packet from the peer on connection `link`.
     pub fn on_packet(&mut self, bytes: &[u8], link: u32) {
+        let mut aside = None;
         for m in decode(bytes) {
             match m {
                 Msg::Op(op) => {
@@ -478,9 +483,11 @@ impl App {
                     };
                     self.clock = self.clock.max(s.clock).max(op.round.stamp.clock);
                     let before = self.shared.round.stamp;
+                    let kept = (op.round.rank() > self.shared.round.rank()).then(|| self.set_aside(&op.round)).flatten();
                     self.shared.apply(&op);
                     if self.shared.round.stamp != before {
                         self.new_round_local();
+                        aside = kept.or(aside);
                     }
                 }
                 Msg::Hello { device, seat, sum } if device != self.device => {
@@ -495,6 +502,39 @@ impl App {
                 _ => {}
             }
         }
+        // Named once the whole packet is in: a full sync sends the round
+        // before the seats of the players in it.
+        if let Some((new_game, n, boards)) = aside {
+            let names: Vec<String> = self
+                .shared
+                .round
+                .players()
+                .iter()
+                .filter(|p| Some(**p) != self.seat)
+                .map(|p| json_str(&self.name_of(*p)))
+                .collect();
+            let json = format!("{{\"newGame\":{new_game},\"round\":{n},\"names\":[{}],\"boards\":{boards}}}", names.join(","));
+            self.event(EV_SET_ASIDE, json.as_bytes());
+        }
+    }
+
+    /// If `new` would replace a round of this table that's under way, not as
+    /// its next round but as another table's game (a different deck: two
+    /// groups met in one room) or a New game: what to tell the player and
+    /// the clovers to keep. Clovers still being written count too.
+    fn set_aside(&self, new: &Round) -> Option<(bool, u16, String)> {
+        let (old, s) = (self.shared.round, &self.shared);
+        let other_game = new.epoch > old.epoch || new.deck_seed != old.deck_seed;
+        let under_way = old.n > 0 && s.phase() != Phase::End && s.subs.values().any(|x| x.clues.iter().any(|c| !c.is_empty()));
+        if !other_game || !under_way {
+            return None;
+        }
+        let writers: Vec<u32> = if s.start.is_some() {
+            s.puzzles()
+        } else {
+            old.players().iter().copied().filter(|w| s.latest(*w).is_some_and(|x| x.clues.iter().any(|c| !c.is_empty()))).collect()
+        };
+        Some((new.epoch > old.epoch, old.n, self.boards_json(&writers)))
     }
 
     fn new_round_local(&mut self) {
@@ -1426,9 +1466,11 @@ impl App {
     /// (the share-link text format, unscrambled) with how many guesses it
     /// took and whether it was solved.
     pub fn review_json(&self) -> String {
-        let rows: Vec<String> = self
-            .shared
-            .puzzles()
+        self.boards_json(&self.shared.puzzles())
+    }
+
+    fn boards_json(&self, writers: &[u32]) -> String {
+        let rows: Vec<String> = writers
             .iter()
             .filter_map(|&w| {
                 let text = self.shared.export_board(w, &self.name_of(w))?;

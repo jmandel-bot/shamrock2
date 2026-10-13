@@ -136,6 +136,8 @@ function drainOutbox() {
       openClueEditor(body[0], x, y, w, h, angle, dec.decode(body.subarray(21)));
     } else if (kind === 3) {
       toast(dec.decode(body));
+    } else if (kind === 4) {
+      setAside(JSON.parse(dec.decode(body)));
     }
   }
 }
@@ -790,13 +792,25 @@ function forgetTable(room) {
 }
 /** Keep a finished round's clovers (answers included) on this device. */
 function logRound(s) {
-  const boards = scratchJson(X.review());
+  keepRound(scratchJson(X.review()), s.round, s.players.map((p) => p.name));
+}
+function keepRound(boards, round, players, extra = {}) {
   if (!boards.length) return;
   const id = boards.map((b) => b.text).join('\n\n');
   const log = readJson(LOG, []);
   if (log.some((e) => e.id === id)) return;
-  log.unshift({ id, room: roomId, round: s.round, at: Date.now(), players: s.players.map((p) => p.name), boards });
+  log.unshift({ id, room: roomId, round, at: Date.now(), players, boards, ...extra });
   remember(LOG, JSON.stringify(log.slice(0, LOG_MAX)));
+}
+/** The round I was playing was replaced: by another group's game in this
+ *  room (they met), or by a New game. Say what happened, and keep it. */
+function setAside({ newGame, round, names: who, boards }) {
+  if (solo || home) return;
+  keepRound(boards, round, boards.map((b) => b.text.split('\n')[0]), { setAside: true });
+  const kept = boards.length ? ' The round you were playing is saved in Past games.' : '';
+  const dealt = ui().inRound ? '' : " You're dealt in next round.";
+  toast(newGame ? `A new game started here.${kept}`
+    : `${names(who)} ${who.length === 1 ? 'was' : 'were'} already playing here, so you've joined their game.${dealt}${kept}`, 12000);
 }
 /** A finished clover, read-only: each clue on its leaf with the two words
  *  it linked, round the four answer cards showing only their outward words. */
@@ -808,7 +822,7 @@ function cloverHtml(b) {
   const leaf = (d) => `<span class="leafTag c${d}"><b>${esc(clues[d])}</b><small>${esc(W[d]?.[d] ?? '')} + ${esc(W[(d + 1) % 4]?.[d] ?? '')}</small></span>`;
   const OUT = [[0, 3], [0, 1], [1, 2], [2, 3]];
   const card = (s) => `<div class="mc">${OUT[s].map((e) => `<span class="${'trbl'[e]}">${esc(W[s]?.[e] ?? '')}</span>`).join('')}</div>`;
-  const badge = !b.solved ? '<span class="badge">not solved</span>'
+  const badge = !b.solved ? `<span class="badge">${b.guesses ? 'not solved' : 'not guessed'}</span>`
     : b.guesses === 1 ? '<span class="badge first">☘ first try</span>' : `<span class="badge">${guesses(b.guesses)}</span>`;
   return `<div class="mini">
     <div class="who"><span>${esc(name)}'s clover</span>${badge}</div>
@@ -843,7 +857,7 @@ function openLog() {
   list.replaceChildren(...log.map((e, i) => {
     const d = document.createElement('details');
     d.className = 'logEntry';
-    d.innerHTML = `<summary><b>${when(e.at)}</b> · round ${e.round} at #${esc(e.room)}<br><small>${esc(e.players.join(', '))} · ${e.boards.length} clover${e.boards.length === 1 ? '' : 's'}</small></summary>
+    d.innerHTML = `<summary><b>${when(e.at)}</b> · round ${e.round} at #${esc(e.room)}${e.setAside ? ' · set aside' : ''}<br><small>${esc(e.players.join(', '))} · ${e.boards.length} clover${e.boards.length === 1 ? '' : 's'}</small></summary>
       ${e.boards.map(cloverHtml).join('')}
       <div class="row"><button class="go replay">Play these again</button><button class="forget">Delete</button></div>`;
     d.querySelector('.replay').onclick = async () => { location.href = await shareFromText(e.boards.map((b) => b.text)); };

@@ -208,6 +208,42 @@ await scenario('left alone, then joined again', async () => {
   await done(ps);
 });
 
+await scenario('two groups played apart in one room, then meet', async () => {
+  const room = `two-${Date.now().toString(36)}`;
+  // Ana and Ben start writing, then put their phones away.
+  const ab = await table(room, ['Ana', 'Ben']);
+  await ab[0].tool('start_round');
+  await until(async () => (await ab[0].table()).phase === 'writing');
+  await ab[0].tool('write_clue', { leaf: 'top', text: 'moonlight' });
+  await sleep(2500);
+  for (const p of ab) await p.page.close({ runBeforeUnload: true });
+  // Later Cy and Dee use the same room and get a round further.
+  const cd = await table(room, ['Cy', 'Dee']);
+  await cd[0].tool('start_round');
+  for (const p of cd) await writeAll(p, p.name.toLowerCase());
+  await until(async () => (await cd[0].table()).phase === 'guessing');
+  await cd[0].page.evaluate(() => document.getElementById('redealBtn').click());
+  await until(async () => (await cd[1].table()).round === 2);
+  await sleep(2500);
+  for (const p of cd) await p.page.close({ runBeforeUnload: true });
+  // Everyone comes back at once, each phone with its own saved table.
+  await Promise.all([...ab, ...cd].map((p) => p.open('')));
+  const all = [...ab, ...cd];
+  check(await until(() => agree(all), 30000), 'one table on every screen');
+  const t = await ab[0].table();
+  check(t.round === 2 && t.players.length === 4, 'the game further along carries on, with all four seated', JSON.stringify({ round: t.round, players: t.players.length }));
+  const toastText = () => ab[0].page.evaluate(() => document.getElementById('toast').textContent);
+  await until(async () => /Past games/.test(await toastText()), 5000);
+  const toast = await toastText();
+  check(/Cy and Dee were already playing here/.test(toast) && /Past games/.test(toast), 'Ana is told what happened', toast);
+  const log = await ab[0].page.evaluate(() => JSON.parse(localStorage.getItem('shamrock:log') ?? '[]'));
+  const kept = log.find((e) => e.setAside);
+  check(kept && kept.boards.some((b) => b.text.includes('moonlight')), "and her half-written clover is in Past games, marked set aside");
+  const cyLog = await cd[0].page.evaluate(() => JSON.parse(localStorage.getItem('shamrock:log') ?? '[]'));
+  check(!cyLog.some((e) => e.setAside), 'Cy and Dee lost nothing, so are told nothing');
+  await done(all);
+});
+
 check(errors.length === 0, 'no page errors', errors.slice(0, 3).join(' | '));
 await browser.close();
 await srv.close();
