@@ -17,7 +17,7 @@
 //! `SEED=123 cargo test --release --test network -- --nocapture` replays one
 //! run with its event log.
 
-use cloverleaf::app::{keep_json, App, EV_KEEP, EV_NET, EV_NOTICE};
+use cloverleaf::app::{keep_json, App, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE};
 use cloverleaf::model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -73,6 +73,12 @@ struct Dev {
     /// raise exactly one.
     notices: u32,
     notice_bad: Option<String>,
+    /// Move prompts raised (EV_MOVED).
+    moved: u32,
+    /// Outdated as of the last flush, and whether a table change went out
+    /// after that (it mustn't).
+    was_outdated: bool,
+    leaked: bool,
 }
 
 struct Packet {
@@ -120,7 +126,7 @@ fn pair(i: usize, j: usize) -> (usize, usize) {
 impl Sim {
     fn new(seed: u64, n: usize, rough: Rough) -> Sim {
         let devs = (0..n)
-            .map(|k| Dev { app: Some(app(seed * 100 + k as u64 + 1)), name: None, join_at: None, online: true, dragging: false, saved: Vec::new(), best: (0, 0), kept: BTreeSet::new(), lost: None, notices: 0, notice_bad: None })
+            .map(|k| Dev { app: Some(app(seed * 100 + k as u64 + 1)), name: None, join_at: None, online: true, dragging: false, saved: Vec::new(), best: (0, 0), kept: BTreeSet::new(), lost: None, notices: 0, notice_bad: None, moved: 0, was_outdated: false, leaked: false })
             .collect();
         Sim {
             devs,
@@ -161,6 +167,7 @@ impl Sim {
                     let kind = json.split("\"kind\":\"").nth(1).and_then(|t| t.split('"').next()).unwrap_or("?");
                     *self.kinds.entry(kind.to_string()).or_default() += 1;
                 }
+                EV_MOVED => self.devs[k].moved += 1,
                 EV_KEEP => {
                     let key = json.split("\"key\":\"").nth(1).and_then(|t| t.split('"').next()).unwrap_or_default();
                     self.devs[k].kept.insert(key.to_string());
@@ -168,6 +175,11 @@ impl Sim {
                 _ => {}
             }
         }
+        let outdated = self.devs[k].app.as_ref().is_some_and(|a| a.outdated);
+        if self.devs[k].was_outdated && out.iter().any(|p| decode(p).iter().any(|m| matches!(m, Msg::Op(_)))) {
+            self.devs[k].leaked = true;
+        }
+        self.devs[k].was_outdated = outdated;
         if out.is_empty() {
             return;
         }
@@ -448,23 +460,7 @@ impl Sim {
                 self.note(format!("dev {k} back online"));
                 self.devs[k].online = true;
             }
-            7 | 8 if self.devs[k].app.is_some() => {
-                // Reload: a fresh page; a saved name rejoins 1.5 s later.
-                self.note(format!("dev {k} reloads"));
-                self.drop_all_links(k);
-                // Every page load gets its own device id, as crypto random does.
-                self.loads += 1;
-                let seed = self.seed * 100_000 + 1000 + self.loads;
-                // The page saves as it unloads, so the reload restores it all.
-                self.devs[k].saved = self.devs[k].app.as_ref().unwrap().snapshot();
-                let d = &mut self.devs[k];
-                let mut fresh = app(seed);
-                fresh.on_packet(&d.saved, 0);
-                d.app = Some(fresh);
-                d.online = true;
-                d.dragging = false;
-                d.join_at = d.name.as_ref().map(|_| self.now + 1500.0);
-            }
+            7 | 8 if self.devs[k].app.is_some() => self.reload(k),
             9 if self.devs.iter().filter(|d| d.app.is_some()).count() > 2 && self.r.below(4) == 0 => {
                 self.note(format!("dev {k} closes for good"));
                 self.drop_all_links(k);
@@ -472,6 +468,70 @@ impl Sim {
             }
             _ => {}
         }
+    }
+
+    /// Reload: a fresh page; a saved name rejoins 1.5 s later.
+    fn reload(&mut self, k: usize) {
+        if self.devs[k].app.is_none() {
+            return;
+        }
+        self.note(format!("dev {k} reloads"));
+        self.drop_all_links(k);
+        // Every page load gets its own device id, as crypto random does.
+        self.loads += 1;
+        let seed = self.seed * 100_000 + 1000 + self.loads;
+        // The page saves as it unloads, so the reload restores it all.
+        self.devs[k].saved = self.devs[k].app.as_ref().unwrap().snapshot();
+        let d = &mut self.devs[k];
+        let mut fresh = app(seed);
+        fresh.on_packet(&d.saved, 0);
+        packets(&mut fresh); // restoring a save raises nothing worth keeping
+        d.app = Some(fresh);
+        d.online = true;
+        d.dragging = false;
+        d.was_outdated = false;
+        d.join_at = d.name.as_ref().map(|_| self.now + 1500.0);
+    }
+
+    /// A new device at this table: `a` (already seeded), sitting as `name`.
+    fn add(&mut self, mut a: App, name: &str) -> usize {
+        a.join(name);
+        self.devs.push(Dev { app: Some(a), name: Some(name.into()), join_at: None, online: true, dragging: false, saved: Vec::new(), best: (0, 0), kept: BTreeSet::new(), lost: None, notices: 0, notice_bad: None, moved: 0, was_outdated: false, leaked: false });
+        self.devs.len() - 1
+    }
+
+    /// Time passes with links forming between online devices (the away stay away).
+    fn run_for(&mut self, ticks: u32) {
+        for _ in 0..ticks {
+            self.reconnect_some(1000);
+            self.tick();
+        }
+    }
+
+    /// The first `cut` devices can't reach the rest.
+    fn split(&mut self, cut: usize) {
+        let n = self.devs.len();
+        self.note(format!("split at {cut}"));
+        for i in 0..cut {
+            for j in cut..n {
+                self.blocked.insert((i, j));
+                self.disconnect(i, j);
+            }
+        }
+    }
+
+    /// Device `k` does `f` to its app, if it's here and online.
+    fn with(&mut self, k: usize, what: &str, f: impl FnOnce(&mut App)) {
+        if !self.live(k) {
+            return;
+        }
+        let a = self.devs[k].app.as_ref().unwrap();
+        let (before, had) = (a.shared.round, keep_json(&a.shared).is_some());
+        f(self.devs[k].app.as_mut().unwrap());
+        let after = self.devs[k].app.as_ref().unwrap().shared.round;
+        self.flush(k);
+        self.check_kept(k, before, after, had);
+        self.note(format!("dev {k}: {what}"));
     }
 
     fn apps(&self) -> impl Iterator<Item = (usize, &App)> {
@@ -525,15 +585,62 @@ struct Coverage {
     biggest: usize,
     /// Notices by kind, and in how many runs each kind occurred.
     kinds: BTreeMap<String, (u32, u32)>,
+    /// Late changes merged into replaced rounds, and in how many runs.
+    late: (u32, u32),
+    /// The most seats a table had, and the most rounds one got through.
+    most_seats: usize,
+    most_rounds: u16,
+    /// Runs where a device heard a newer protocol.
+    outdated_runs: u32,
+}
+
+impl Coverage {
+    /// In how many runs notices of `kind` occurred.
+    fn runs_with(&self, kind: &str) -> u32 {
+        self.kinds.get(kind).map_or(0, |k| k.1)
+    }
+}
+
+/// A story family: each run of the simulator follows one, steering faults
+/// and actions towards a kind of situation (with the usual random noise on
+/// top), and each family's test requires that situation to have occurred.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Story {
+    /// Random play and faults, nothing steered.
+    Everyday,
+    /// The table splits in two for a long while; both sides deal, write and
+    /// press Proceed; then it heals.
+    SplitBrain,
+    /// Two groups sit down and deal apart (two tables), then meet.
+    TwoTables,
+    /// Every device reloads at once, three times.
+    MassReload,
+    /// The table splits; one side starts a New game, the other deals.
+    NewGameInSplit,
+    /// Someone keeps dealing while everyone keeps editing, on a slow
+    /// network: edits cross round changes.
+    CrossingEdits,
+    /// Many names come and go; absent ones are removed.
+    Churn,
+    /// The table plays round after round, cooperatively, through the noise.
+    LongSession,
+    /// One device hears a newer protocol mid-game, and later reloads.
+    VersionSkew,
 }
 
 /// One run: set up a table, play through chaos, heal, check, then play the
 /// round out cooperatively and check it ends.
-fn run(seed: u64, rough: Rough, cov: &mut Coverage) {
+fn run(seed: u64, rough: Rough, story: Story, cov: &mut Coverage) {
     let n = 3 + (seed % 3) as usize;
     let mut s = Sim::new(seed, n, rough);
+    let half = (n / 2).max(1);
 
-    // Setup on a good network: everyone connects, sits down, a round is dealt.
+    // Setup on a good network: everyone connects, sits down, a round is
+    // dealt. Two tables: two groups that can't reach each other each sit
+    // down and deal (one group sometimes a round further).
+    if story == Story::TwoTables {
+        s.split(half);
+    }
     s.reconnect_some(1000);
     for _ in 0..20 {
         s.tick();
@@ -547,13 +654,23 @@ fn run(seed: u64, rough: Rough, cov: &mut Coverage) {
         s.tick();
     }
     s.devs[0].app.as_mut().unwrap().action(1);
+    if story == Story::TwoTables {
+        s.devs[half].app.as_mut().unwrap().action(1);
+        if s.r.below(2) == 0 {
+            for _ in 0..10 {
+                s.tick();
+            }
+            s.devs[half].app.as_mut().unwrap().action(6);
+        }
+    }
     for _ in 0..20 {
         s.tick();
     }
 
-    // Chaos.
+    // Chaos, steered by the story.
     let mut guessed = false;
-    for _ in 0..600 {
+    for step in 0..600 {
+        steer(&mut s, story, step, half);
         if s.r.below(1000) < s.rough.faults as usize {
             s.fault();
         }
@@ -568,6 +685,13 @@ fn run(seed: u64, rough: Rough, cov: &mut Coverage) {
         guessed |= s.apps().any(|(_, a)| matches!(a.shared.phase(), Phase::Guessing(_)));
     }
     cov.guessing_reached += guessed as u32;
+    let late: u32 = s.devs.iter().filter_map(|d| d.app.as_ref()).map(|a| a.late_merges).sum();
+    cov.late = (cov.late.0 + late, cov.late.1 + (late > 0) as u32);
+    cov.outdated_runs += s.log.iter().any(|l| l.contains("hears a newer protocol")) as u32;
+    for d in s.devs.iter().filter(|d| d.leaked) {
+        let _ = d;
+        s.fail("a page that heard a newer protocol still sent table changes");
+    }
     cov.reloads += s.log.iter().filter(|l| l.contains("reloads")).count() as u32;
     for (k, n) in &s.kinds {
         let e = cov.kinds.entry(k.clone()).or_default();
@@ -630,6 +754,8 @@ fn run(seed: u64, rough: Rough, cov: &mut Coverage) {
         }
         let size = a.snapshot().len();
         cov.biggest = cov.biggest.max(size);
+        cov.most_seats = cov.most_seats.max(a.shared.seats.len());
+        cov.most_rounds = cov.most_rounds.max(a.shared.round.n);
         if size > 50_000 {
             s.fail(&format!("device {k}'s table is {size} bytes, over the 50 KB budget"));
         }
@@ -771,41 +897,247 @@ fn solve(a: &mut App) {
     }
 }
 
+const WORDS: [&str; 8] = ["sea", "sky", "fire", "dog", "ice", "moon", "tea", ""];
+
+/// A clue edit, as a player makes: one leaf, some word (or cleared).
+fn edit(a: &mut App, d: u8, w: &str) {
+    a.set_clue(d, w, false);
+}
+
+/// One useful step of playing the round on, from this device: deal, write
+/// and submit, Proceed, solve and guess, or move to the next clover.
+fn play_on(a: &mut App) {
+    let me = a.seat;
+    match a.shared.phase() {
+        Phase::Lobby | Phase::End => a.action(1),
+        Phase::Writing => match me {
+            Some(me) if a.shared.round_players().contains(&me) && !a.shared.is_ready(me) => {
+                for d in 0..4u8 {
+                    a.set_clue(d, "clue", false);
+                }
+                a.action(2);
+            }
+            _ => a.action(5),
+        },
+        Phase::Guessing(_) => {
+            let w = a.scene().writer;
+            if w.is_some_and(|w| a.shared.check(w).done()) {
+                a.action(4);
+            } else if me.is_some() && w != me {
+                solve(a);
+                a.action(3);
+            }
+        }
+    }
+}
+
+/// What a story does at `step` of the chaos, on top of the random noise.
+fn steer(s: &mut Sim, story: Story, step: u32, half: usize) {
+    let n = s.devs.len();
+    let pick = |s: &mut Sim, from: usize, to: usize| from + s.r.below(to.saturating_sub(from).max(1));
+    match story {
+        Story::Everyday => {}
+        Story::SplitBrain => {
+            if step == 100 {
+                s.split(half);
+            }
+            if (100..400).contains(&step) && step % 25 == 0 {
+                for (from, to) in [(0, half), (half, n)] {
+                    let k = pick(s, from, to);
+                    let w = WORDS[s.r.below(6)];
+                    match s.r.below(3) {
+                        0 => s.with(k, "deals again", |a| a.action(6)),
+                        1 => s.with(k, "writes and submits", |a| {
+                            for d in 0..4u8 {
+                                edit(a, d, w);
+                            }
+                            a.action(2);
+                        }),
+                        _ => s.with(k, "proceeds", |a| a.action(5)),
+                    }
+                }
+            }
+            if step == 400 {
+                s.note("split heals".into());
+                s.blocked.clear();
+            }
+        }
+        Story::TwoTables => {
+            if step == 250 {
+                s.note("the two tables meet".into());
+                s.blocked.clear();
+            }
+        }
+        Story::MassReload => {
+            if [150, 300, 450].contains(&step) {
+                s.note("everyone reloads".into());
+                for k in 0..n {
+                    s.reload(k);
+                }
+            }
+        }
+        Story::NewGameInSplit => match step {
+            100 => s.split(half),
+            150 => {
+                let k = pick(s, 0, half);
+                s.with(k, "starts a NEW GAME", |a| a.action(7));
+            }
+            160 => {
+                let k = pick(s, half, n);
+                s.with(k, "deals again", |a| a.action(6));
+            }
+            170 => {
+                let k = pick(s, half, n);
+                s.with(k, "writes", |a| edit(a, 0, "split"));
+            }
+            350 => {
+                s.note("split heals".into());
+                s.blocked.clear();
+            }
+            _ => {}
+        },
+        Story::CrossingEdits => {
+            if step % 40 == 0 {
+                let k = s.r.below(n);
+                s.with(k, "deals again", |a| a.action(6));
+            }
+            if step % 2 == 0 {
+                let (k, d, w) = (s.r.below(n), s.r.below(4) as u8, WORDS[s.r.below(WORDS.len())]);
+                s.with(k, "edits", |a| edit(a, d, w));
+            }
+        }
+        Story::Churn => {
+            if step % 8 == 0 {
+                let k = s.r.below(n);
+                let name = format!("P{}", s.r.below(40));
+                if s.live(k) {
+                    s.devs[k].name = Some(name.clone());
+                }
+                s.with(k, "joins under a new name", move |a| a.join(&name));
+            }
+            if step % 30 == 0 {
+                let k = s.r.below(n);
+                s.with(k, "removes someone away", |a| {
+                    let here = a.present();
+                    if let Some(id) = a.shared.seats.iter().find(|(id, x)| x.active && !here.contains(id)).map(|(id, _)| *id) {
+                        a.remove_seat(id);
+                    }
+                });
+            }
+        }
+        Story::LongSession => {
+            if step % 3 == 0 {
+                let k = s.r.below(n);
+                s.with(k, "plays on", play_on);
+            }
+        }
+        Story::VersionSkew => match step {
+            200 if s.live(1) => {
+                let mut b = Vec::new();
+                encode(&Msg::Hello { device: 4242, seat: 0, sum: 0, ver: PROTOCOL + 1 }, &mut b);
+                s.devs[1].app.as_mut().unwrap().on_packet(&b, 999);
+                s.note("dev 1 hears a newer protocol".into());
+            }
+            450 => s.reload(1),
+            _ => {}
+        },
+    }
+}
+
 const CALM: Rough = Rough { latency: (5.0, 40.0), faults: 15, acts: 120 };
 const STORMY: Rough = Rough { latency: (20.0, 400.0), faults: 60, acts: 200 };
 
-/// Seeds `from..from + 150` ($SEEDS for more, for a long soak), or just
-/// $SEED (to replay a failure) if it's in range.
-fn seeds(from: u64) -> Vec<u64> {
-    let n: u64 = std::env::var("SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(150);
+/// Seeds `from..from + count` ($SEEDS times as many, for a long soak), or
+/// just $SEED (to replay a failure) if it's in range.
+fn seeds(from: u64, count: u64) -> Vec<u64> {
+    let n = count * std::env::var("SEEDS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(1);
     match std::env::var("SEED") {
-        Ok(s) => Some(s.parse().unwrap()).filter(|s| (from..from + n.max(150)).contains(s)).into_iter().collect(),
+        Ok(s) => Some(s.parse().unwrap()).filter(|s| (from..from + n).contains(s)).into_iter().collect(),
         Err(_) => (from..from + n).collect(),
     }
 }
 
+/// Run a story family over its seeds, then check its coverage rule.
+fn family(story: Story, rough: Rough, from: u64, count: u64, rule: impl Fn(&Coverage) -> Result<(), String>) {
+    let mut cov = Coverage::default();
+    for seed in seeds(from, count) {
+        run(seed, rough, story, &mut cov);
+    }
+    println!("{story:?}: {cov:?}");
+    if std::env::var("SEED").is_err() {
+        if let Err(why) = rule(&cov) {
+            panic!("{story:?} didn't cover what it's for: {why}\n  {cov:?}");
+        }
+    }
+}
+
+/// `ok` or the reason.
+fn need(ok: bool, why: &str) -> Result<(), String> {
+    if ok { Ok(()) } else { Err(why.into()) }
+}
+
 #[test]
 fn the_table_survives_a_calm_but_flaky_network() {
-    let mut cov = Coverage::default();
-    for seed in seeds(0) {
-        run(seed, CALM, &mut cov);
-    }
-    println!("calm: {cov:?}");
-    if std::env::var("SEED").is_err() {
-        assert!(cov.reloads > 150 && cov.partitions > 80 && cov.guessing_reached > 100 && cov.finished > 140, "coverage: {cov:?}");
-    }
+    family(Story::Everyday, CALM, 0, 150, |c| {
+        need(c.reloads > 150 && c.partitions > 80 && c.guessing_reached > 100 && c.finished > 140, "everyday play under faults")
+    });
 }
 
 #[test]
 fn the_table_survives_a_stormy_network() {
-    let mut cov = Coverage::default();
-    for seed in seeds(10_000) {
-        run(seed, STORMY, &mut cov);
-    }
-    println!("stormy: {cov:?}");
-    if std::env::var("SEED").is_err() {
-        assert!(cov.reloads > 600 && cov.partitions > 300 && cov.guessing_reached > 100 && cov.finished > 140, "coverage: {cov:?}");
-    }
+    family(Story::Everyday, STORMY, 10_000, 150, |c| {
+        need(c.reloads > 600 && c.partitions > 300 && c.guessing_reached > 100 && c.finished > 140, "everyday play under heavy faults")
+    });
+}
+
+#[test]
+fn story_split_brain() {
+    family(Story::SplitBrain, CALM, 20_000, 40, |c| {
+        need(c.runs_with("missed") >= c.runs / 2 && c.runs_with("crossed") >= c.runs / 10, "both sides dealing: rounds missed and deals crossing")
+    });
+}
+
+#[test]
+fn story_two_tables_meet() {
+    family(Story::TwoTables, CALM, 30_000, 40, |c| {
+        need(c.runs_with("otherTable") >= c.runs * 4 / 5, "two tables meeting in one room")
+    });
+}
+
+#[test]
+fn story_mass_reload() {
+    family(Story::MassReload, CALM, 40_000, 40, |c| {
+        need(c.reloads >= c.runs * 9 && c.finished >= c.runs * 4 / 5, "everyone reloading, and still finishing rounds")
+    });
+}
+
+#[test]
+fn story_new_game_in_a_split() {
+    family(Story::NewGameInSplit, CALM, 50_000, 40, |c| {
+        need(c.runs_with("newGame") >= c.runs * 3 / 4, "a New game meeting a deal")
+    });
+}
+
+#[test]
+fn story_edits_crossing_round_changes() {
+    family(Story::CrossingEdits, STORMY, 60_000, 40, |c| {
+        need(c.late.1 >= c.runs / 3, "edits landing in a round already replaced")
+    });
+}
+
+#[test]
+fn story_churn() {
+    family(Story::Churn, CALM, 70_000, 40, |c| need(c.most_seats >= 30, "a table with many names"));
+}
+
+#[test]
+fn story_long_session() {
+    family(Story::LongSession, CALM, 80_000, 40, |c| need(c.most_rounds >= 15, "a long session of many rounds"));
+}
+
+#[test]
+fn story_version_skew() {
+    family(Story::VersionSkew, CALM, 90_000, 40, |c| need(c.outdated_runs >= c.runs * 3 / 4, "a page hearing a newer protocol"));
 }
 
 // ---- the bugs the random runs found, as fixed scenarios ------------------------
@@ -914,5 +1246,137 @@ fn a_card_held_by_a_phone_that_vanished_is_let_go() {
     s.heal_for(300);
     for k in (0..3).filter(|&k| k != g) {
         assert!(s.devs[k].app.as_ref().unwrap().holds().is_empty(), "device {k} still shows a held card");
+    }
+}
+
+// ---- moving a group to a new room ------------------------------------------------
+
+#[derive(Default, Debug)]
+struct MoveCoverage {
+    runs: u32,
+    /// Group members who followed, and how many of those were away when the
+    /// move was made (back later, some after a reload).
+    followers: u32,
+    late: u32,
+    after_reload: u32,
+}
+
+/// Two groups sit down apart (group A smaller and a round behind), then meet;
+/// one of A moves the group to a new room, and the rest of A follow when
+/// they're told: some there at the time, some away, back later (some after
+/// reloading). The new room must hold every follower's work, nobody in B may
+/// be offered the move, and the old room must stay in agreement.
+fn run_move(seed: u64, mc: &mut MoveCoverage) {
+    let a_size = 2 + (seed % 2) as usize;
+    let n = a_size + 2;
+    let mut s = Sim::new(seed, n, CALM);
+    s.split(a_size);
+    s.run_for(20);
+    for k in 0..n {
+        s.devs[k].name = Some(NAMES[k].into());
+        s.devs[k].app.as_mut().unwrap().join(NAMES[k]);
+    }
+    s.run_for(20);
+    s.with(0, "deals for group A", |a| a.action(1));
+    s.with(a_size, "deals for group B", |a| a.action(1));
+    s.run_for(20);
+    s.with(a_size, "deals B's round 2", |a| a.action(6));
+    for k in 0..a_size {
+        let clue = format!("a{k}");
+        s.with(k, "writes", move |a| edit(a, 0, &clue));
+    }
+    s.run_for(40);
+    let table_a = s.devs[0].app.as_ref().unwrap().shared.round.table;
+    // Some of A are away when the tables meet.
+    let mut away: Vec<(usize, bool)> = Vec::new();
+    for k in 1..a_size {
+        if s.r.below(2) == 0 {
+            let reload = s.r.below(2) == 0;
+            away.push((k, reload));
+        }
+    }
+    for &(k, _) in &away {
+        s.drop_all_links(k);
+        s.devs[k].online = false;
+        s.note(format!("dev {k} away"));
+    }
+    s.blocked.clear();
+    s.run_for(200);
+    // Ana moves group A.
+    let snap = s.devs[0].app.as_mut().unwrap().record_move("room-two").unwrap_or_else(|| s.fail("group A has no table to move"));
+    s.flush(0);
+    s.run_for(100);
+    let mut two = Sim::new(seed ^ 0x2222, 0, CALM);
+    let arrive = |two: &mut Sim, snap: &[u8], name: &str, seed: u64| {
+        let mut a = app(seed);
+        a.on_packet(snap, 0);
+        two.add(a, name);
+    };
+    arrive(&mut two, &snap, NAMES[0], seed * 7 + 1);
+    let follow = |s: &mut Sim, two: &mut Sim, k: usize| {
+        if s.devs[k].moved == 0 {
+            s.fail(&format!("dev {k} of the moved group was never told"));
+        }
+        let snap = s.devs[k].app.as_ref().unwrap().origin_snapshot().unwrap_or_else(|| s.fail("a follower has no table to bring"));
+        arrive(two, &snap, NAMES[k], seed * 7 + 2 + k as u64);
+    };
+    for k in 1..a_size {
+        if !away.iter().any(|(j, _)| *j == k) {
+            follow(&mut s, &mut two, k);
+            mc.followers += 1;
+        }
+    }
+    // The away come back, some reloading first (from their save).
+    for &(k, reload) in &away {
+        s.devs[k].online = true;
+        if reload {
+            s.reload(k);
+            mc.after_reload += 1;
+        }
+    }
+    s.run_for(300);
+    for &(k, _) in &away {
+        follow(&mut s, &mut two, k);
+        mc.followers += 1;
+        mc.late += 1;
+    }
+    two.run_for(300);
+    // The new room: one table, group A's, with every member's clue.
+    let d0 = two.digest_of(0);
+    if (1..two.devs.len()).any(|k| two.digest_of(k) != d0) {
+        two.fail("the new room doesn't agree");
+    }
+    let sh = &two.devs[0].app.as_ref().unwrap().shared;
+    if sh.round.table != table_a {
+        two.fail("the new room isn't group A's table");
+    }
+    for k in 0..a_size {
+        let mine = sh.latest(seat_id(NAMES[k])).map(|x| x.clues[0].clone());
+        if mine.as_deref() != Some(format!("a{k}").as_str()) {
+            two.fail(&format!("{}'s clue didn't make it to the new room: {mine:?}", NAMES[k]));
+        }
+    }
+    // Nobody in B was offered it, and the old room agrees.
+    for k in a_size..n {
+        if s.devs[k].moved > 0 {
+            s.fail(&format!("dev {k} of the other group was offered the move"));
+        }
+    }
+    let live: Vec<usize> = s.apps().map(|(k, _)| k).collect();
+    if live.iter().any(|&k| s.digest_of(k) != s.digest_of(live[0])) {
+        s.fail("the old room doesn't agree after the move");
+    }
+    mc.runs += 1;
+}
+
+#[test]
+fn story_a_group_moves_and_follows() {
+    let mut mc = MoveCoverage::default();
+    for seed in seeds(100_000, 40) {
+        run_move(seed, &mut mc);
+    }
+    println!("Move: {mc:?}");
+    if std::env::var("SEED").is_err() {
+        assert!(mc.followers >= 40 && mc.late >= 8 && mc.after_reload >= 4, "moves and follows, some late, some after a reload: {mc:?}");
     }
 }

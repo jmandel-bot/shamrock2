@@ -354,7 +354,7 @@ moves   table id → { room, stamp }                last writer wins; where a gr
   <div class="twocol">
     <div>
       <h3>Network simulator</h3>
-      <p><code>core/tests/network.rs</code>: 300 chaotic games on every test run, 5,000 in a soak. Links drop, the network splits and heals, phones go offline, reload or close, and players act at random. After everything heals, each game must show:</p>
+      <p><code>core/tests/network.rs</code>: 300 games of everyday chaos on every test run, plus 40 games for each of eight story families (a long split, two tables meeting, mass reload, a New game in a split, edits crossing round changes, churn, a long session, version skew) and a move story, each with a coverage rule that its situation actually occurred. Links drop, the network splits and heals, phones go offline, reload or close, and players act at random. After everything heals, each game must show:</p>
       <ul>
         <li>one state on every device;</li>
         <li>nobody here without their seat;</li>

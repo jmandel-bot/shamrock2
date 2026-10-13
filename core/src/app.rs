@@ -350,6 +350,8 @@ pub struct App {
     move_prompted: bool,
     /// A peer speaks a newer protocol: stop sending table changes.
     pub outdated: bool,
+    /// Late changes merged into a replaced round (tests' coverage).
+    pub late_merges: u32,
     last_resync_ms: f64,
     dirty_cards: BTreeSet<(u32, u8)>,
     last_phase: Phase,
@@ -404,6 +406,7 @@ impl App {
             origin: None,
             move_prompted: false,
             outdated: false,
+            late_merges: 0,
             last_resync_ms: f64::NEG_INFINITY,
             dirty_cards: BTreeSet::new(),
             last_phase: Phase::Lobby,
@@ -546,6 +549,7 @@ impl App {
         // before the seats of the players in it.
         self.finish_change(false);
         if late {
+            self.late_merges += 1;
             if let Some(json) = self.aside.as_ref().and_then(keep_json) {
                 self.event(EV_KEEP, json.as_bytes());
             }
