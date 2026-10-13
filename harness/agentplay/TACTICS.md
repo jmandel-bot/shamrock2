@@ -15,7 +15,7 @@ How to play well, not just legally. Read this before playing.
 3. **Specific beats clever.** Pick the association most people make, not a private or obscure one. A broad clue that fits half the board causes confusion; an over-clever one gets misread.
 4. **Use the corners.** Each card answers two clues. If one clue is necessarily a bit loose, make the clue on that card's other side sharp, so the corner can be pinned down by the intersection.
 5. **Decoys add risk.** Unknown random cards join yours in the tray. If your clues are risky, keep decoys low (1); if they are sharp, 2 is fine.
-6. **Rules:** the traditional way to play is a **single word** per clue (any capitalisation); write one word unless your table has agreed to allow short phrases. Never one of the two words or a form of it ("super" for *superman*), and no made-up words.
+6. **Rules:** the traditional way to play is a **single word** per clue; write one word unless your table has agreed to allow short phrases. **Write clues in lowercase by default**, so a capital means something: capitalise only for a proper noun or title ("Sherlock", "Apollo"), and read a capital as that signal when guessing. Never one of the two words or a form of it ("super" for *superman*), and no made-up words.
 
 ## Guessing: imagine the writer
 
