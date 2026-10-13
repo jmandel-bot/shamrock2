@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Shamrock Sync Model</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column (~70ch) on the game's sage felt; tables and lineage strips break out a little wider. */
+:root {
+  --felt: #e6eee2; --page: #f7faf5; --card: #ffffff; --line: #c9d8cc;
+  --ink: #13261a; --dim: #4a6352; --leaf: #2f8a4a; --leaf-soft: #dcefe0;
+  --gold: #b07d12; --gold-soft: #fbefd0; --new: #7a4fc4; --new-soft: #eee6fb;
+  --rule: #13261a1a;
+  --display: Fraunces, Georgia, serif; --body: Figtree, system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --felt: #0f1511; --page: #141b16; --card: #1b241e; --line: #2f3e34;
+  --ink: #e9f0ea; --dim: #a5b6aa; --leaf: #7fd394; --leaf-soft: #1f3526;
+  --gold: #f2c14e; --gold-soft: #3a2f12; --new: #c4a6ff; --new-soft: #2c2240;
+  --rule: #ffffff1a; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --felt: #0f1511; --page: #141b16; --card: #1b241e; --line: #2f3e34;
+  --ink: #e9f0ea; --dim: #a5b6aa; --leaf: #7fd394; --leaf-soft: #1f3526;
+  --gold: #f2c14e; --gold-soft: #3a2f12; --new: #c4a6ff; --new-soft: #2c2240;
+  --rule: #ffffff1a; color-scheme: dark }
+
+* { box-sizing: border-box }
+body { background: var(--felt); color: var(--ink); font: 400 16px/1.6 var(--body); margin: 0; padding-inline: 16px; padding-block: 28px 64px }
+main { max-width: 820px; margin: 0 auto; background: var(--page); border-radius: 22px; padding: clamp(20px, 4vw, 48px) }
+h1, h2, h3 { font-family: var(--display); font-weight: 700; text-wrap: balance; line-height: 1.15 }
+h1 { font-size: clamp(30px, 5vw, 44px); margin: 6px 0 10px }
+h2 { font-size: 26px; margin: 48px 0 10px; padding-top: 22px; border-top: 1px solid var(--rule) }
+h3 { font-size: 19px; margin: 26px 0 6px }
+p, li { max-width: 68ch }
+p { margin: 10px 0 }
+ul, ol { padding-left: 22px; margin: 8px 0 }
+li { margin: 5px 0 }
+a { color: var(--leaf) }
+a:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px }
+code { font: 500 0.88em var(--mono); background: var(--leaf-soft); padding: 1px 5px; border-radius: 5px }
+.eyebrow { font: 700 12px var(--body); letter-spacing: .09em; text-transform: uppercase; color: var(--dim) }
+.lede { font-size: 18px; color: var(--dim) }
+.status { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 4px }
+.chip { font: 700 11.5px var(--body); letter-spacing: .04em; text-transform: uppercase; border-radius: 99px; padding: 3px 9px; white-space: nowrap }
+.chip.exists { background: var(--leaf-soft); color: var(--leaf) }
+.chip.new { background: var(--new-soft); color: var(--new) }
+nav.toc { margin: 22px 0 0; padding: 14px 18px; background: var(--card); border: 1px solid var(--line); border-radius: 14px }
+nav.toc ol { columns: 2 220px; column-gap: 28px; margin: 6px 0 0 }
+nav.toc li { break-inside: avoid; margin: 3px 0 }
+.scroll { overflow-x: auto; margin: 14px 0 }
+table { border-collapse: collapse; width: 100%; min-width: 520px; font-size: 15px }
+th, td { text-align: left; vertical-align: top; padding: 9px 10px; border-bottom: 1px solid var(--rule) }
+th { font: 700 12.5px var(--body); letter-spacing: .05em; text-transform: uppercase; color: var(--dim) }
+td:first-child { font-weight: 600 }
+.notice { font-style: italic; color: var(--ink) }
+.principles { counter-reset: p; list-style: none; padding: 0; display: grid; gap: 10px }
+.principles li { counter-increment: p; max-width: none; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin: 0 }
+.principles li::before { content: counter(p); font: 700 20px var(--display); color: var(--leaf) }
+.principles b { display: block }
+/* three layers of state */
+.layers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0 }
+@media (max-width: 640px) { .layers { grid-template-columns: minmax(0, 1fr) } }
+.layer { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px }
+.layer h3 { margin: 0 0 2px; font-size: 17px }
+.layer .where { font-size: 13px; color: var(--dim); margin-bottom: 8px }
+.layer ul { padding-left: 18px; font-size: 14.5px }
+.layer.shared { border-top: 4px solid var(--leaf) }
+.layer.presence { border-top: 4px solid var(--gold) }
+.layer.local { border-top: 4px solid var(--new) }
+pre.shape { font: 400 13.5px/1.55 var(--mono); background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; overflow-x: auto; margin: 14px 0 }
+/* ranking ladder */
+.ladder { list-style: none; padding: 0; margin: 12px 0; display: grid; gap: 6px }
+.ladder li { max-width: none; margin: 0; display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 10px; align-items: baseline }
+.ladder .n { font: 700 18px var(--display); color: var(--gold) }
+/* lineage strips */
+.lineage { display: grid; gap: 12px; margin: 16px 0 }
+.case { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; display: grid; gap: 8px }
+.case h3 { margin: 0; font-size: 17px }
+.strip { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font: 500 12.5px var(--mono) }
+.rd { border: 1.5px solid var(--line); border-radius: 9px; padding: 4px 8px; background: var(--page); white-space: nowrap }
+.rd.mine { border-color: var(--leaf); background: var(--leaf-soft) }
+.rd.in { border-color: var(--gold); background: var(--gold-soft) }
+.rd.other { border-style: dashed }
+.arrow { color: var(--dim) }
+.fork { display: grid; gap: 4px }
+.case .says { font-size: 14.5px }
+/* walkthroughs */
+.walk { background: var(--card); border-left: 4px solid var(--gold); border-radius: 0 12px 12px 0; padding: 10px 16px; margin: 14px 0 }
+.walk ol { margin: 6px 0 }
+.callout { background: var(--new-soft); border-radius: 12px; padding: 12px 16px; margin: 14px 0 }
+.callout p { margin: 4px 0 }
+.twocol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px }
+@media (max-width: 640px) { .twocol { grid-template-columns: minmax(0, 1fr) } }
+.twocol > div { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px }
+.twocol h3 { margin-top: 0 }
+footer { margin-top: 40px; font-size: 13.5px; color: var(--dim) }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth } }
+</style>
+</head>
+<body>
+
+<main>
+  <div class="eyebrow">Shamrock · design for review</div>
+  <h1>How a Shamrock table stays one table</h1>
+  <p class="lede">One model for keeping every phone at a table in agreement, whatever the network, the timing or the people do. It gathers everything we've worked out into one place, so it can be reviewed and then built.</p>
+  <div class="status">
+    <span class="chip exists">exists</span><span>built and tested today</span>
+    <span class="chip new">new</span><span>what this proposal adds or changes, with its tests</span>
+  </div>
+
+  <nav class="toc" aria-label="Contents">
+    <div class="eyebrow">Contents</div>
+    <ol>
+      <li><a href="#cases">The cases it must handle</a></li>
+      <li><a href="#principles">Seven principles</a></li>
+      <li><a href="#state">What lives where</a></li>
+      <li><a href="#rank">Which round is current</a></li>
+      <li><a href="#explain">Explaining any change</a></li>
+      <li><a href="#history">History is personal</a></li>
+      <li><a href="#move">Moving your group</a></li>
+      <li><a href="#heal">How the table heals itself</a></li>
+      <li><a href="#players">What players see and can do</a></li>
+      <li><a href="#walk">Worked examples</a></li>
+      <li><a href="#bounds">Bounds over a long evening</a></li>
+      <li><a href="#tests">Guarantees and how they're checked</a></li>
+      <li><a href="#changes">What changes from today</a></li>
+    </ol>
+  </nav>
+
+  <h2 id="cases">The cases it must handle</h2>
+  <p>Everything odd that can happen at a table falls into four general cases. The model treats each by how the histories are <em>related</em>, never by the story that produced it. The examples we discussed are points drawn from these cases, and the design must not be fitted to any one of them.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Case</th><th>How the histories relate</th><th>Examples</th></tr></thead>
+    <tbody>
+      <tr><td>One table, in order</td><td>Each round follows the last</td><td>Deal, write, guess, next round.</td></tr>
+      <tr><td>One table, diverged</td><td>Two histories with a common past</td><td>A split network heals. Two people deal or press Proceed at the same moment. A phone offline for three rounds comes back. A reload restores a stale save.</td></tr>
+      <tr><td>Two tables, one room</td><td>Two histories with no common past</td><td>Two groups used the same room name without meeting, or one group split up and played on separately, then they meet.</td></tr>
+      <tr><td>Comings and goings</td><td>Who is connected changes</td><td>Joining late, reloading, closing a tab mid-drag, everyone leaving and someone coming back, being alone, the signaling relay going down.</td></tr>
+    </tbody>
+  </table></div>
+  <p>The second and third rows are the important distinction. <b>Divergent histories</b> share a past, so merging them is like resolving a fork: pick a branch to continue and keep the other as history. <b>Separate histories</b> share nothing, so a merge is really two groups landing in one room. Comparing "their round 3" with "our round 2" is arbitrary, and the right answer belongs to the people involved.</p>
+
+  <h2 id="principles">Seven principles</h2>
+  <ol class="principles">
+    <li><div><b>The room name is the address, and a room holds one live table.</b> Anyone who opens the link is at that table.</div></li>
+    <li><div><b>The shared table is small and current: the seats plus the current round.</b> Nothing else syncs. A newcomer only needs what is happening now, never the past.</div></li>
+    <li><div><b>Merging can't depend on order.</b> Every merge rule is commutative, associative and idempotent, so devices agree whatever order messages arrive in, and nothing ever needs undoing.</div></li>
+    <li><div><b>History is personal.</b> Each device keeps its own copy of every round it took part in. Work is never lost from the device that did it, even when the table moves on without it.</div></li>
+    <li><div><b>Every change of round is explained, the same way whatever caused it.</b> The explanation comes from the round's own header.</div></li>
+    <li><div><b>Presence is not state.</b> Who is here, pointers, and "someone is dragging this card" live in short-lived messages that end when a device leaves. They can never go stale in the table.</div></li>
+    <li><div><b>The table heals itself.</b> Full syncs, a fingerprint in every presence ping and each device's own save repair it without anyone noticing.</div></li>
+  </ol>
+
+  <h2 id="state">What lives where</h2>
+  <div class="layers">
+    <div class="layer shared">
+      <h3>The table</h3>
+      <div class="where">Replicated on every device; the only thing that syncs</div>
+      <ul>
+        <li>Seats: name → active? <span class="chip exists">exists</span></li>
+        <li>Moves: a group's table id → its new room <span class="chip new">new</span></li>
+        <li>The current round: its header and its body <span class="chip exists">exists</span></li>
+        <li>Lineage in the header <span class="chip new">new</span></li>
+      </ul>
+    </div>
+    <div class="layer presence">
+      <h3>Presence</h3>
+      <div class="where">Short-lived messages; never stored in the table</div>
+      <ul>
+        <li>Hello every 2 s: device, seat, table fingerprint <span class="chip exists">exists</span></li>
+        <li>Pointers, up to 30 a second, gone after 4 s, carrying the card being dragged <span class="chip exists">exists</span></li>
+      </ul>
+    </div>
+    <div class="layer local">
+      <h3>This device</h3>
+      <div class="where">Never shared</div>
+      <ul>
+        <li>A save of the table, restored if under 6 h old <span class="chip exists">exists</span></li>
+        <li>Past games, the last 60 rounds <span class="chip exists">exists</span>, now fed by one rule <span class="chip new">new</span></li>
+        <li>Your name, card size, theme <span class="chip exists">exists</span></li>
+      </ul>
+    </div>
+  </div>
+  <pre class="shape">seats   name → { name, active, stamp }        last writer wins, per seat; never deleted
+round
+  header  table   fixed at this table's first deal; kept forever, across New games   <b>new</b>
+          epoch   how many New games there have been
+          n       round number within the game
+          parent  the round this one followed                                        <b>new</b>
+          dealer  who dealt it                                                        <b>new</b>
+          players, seed, deck position, stamp
+moves   table id → { room, stamp }                last writer wins; where a group went   <b>new</b>
+  body    every version of each writer's clues · when guessing started
+          card positions · guesses · which clover is up</pre>
+  <ul>
+    <li><b>Seats</b> are keyed by name, so choosing a name takes that seat. A seat is never deleted, only marked inactive (by Remove, or by a New game for players who aren't there). A device that is here keeps its own seat active.</li>
+    <li><b>The header</b> says which round this is and where it came from. <code>table</code> answers "is this my table?", <code>parent</code> answers "is this the next round, or a fork?", and <code>dealer</code> says who did it. The deck shuffle is derived from the table and the epoch, so the separate <code>deck_seed</code> field goes <span class="chip new">new</span>.</li>
+    <li><b>The body</b> merges register by register, as today. Clue versions are all kept, so "what counted when guessing started" is well defined even when an edit races Proceed. A change that belongs to a round other than the current one is ignored by the table. It isn't lost: see <a href="#history">History is personal</a>.</li>
+  </ul>
+
+  <h2 id="rank">Which round is current</h2>
+  <p>When two rounds meet, one fixed order decides, identically on every device:</p>
+  <ol class="ladder">
+    <li><span class="n">1</span><span><b>Higher epoch.</b> A New game beats everything from before it.</span></li>
+    <li><span class="n">2</span><span><b>Higher round number.</b> The game further along carries on.</span></li>
+    <li><span class="n">3</span><span><b>More players dealt in.</b> A lone device's deal can't beat a deal for the whole table.</span></li>
+    <li><span class="n">4</span><span><b>Older.</b> An established deal beats a later one.</span></li>
+  </ol>
+  <p>The winner becomes current everywhere. On a device whose round lost, the round's state is cleared; the seats are untouched. This order is the <em>mechanism</em>. It is meaningful for one table, and merely deterministic for two, which is why two tables also get a human choice (<a href="#move">Moving your group</a>).</p>
+
+  <h2 id="explain">Explaining any change <span class="chip new">new</span></h2>
+  <p>Whenever the round a device is in is replaced by one it didn't deal, the device compares the new round's header with the one it had. One classifier covers every cause, and produces one notice. The person who caused the change sees nothing.</p>
+  <div class="lineage">
+    <div class="case">
+      <h3>The table moved on</h3>
+      <div class="strip"><span class="rd mine">r2 · yours</span><span class="arrow">→</span><span class="rd in">r3 · parent r2</span></div>
+      <div class="says">The new round's parent is your round. <span class="notice">"Cy dealt round 3."</span> Or, if you weren't dealt in: <span class="notice">"Cy dealt round 3; you're in next round."</span></div>
+    </div>
+    <div class="case">
+      <h3>Same table, different branch</h3>
+      <div class="strip fork"><div class="strip"><span class="rd">r2</span><span class="arrow">→</span><span class="rd mine">r3 · yours</span></div><div class="strip"><span class="rd">r2</span><span class="arrow">→</span><span class="rd in">r3 · Ben's, older</span></div></div>
+      <div class="says">Same table and epoch, but the parent isn't yours: you missed rounds, or two deals crossed. <span class="notice">"Ben dealt round 3 while you were away."</span> or <span class="notice">"Ben dealt at the same moment; continuing Ben's."</span></div>
+    </div>
+    <div class="case">
+      <h3>A New game</h3>
+      <div class="strip"><span class="rd mine">epoch 0 · r4 · yours</span><span class="arrow">→</span><span class="rd in">epoch 1 · lobby</span></div>
+      <div class="says">Same table, higher epoch. <span class="notice">"Ana started a new game."</span></div>
+    </div>
+    <div class="case">
+      <h3>Another table in this room</h3>
+      <div class="strip"><span class="rd mine">table A · r1 · yours</span><span class="arrow">⇢</span><span class="rd in other">table B · r2</span></div>
+      <div class="says">A different table id: no shared past at all. <span class="notice">"Cy and Dee have also been playing at this table."</span> The default is to play together, and the notice offers <b>Move us to a new table</b> (<a href="#move">below</a>).</div>
+    </div>
+    <div class="case">
+      <h3>Arriving</h3>
+      <div class="says">You had no table yet: a first visit, or an empty or expired save. No notice; you just see the table.</div>
+    </div>
+  </div>
+  <p>Whenever the round you're leaving had anything in it, the notice ends with <span class="notice">"Your round is in Past games."</span></p>
+
+  <h2 id="history">History is personal <span class="chip new">new</span></h2>
+  <div class="callout">
+    <p><b>The rule:</b> when the round a device is in stops being current, for any reason, the device writes its own copy of that round to Past games.</p>
+  </div>
+  <p>Reasons include finishing the round, a teammate dealing again, losing a crossed deal, a New game, or another table winning. One rule replaces today's two separate paths (round-end logging, and the special "set aside" event).</p>
+  <ul>
+    <li><b>What's kept:</b> whatever this device had. That means clues (drafts included), card placements and guesses.</li>
+    <li><b>How it's labelled:</b> a finished round is recorded as finished. Anything else is marked <em>unfinished</em>, with each clover marked done, guessed so far, or not guessed.</li>
+    <li><b>Replay:</b> <em>Play these again</em> offers only clovers with all four clues. Half-written clovers can be read but not replayed.</li>
+    <li><b>Limit:</b> the last 60 rounds per device <span class="chip exists">exists</span>.</li>
+  </ul>
+  <h3>Late edits to a round that was just replaced</h3>
+  <p>Each device keeps the last round it was pushed out of, alive in the background, until it next deals or joins a new round of its own (and at most 10 minutes). Any change that arrives for that round merges into it rather than being ignored. The device's Past games copy is updated, and so is what a Move would carry. A teammate's last clue edit that crossed the switch in flight still lands where it belongs.</p>
+  <p><b>What this deliberately doesn't do:</b> share old rounds with the table. A newcomer has no use for rounds from before they arrived, and the people who care about a replaced round were in it, so their devices already hold it. Older rounds than the last one are only on the devices that played them.</p>
+
+  <h2 id="move">Moving your group <span class="chip new">new</span></h2>
+  <p>When two tables meet in one room, playing together is the default, and it needs nothing from anyone. But the two groups may be strangers, or may simply want their own games back. The notice on the outranked side offers <b>Move us to a new table</b>.</p>
+  <ol>
+    <li><b>One tap, by anyone in the group.</b> Their device picks a fresh room name and opens it, seeded with its copy of the group's table: the round they were in and their seats. They arrive already seated, mid-round, exactly where they were.</li>
+    <li><b>The table remembers the move.</b> A small shared record goes into the old room: the moved group's table id → the new room name. It's last-writer-wins and a few bytes long. Because it's in the room's table, every device of that group sees it, whenever it next connects: now, after a reload, or tomorrow from its save.</li>
+    <li><b>The rest of the group gets one tap to follow.</b> Their notice reads <span class="notice">"Ana moved your group to #quiet-heron-dell. Go there?"</span> Following opens the new room seeded with <em>their own</em> copy too. Copies of the same round from the same table merge, so everyone's drafts arrive.</li>
+    <li><b>Nobody is moved without choosing.</b> The other group isn't affected at all and keeps the room. A group member who ignores the prompt simply stays at the merged table.</li>
+  </ol>
+  <h3>Who is "your group"</h3>
+  <p>Nobody keeps a member list. A group is a <b>table id</b>, and each device knows its own from its history: it's the table of the round it was pushed out of when the tables met. The move record is keyed by that id ("table A moved to #quiet-heron-dell"), and a device is offered the move only if it came from table A.</p>
+  <ul>
+    <li>The other group's devices came from the winning table, so they're never offered it.</li>
+    <li>Anyone who arrived after the merge has only seen the merged table, so they aren't offered it either.</li>
+    <li>A device that reopens later from a save of table A is offered it then.</li>
+    <li>Two players with the same name in both groups share one seat at the merged table, but their devices have different histories. Each is offered only its own group's move.</li>
+    <li>A group member on a new phone, with no history, isn't offered it. The group can send them the link.</li>
+  </ul>
+  <h3>Starting a fresh table any time</h3>
+  <p>The ⋯ menu has <b>Start a fresh table with this group</b> for a table that just wants to split off. At an ordinary table "the group" would be everyone, so this moves nobody automatically. It opens the new room seeded with this device's copy of the table and gives you its link to send to whoever you choose.</p>
+
+  <h2 id="heal">How the table heals itself <span class="chip exists">exists</span></h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Mechanism</th><th>What it covers</th></tr></thead>
+    <tbody>
+      <tr><td>A full sync (seats plus the current round) every time a connection opens</td><td>Anyone joining or reconnecting</td></tr>
+      <tr><td>A table fingerprint in every Hello. If a peer's differs twice in a row with neither side changing, both resync, at most every 5 s</td><td>Devices that drifted apart while staying connected, such as a change that missed one player and whose sender then left</td></tr>
+      <tr><td>Each device saves the table every 2 s and on leaving, and restores it on load if under 6 h old</td><td>Every holder reloading or closing; one person coming back alone</td></tr>
+      <tr><td>A saved name rejoins 1.5 s after the page loads</td><td>Reloads</td></tr>
+    </tbody>
+  </table></div>
+  <p>A restored save is not trusted. It merges like any other sync and is classified like any other round, so a stale save either catches up quietly or is recognised as another table.</p>
+  <h3>Upgrades <span class="chip new">new</span></h3>
+  <p>A change to the message format means a phone still on the old page can't read a new phone's messages. Without a guard they would silently drift apart. So:</p>
+  <ul>
+    <li>Every Hello carries a <b>protocol version</b>.</li>
+    <li>A device that hears a newer one shows <span class="notice">"A newer version of Shamrock is at this table. Reload to keep playing."</span> and stops sending table changes until it reloads.</li>
+    <li>A save is restored only if its version matches the page. An older save starts fresh and syncs from whoever is there.</li>
+  </ul>
+
+  <h2 id="players">What players see and can do</h2>
+  <div class="scroll"><table>
+    <thead><tr><th>Situation</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td>The round changes under you</td><td>One notice (one line, about 8 seconds) naming who and what. It's also listed under <b>What happened at this table</b> in the ⋯ menu (the last 10 events, kept on this device), so anyone who looked away can catch up <span class="chip new">new</span></td></tr>
+      <tr><td>Your round is replaced</td><td>It's in Past games, marked unfinished, readable, with complete clovers replayable <span class="chip new">new</span></td></tr>
+      <tr><td>Two tables meet in one room</td><td>You play together by default: nothing blocks, and the next deal includes everyone. The notice offers <b>Move us to a new table</b>: you arrive at a fresh room, seated and mid-round, and your group is offered one tap to follow <span class="chip new">new</span></td></tr>
+      <tr><td>Everyone dealt in has left and nobody submitted</td><td><b>Deal again</b> in the bottom strip <span class="chip exists">exists</span></td></tr>
+      <tr><td>Some players are still writing</td><td><b>Proceed with N of M</b> <span class="chip exists">exists</span></td></tr>
+      <tr><td>You're alone or disconnected</td><td>The status line says <em>Waiting for others</em> or <em>Reconnecting…</em>, and the page keeps retrying <span class="chip exists">exists</span></td></tr>
+      <tr><td>You want your own table</td><td><b>Start a fresh table with this group</b> in the ⋯ menu: the same Move, at any time <span class="chip new">new</span></td></tr>
+      <tr><td>Someone is dragging a card</td><td>It floats, outlined in their colour, until they let go, go quiet or leave <span class="chip exists">exists</span></td></tr>
+      <tr><td>A round ends</td><td>The recap: every clover's answer, one after another <span class="chip exists">exists</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <h2 id="walk">Worked examples</h2>
+  <div class="walk">
+    <h3>Two pairs, one room</h3>
+    <ol>
+      <li>Ana and Ben deal round 1 at <code>family-night</code>. Ana writes one clue, then they put their phones away. Each phone saves the table.</li>
+      <li>Later, Cy and Dee open <code>family-night</code> on their own phones. There's no table there for them, so their first deal starts a new one (a different table id), and they play into round 2.</li>
+      <li>All four come back the same evening. Each phone restores its own save, then they connect and do full syncs.</li>
+      <li>Seats merge: four players at one table. Rounds rank: Cy and Dee's round 2 beats round 1, so it becomes current everywhere.</li>
+      <li>Ana's and Ben's phones see a different table id. They show <span class="notice">"Cy and Dee have also been playing at this table. You're in next round. Your round is in Past games."</span> and write their round 1 (with Ana's clue) to Past games, marked unfinished.</li>
+      <li>Cy and Dee lost nothing, so they see nothing. The next deal includes all four.</li>
+      <li>Or Ana taps <b>Move us to a new table</b>. She lands at <code>quiet-heron-dell</code>, back in round 1 with her clue. Ben's phone shows <span class="notice">"Ana moved your group to #quiet-heron-dell. Go there?"</span>, and one tap takes him there with his own drafts too. Cy and Dee carry on at <code>family-night</code>, unaffected.</li>
+    </ol>
+  </div>
+  <div class="walk">
+    <h3>Two deals cross during a network split</h3>
+    <ol>
+      <li>Four players are in round 2, and the network splits two and two. Each side presses Deal new cards.</li>
+      <li>When it heals, both round 3s have the same table, epoch, number and player count, so the older deal wins.</li>
+      <li>The losing side sees <span class="notice">"Ben dealt at the same moment; continuing Ben's. Your round is in Past games."</span> Their drafts are on their own phones.</li>
+    </ol>
+  </div>
+  <div class="walk">
+    <h3>A reload with a stale save</h3>
+    <ol>
+      <li>Dee's phone was offline through rounds 3 and 4, and she reloads. Her save says round 2.</li>
+      <li>She reconnects. Round 4 has the same table and outranks her round. Its parent isn't her round, but her round 2 had finished, so there is nothing to keep.</li>
+      <li>She catches up quietly, or sees at most <span class="notice">"Cy dealt round 4 while you were away."</span></li>
+    </ol>
+  </div>
+
+  <h2 id="bounds">Bounds over a long evening</h2>
+  <ul>
+    <li><b>The shared table:</b> the seats plus one round. The only growth inside a round is clue versions, about 60–100 bytes per edit, so a chatty six-player round is about 15 KB. It never accumulates across rounds, so syncs, fingerprints and saves stay that size however long a table plays. No compaction is needed.</li>
+    <li><b>Seats:</b> one per name ever used at the table, at about 30 bytes each. Even a room used by a hundred different names adds 3 KB. Rather than prune them, which a merge would undo, the size is measured: the simulator checks that the table stays under a fixed budget (50 KB) through its longest games.</li>
+    <li><b>Move records:</b> one per group that ever moved out of a room, a few bytes each.</li>
+    <li><b>The last replaced round</b> kept for late edits: at most one round per device, dropped after 10 minutes.</li>
+    <li><b>Past games:</b> 60 rounds per device.</li>
+  </ul>
+
+  <h2 id="tests">Guarantees and how they're checked</h2>
+  <div class="twocol">
+    <div>
+      <h3>Network simulator</h3>
+      <p><code>core/tests/network.rs</code>: 300 chaotic games on every test run, 5,000 in a soak. Links drop, the network splits and heals, phones go offline, reload or close, and players act at random. After everything heals, each game must show:</p>
+      <ul>
+        <li>one state on every device;</li>
+        <li>nobody here without their seat;</li>
+        <li>no device's table ever back to less progress;</li>
+        <li>no hold outliving its hand;</li>
+        <li>a round that can still be played to its end;</li>
+        <li><span class="chip new">new</span> every round a device was in is in its Past games once replaced;</li>
+        <li><span class="chip new">new</span> every change a device didn't cause gives exactly one notice, correctly classified (the simulator knows the true cause);</li>
+        <li><span class="chip new">new</span> a late edit to a just-replaced round reaches every device that was in it, in Past games;</li>
+        <li><span class="chip new">new</span> a moved group, once everyone follows, has one table at the new room with every member's work, and the old room is untouched;</li>
+        <li><span class="chip new">new</span> the shared table stays under its size budget;</li>
+        <li><span class="chip new">new</span> only the moved group's devices are offered the move.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Browser fault scenarios</h3>
+      <p><code>harness/faults.mjs</code>: real browsers, one profile per player, faults injected into the page and the relay:</p>
+      <ul>
+        <li>a join storm;</li>
+        <li>a phone cut off with its connections up;</li>
+        <li>a 600 ms lag;</li>
+        <li>a reload mid-writing;</li>
+        <li>everyone leaving and coming back;</li>
+        <li>the relay going down;</li>
+        <li>a phone dying mid-drag;</li>
+        <li>being alone;</li>
+        <li>two groups meeting.</li>
+      </ul>
+      <p><span class="chip new">new</span> Each scenario also checks the notice and the Past games entry. A new scenario moves a group: one taps <b>Move</b>, another follows from the prompt, a third reopens the old room the next day and is offered the move from its save. It checks both rooms afterwards, and that the other group was never offered it. Two more check that round changes appear under <b>What happened</b>, and that a page on an older protocol version is told to reload rather than drifting.</p>
+    </div>
+  </div>
+
+  <h2 id="changes">What changes from today</h2>
+  <div class="twocol">
+    <div>
+      <h3>Goes away</h3>
+      <ul>
+        <li>The "set aside" event and its deck-shuffle test</li>
+        <li>The <code>deck_seed</code> field (derived from table and epoch instead)</li>
+        <li>Round-end logging as a separate path</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Comes in</h3>
+      <ul>
+        <li><code>table</code>, <code>parent</code> and <code>dealer</code> in the round header</li>
+        <li>One classifier and one notice for every round change</li>
+        <li>One rule: a round that stops being current goes to Past games</li>
+        <li>Past games marks unfinished clovers; only complete ones can be replayed</li>
+        <li>The last replaced round kept briefly, so late edits land in it</li>
+        <li><b>Move us to a new table</b>, with a move record in the room and a prompt to follow</li>
+        <li>A size budget for the table, checked by the simulator</li>
+        <li><b>What happened at this table</b> in the ⋯ menu</li>
+        <li>A protocol version in Hello and in saves</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>Today's sync code passes every check above that isn't marked new; everything marked new is proposed for this build, with its tests.</footer>
+</main>
+</body>
+</html>
