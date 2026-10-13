@@ -56,13 +56,13 @@
   /* No header bar: the table menu and who's here sit in the board's empty
      top-left corner (empty in portrait and landscape alike). */
   #top { position: absolute; top: 8px; left: 8px; display: flex; flex-direction: column; align-items: center; gap: 6px; z-index: 2; pointer-events: none; }
-  #roster { display: grid; grid-template-columns: repeat(3, 12px); gap: 4px; }
-  .dot { width: 12px; height: 12px; border-radius: 50%; }
-  .dot.you { box-shadow: 0 0 0 2px var(--felt), 0 0 0 4px var(--fg); }
-  .dot.writer { box-shadow: 0 0 0 2px var(--felt), 0 0 0 4px var(--go); }
-  .dot.away { opacity: .4; }
-  .watching { grid-column: 1 / -1; font-size: 13px; color: var(--dim); white-space: nowrap; }
-  #menuBtn { min-width: 44px; padding: 8px 10px; font-size: 20px; line-height: 1; pointer-events: auto; background: var(--bar); }
+  #menuBtn { min-width: 44px; padding: 8px 10px; font-size: 20px; line-height: 1; flex: none; }
+  #hint.pick { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 4px; }
+  .who-row { display: flex; align-items: center; gap: 10px; padding: 8px 4px; font-size: 16px; }
+  .who-row small { color: var(--dim); font-size: 14px; }
+  .clover-row { display: flex; justify-content: space-between; align-items: center; text-align: left; border-radius: 14px; background: var(--menu-item); width: 100%; }
+  .clover-row.now { box-shadow: inset 0 0 0 2px var(--go); }
+  .clover-row small { color: var(--dim); font-weight: 600; font-size: 14px; }
 
   #stage { position: relative; flex: 1; min-height: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
@@ -126,9 +126,10 @@
   .danger { color: var(--danger); }
   code { font-size: 14px; color: var(--dim); word-break: break-all; }
   /* Solo play from a share link: no table, so no roster or table menu. */
-  body.solo #roster, body.solo #tableItems { display: none; }
+  body.solo #tableItems { display: none; }
   .tip { color: var(--dim); font-size: 15px; }
   body.home #top, body.home #dock { visibility: hidden; }
+  #invite { padding: 9px 12px; white-space: nowrap; }
   .tableRow { text-decoration: none; color: var(--fg); background: var(--menu-item); border-radius: 14px; padding: 10px 14px; }
   .tableRow small, .logEntry small { color: var(--dim); font-size: 14px; }
   .logEntry { background: var(--menu-item); border-radius: 14px; padding: 10px 12px; }
@@ -175,8 +176,6 @@
 <div id="stage">
   <canvas id="c"></canvas>
   <div id="top">
-    <button id="menuBtn" aria-label="Menu">⋯</button>
-    <div id="roster"></div>
     <button id="unzoom" hidden aria-label="Reset zoom">1×</button>
   </div>
   <input id="clue" maxlength="40" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="next" aria-label="Clue">
@@ -184,10 +183,12 @@
 </div>
 <div id="dock">
   <div id="segs" hidden></div>
+  <button id="menuBtn" aria-label="Menu">⋯</button>
   <div id="hint"></div>
   <div id="dockBtns">
     <button id="alt" hidden></button>
     <span class="stepper" id="decoys" hidden><button id="decDown" aria-label="Fewer decoy cards">−</button><span id="decLabel"></span><button id="decUp" aria-label="More decoy cards">+</button></span>
+    <button id="invite" hidden>Invite</button>
     <button id="side" hidden></button>
     <button id="go" class="go"></button>
   </div>
@@ -227,9 +228,18 @@
     <button class="menuBtn" id="shareMenuBtn" hidden>Share boards from this round…</button>
     <button class="menuBtn" id="redealBtn">Deal new cards (new round)</button>
     <button class="menuBtn danger" id="newGameBtn">New game with whoever is here</button>
+    <h2>Players</h2>
     <div class="list" id="playerList"></div>
     </div>
     <button id="closeMenu">Close</button>
+  </div>
+</div>
+<div class="overlay" id="cloverSheet">
+  <div class="sheet">
+    <h2>Clovers this round</h2>
+    <p>Pick which one everyone guesses next. Solved ones show their answer.</p>
+    <div class="list" id="cloverList"></div>
+    <button id="cloverClose">Close</button>
   </div>
 </div>
 <div class="overlay" id="homeSheet">

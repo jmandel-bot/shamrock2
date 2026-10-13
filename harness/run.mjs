@@ -267,6 +267,19 @@ try {
   await until([...players, W], (d) => d.phase === 'guessing:0', 10000);
   metric('last_ready_to_guessing_ms', performance.now() - t0, ' ms');
   const d1 = await A.digest();
+  // Anyone can pick which clover is guessed: tap the status, choose; everyone follows.
+  {
+    await B.page.click('#hint');
+    await B.page.waitForSelector('#cloverSheet.open');
+    const rows = await B.page.$$eval('#cloverList .clover-row', (els) => els.length);
+    await B.page.click('#cloverList .clover-row:nth-child(3)');
+    const jumped = await until([...players, W], (d) => d.phase === 'guessing:2', 8000).then(() => true, () => false);
+    await B.page.click('#hint');
+    await B.page.waitForSelector('#cloverSheet.open');
+    await B.page.click('#cloverList .clover-row:nth-child(1)');
+    const back = await until([...players, W], (d) => d.phase === 'guessing:0', 8000).then(() => true, () => false);
+    gate('tapping the status picks which clover everyone guesses (any order)', rows === d1.puzzles.length && jumped && back, `${rows} rows, jumped ${jumped}, back ${back}`);
+  }
   gate('all 5 clovers queued; decoy bids kept', d1.puzzles.length === 5 && d1.subs.some((s) => s[1] === 2));
   gate('clues typed via Enter-to-next-leaf arrive intact', d1.subs.every((s) => s.slice(3).every((c, d) => c.startsWith(words[d]) || c === 'edited after submit')));
 
@@ -537,7 +550,7 @@ try {
   await sleep(1200);
   const fd = await solo.evaluate(() => window.__cl.digest());
   const soloUi = await solo.evaluate(() => ({ join: document.getElementById('joinSheet').classList.contains('open'),
-    roster: document.getElementById('roster').offsetParent ? 'shown' : 'hidden', go: document.getElementById('go').textContent,
+    roster: document.getElementById('tableItems').offsetParent ? 'shown' : 'hidden', go: document.getElementById('go').textContent,
     remote: location.search.includes('signal') }));
   const srcClues = r1.subs.filter((x) => r1.puzzles.some((p, i) => i !== 1 && p.writer === x[0])).map((x) => x.slice(3).join('/'));
   const gotClues = fd.subs.map((x) => x.slice(3).join('/'));
@@ -601,7 +614,7 @@ try {
     }
     await sleep(2500);
     const lonely = await pages[0].textContent('#hint');
-    gate('alone, the status line says it is looking for the others', /Looking for the others/.test(lonely), lonely);
+    gate('alone, the status line says it is looking for the others', /Waiting for others/.test(lonely), lonely);
     const relay = createWsRelayServer({ port: LATE, host: '127.0.0.1' });
     await relay.ready;
     t0 = performance.now();

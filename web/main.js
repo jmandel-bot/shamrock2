@@ -415,15 +415,22 @@ $('watchBtn').onclick = watch;
 $('menuBtn').onclick = () => {
   const s = ui();
   $('linkText').textContent = location.href;
-  $('playerList').replaceChildren(...s.players.filter((p) => p.away && !p.you).map((p) => {
+  // Everyone at the table, by name, with what they're up to.
+  const doing = { writing: 'writing', ready: 'submitted', writer: 'their clover is up' };
+  $('playerList').replaceChildren(...s.players.map((p) => {
     const row = document.createElement('div');
-    row.className = 'item';
-    const label = Object.assign(document.createElement('span'), { className: 'grow', textContent: `${p.name} is away` });
-    const rm = Object.assign(document.createElement('button'), { textContent: 'Remove' });
-    rm.onclick = () => { X.remove_seat(p.id); drainOutbox(); row.remove(); };
-    row.append(label, rm);
+    row.className = 'who-row';
+    const label = document.createElement('span');
+    label.className = 'grow';
+    label.innerHTML = `<b>${esc(p.name)}</b>${p.you ? ' (you)' : ''}<br><small>${p.away ? 'away' : doing[p.status] ?? 'here'}</small>`;
+    row.append(label);
+    if (p.away && !p.you) {
+      const rm = Object.assign(document.createElement('button'), { textContent: 'Remove' });
+      rm.onclick = () => { X.remove_seat(p.id); drainOutbox(); row.remove(); };
+      row.append(rm);
+    }
     return row;
-  }));
+  }), ...(s.watchers ? [Object.assign(document.createElement('div'), { className: 'who-row', textContent: `${s.watchers} watching` })] : []));
   $('watchMenuBtn').hidden = !s.seated;
   syncSize();
   $('menuSheet').classList.add('open');
@@ -516,15 +523,6 @@ function renderUi(force = false) {
   if (!force && key === lastUi) return;
   lastUi = key;
 
-  const mark = { writing: '✎', ready: '✓', writer: '★' };
-  $('roster').replaceChildren(...s.players.map((p) => {
-    const dot = document.createElement('i');
-    dot.className = `dot${p.you ? ' you' : ''}${p.status === 'writer' ? ' writer' : ''}${p.away ? ' away' : ''}`;
-    dot.style.background = p.color;
-    dot.title = `${p.name}${p.away ? ' (away)' : ''} ${mark[p.status] ?? ''}`.trim();
-    return dot;
-  }), ...(s.watchers ? [Object.assign(document.createElement('span'), { className: 'watching', textContent: `👀 ${s.watchers}` })] : []));
-
   // One short line of status; how-to tips show once per device (see `tip`).
   let hint = '', go = null, alt = null, side = null, decoys = false;
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -553,8 +551,8 @@ function renderUi(force = false) {
         go = ['Start guessing', s.dealable.length > 0, () => act(1)];
         break;
       }
-      hint = s.dealable.length < 2 ? 'Invite friends: ⋯ menu' : esc(names(s.dealable));
-      go = [`Start with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
+      hint = s.dealable.length < 2 ? 'Invite friends' : esc(names(s.dealable));
+      go = [narrow ? `Start (${s.dealable.length})` : `Start with ${plural(s.dealable.length, 'player')}`, s.dealable.length > 0, () => act(1)];
       break;
     case 'writing': {
       const left = s.progress.filter((p) => !p.ready).map((p) => p.name);
@@ -596,7 +594,7 @@ function renderUi(force = false) {
   // Not connected to anyone: say so rather than look normal while broken.
   if (!solo && !peers.size) {
     const others = s.players.some((p) => !p.you);
-    hint = `<span class="pulse"></span>${others ? 'Reconnecting to the others…' : 'Looking for the others… (invite via ⋯)'}`;
+    hint = `<span class="pulse"></span>${others ? 'Reconnecting…' : 'Waiting for others'}`;
   }
   // Submission progress: a thin bar along the top of the strip.
   const segs = $('segs');
@@ -612,6 +610,13 @@ function renderUi(force = false) {
   }
   $('hint').innerHTML = hint;
   $('hint').title = $('hint').textContent;
+  // While guessing, the status names the clover; tap it to pick another.
+  const picking = s.phase === 'guessing' && (solo ? s.n : s.boards.length) > 1;
+  $('hint').classList.toggle('pick', picking);
+  $('hint').onclick = picking ? openClovers : null;
+  if (picking) $('hint').innerHTML += ' ▾';
+  // Invite sits in the strip itself in the lobby, or whenever you're alone.
+  $('invite').hidden = solo || home || !(s.phase === 'lobby' || !peers.size);
   const goBtn = $('go');
   goBtn.textContent = go?.[0] ?? '';
   goBtn.hidden = !go;
@@ -643,6 +648,32 @@ function tip(kind) {
   setTimeout(() => toast(TIPS[kind], 9000), 300);
 }
 canvas.addEventListener('pointerdown', () => $('toast').classList.remove('show'));
+
+// ---- choosing the clover, inviting ---------------------------------------------
+
+function openClovers() {
+  const s = ui();
+  const list = $('cloverList');
+  const names = solo ? customNames : s.boards.map((b) => b.name);
+  list.replaceChildren(...names.map((name, i) => {
+    const b = Object.assign(document.createElement('button'), { className: `clover-row${i === s.k ? ' now' : ''}` });
+    const solved = s.boards[i]?.solved;
+    b.innerHTML = `<span>${i + 1}. <b>${esc(name)}</b>'s clover</span><small>${i === s.k ? 'now' : solved ? 'solved ✓' : ''}</small>`;
+    b.onclick = () => { stats.presses++; X.jump(i); drainOutbox(); closeSheets(); renderUi(true); };
+    return b;
+  }));
+  $('cloverSheet').classList.add('open');
+}
+$('cloverClose').onclick = closeSheets;
+$('invite').onclick = async () => {
+  stats.presses++;
+  const url = location.href.replace(/[?&]fresh\b[^&#]*/, '');
+  try {
+    if (navigator.share) return await navigator.share({ title: 'Shamrock', text: 'Join my Shamrock table', url });
+  } catch (e) { if (e?.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(url); toast('Invite link copied'); }
+  catch { toast(url, 9000); }
+};
 
 // ---- this device's tables and game log (localStorage only) ------------------------
 

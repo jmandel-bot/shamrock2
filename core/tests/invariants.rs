@@ -1093,6 +1093,51 @@ fn review_keeps_board_lines_intact() {
     assert!(json.contains("\\n") && !json.contains('\n'), "newlines escaped, not dropped: {json}");
 }
 
+/// Anyone can jump to any clover while guessing; everyone follows, Next goes
+/// to the next unsolved one (wrapping), and the round ends when all are solved.
+#[test]
+fn guessers_choose_the_order_of_clovers() {
+    let mut t = table_in_guessing(3);
+    let n = t.apps[0].shared.puzzles().len();
+    assert_eq!(n, 3);
+    t.apps[1].jump(2);
+    t.pump();
+    for a in &t.apps {
+        assert_eq!(a.shared.phase(), Phase::Guessing(2));
+    }
+    // Solve clover 2; Next wraps round to clover 0 (unsolved), not "end".
+    let w = t.writer_now();
+    let g = t.guesser_for(w);
+    solve(&mut t, g, false);
+    t.apps[g].action(3);
+    t.pump();
+    t.apps[g].action(4);
+    t.pump();
+    assert_eq!(t.apps[0].shared.phase(), Phase::Guessing(0));
+    // Two people jump at once: everyone ends up on the same clover.
+    t.apps[0].jump(1);
+    t.apps[2].jump(2);
+    t.pump();
+    let p = t.apps[0].shared.phase();
+    assert!(t.apps.iter().all(|a| a.shared.phase() == p), "converged");
+    // Solve the rest in whatever order; the round ends only when all are solved.
+    for _ in 0..n {
+        if !matches!(t.apps[0].shared.phase(), Phase::Guessing(_)) {
+            break;
+        }
+        let w = t.writer_now();
+        if !t.apps[0].shared.check(w).done() {
+            let g = t.guesser_for(w);
+            solve(&mut t, g, false);
+            t.apps[g].action(3);
+            t.pump();
+        }
+        t.apps[0].action(4);
+        t.pump();
+    }
+    assert_eq!(t.apps[1].shared.phase(), Phase::End);
+}
+
 /// One test owns the process-wide imported-clover registry.
 #[test]
 fn imported_and_shared_boards_are_guessed_first_and_check_against_their_layout() {

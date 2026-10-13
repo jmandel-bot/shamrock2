@@ -683,6 +683,14 @@ impl App {
         self.layout().z
     }
 
+    /// Guess clover `k` next (anyone, any order; solved ones show their answer).
+    pub fn jump(&mut self, k: usize) {
+        if matches!(self.shared.phase(), Phase::Guessing(_)) && k < self.shared.puzzles().len() {
+            let s = self.stamp();
+            self.commit(Body::Next(k as u16, s));
+        }
+    }
+
     pub fn set_theme(&mut self, dark: bool) {
         self.pal = if dark { &DARK } else { &LIGHT };
     }
@@ -1048,7 +1056,7 @@ impl App {
                     let w = self.shared.puzzles()[k];
                     if self.shared.check(w).done() {
                         let s = self.stamp();
-                        self.commit(Body::Next(k as u16 + 1, s));
+                        self.commit(Body::Next(self.shared.next_unsolved(k) as u16, s));
                     }
                 }
             }

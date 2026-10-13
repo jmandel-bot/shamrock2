@@ -162,6 +162,12 @@ pub extern "C" fn remove_seat(id: u32) {
     g().app.remove_seat(id);
 }
 
+/// Jump to clover `k` while guessing (shared: everyone follows).
+#[no_mangle]
+pub extern "C" fn jump(k: u32) {
+    g().app.jump(k as usize);
+}
+
 /// Theme for this device's drawing: 1 dark, 0 light.
 #[no_mangle]
 pub extern "C" fn set_theme(dark: u32) {

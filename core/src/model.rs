@@ -142,7 +142,8 @@ pub enum Body {
     Start(Stamp),
     Card(u32, u8, Card),
     Check(u32, Check),
-    /// Index of the clover being guessed (grow-only).
+    /// Index of the clover being guessed (last writer wins, so anyone can
+    /// jump to any clover; past the last one means the round is over).
     Next(u16, Stamp),
     /// Points a writer's clover earned in round `n`.
     Ledger(u16, u32, u8, Stamp),
@@ -433,7 +434,7 @@ impl Shared {
                 n
             }
             Body::Next(k, s) => {
-                let n = (*k, *s) > self.next;
+                let n = (*s, *k) > (self.next.1, self.next.0);
                 if n {
                     self.next = (*k, *s);
                 }
@@ -455,7 +456,7 @@ impl Shared {
         v.extend(self.start.map(|s| op(Body::Start(s))));
         v.extend(self.cards.iter().map(|((w, i), c)| op(Body::Card(*w, *i, *c))));
         v.extend(self.checks.iter().map(|(w, c)| op(Body::Check(*w, *c))));
-        if self.next.0 > 0 {
+        if self.next.1 != Stamp::default() {
             v.push(op(Body::Next(self.next.0, self.next.1)));
         }
         v
@@ -545,6 +546,13 @@ impl Shared {
             let k = self.next.0 as usize;
             if k < self.puzzles().len() { Phase::Guessing(k) } else { Phase::End }
         }
+    }
+
+    /// The clover to guess after `k`: the next unsolved one, wrapping round;
+    /// past the end once every clover is solved.
+    pub fn next_unsolved(&self, k: usize) -> usize {
+        let p = self.puzzles();
+        (1..=p.len()).map(|d| (k + d) % p.len()).find(|&i| !self.check(p[i]).done()).unwrap_or(p.len())
     }
 
     pub fn check(&self, writer: u32) -> Check {
