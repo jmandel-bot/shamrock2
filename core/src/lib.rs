@@ -345,6 +345,19 @@ pub extern "C" fn set_word_widths(len: u32) {
     g().app.set_word_widths(&s);
 }
 
+/// Sizes the layout gives a card's four words (`a|b|c|d` in the inbox),
+/// as a JSON array of fractions of full size.
+#[no_mangle]
+pub extern "C" fn card_word_scales(len: u32) -> u32 {
+    let s = inbox_str(len);
+    let w: Vec<&str> = s.split('|').collect();
+    if w.len() != 4 {
+        return to_scratch("[]".into());
+    }
+    let sizes = g().app.card_word_sizes(&[w[0], w[1], w[2], w[3]]);
+    to_scratch(format!("[{}]", sizes.map(|x| (x / app::WORD_SIZE).to_string()).join(",")))
+}
+
 /// Over the deck: (share of words at full size, smallest scale), as JSON.
 #[no_mangle]
 pub extern "C" fn word_fit() -> u32 {

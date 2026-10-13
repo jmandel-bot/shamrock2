@@ -104,7 +104,7 @@ const HELLO_EVERY_MS: f64 = 2000.0;
 /// card font, see `set_word_widths`): a word may run into a corner whenever
 /// the words on both neighbouring edges are short enough to stay clear of it,
 /// so ~90% of the deck renders at full size; the rest shrink evenly to fit.
-pub const WORD_SIZE: f32 = 43.0;
+pub const WORD_SIZE: f32 = 33.0;
 /// Gap between a card's edge and the top of its words' letters.
 const WORD_EDGE: f32 = 3.0;
 /// Figtree Bold, per unit of size, around the text's centre line (measured):
@@ -735,73 +735,45 @@ impl App {
         self.word_w.get(w).copied().unwrap_or(w.chars().count() as f32 * 56.0) * WORD_SIZE / 100.0
     }
 
-    /// Each edge word's size and offset along its edge on a card (top,
-    /// right, bottom, left), cached per card.
+    /// Each edge word's size on a card (top, right, bottom, left) and its
+    /// offset along the edge (always 0: words stay centred), cached per card.
     ///
-    /// Everyone starts at full size, centred. A corner can be used by one of
-    /// the two words beside it; the other must then end clear of its letters
-    /// (their depth depends on its current size) plus `WORD_GAP`. For the
-    /// current sizes, look for a way to give out the corners (16 ways) and
-    /// slide words along their edges so nothing collides; if there is none,
-    /// shrink the biggest word that still collides by a small step and try
-    /// again. Shrinking a word also makes its letters shallower, freeing
-    /// corner room for its neighbours.
+    /// Everyone starts at full size. Two neighbouring words collide when both
+    /// reach into their shared corner: each end within `WORD_GAP` of the
+    /// other's letters, whose depth depends on its current size. While any
+    /// pair collides (or a word is longer than its edge), the biggest word
+    /// involved shrinks a small step; shallower letters free corner room for
+    /// its neighbours too, so the next round may resolve differently.
     pub fn card_word_layout(&self, words: &[&str; 4]) -> [(f32, f32); 4] {
         let key = words.join("\u{1}");
         if let Some(l) = self.word_layouts.borrow().get(&key) {
             return *l;
         }
-        let l = self.solve_card_words(words);
+        let l = self.solve_card_words(words).map(|s| (s, 0.0));
         self.word_layouts.borrow_mut().insert(key, l);
         l
     }
 
-    fn solve_card_words(&self, words: &[&str; 4]) -> [(f32, f32); 4] {
+    fn solve_card_words(&self, words: &[&str; 4]) -> [f32; 4] {
         let full = words.map(|x| self.word_width(x));
         let mut size = [WORD_SIZE; 4];
-        // How far a word's end may reach along its edge when the neighbour
-        // across that corner has letters `d` deep (or `None`: it owns it).
-        let limit = |nb_depth: Option<f32>| match nb_depth {
-            None => WORD_REACH,
-            Some(d) => (HALF - WORD_EDGE - d - WORD_GAP).min(WORD_REACH),
-        };
-        for _ in 0..60 {
-            let width: [f32; 4] = core::array::from_fn(|j| full[j] * size[j] / WORD_SIZE);
-            let depth: [f32; 4] = core::array::from_fn(|j| WORD_INK * size[j]);
-            // Corner k (between word k's +x end and word k+1's -x end) goes
-            // to word k (bit set) or word k+1.
-            let mut best: Option<(u32, [f32; 4], [f32; 4])> = None; // (moves, lo, hi)
-            let mut least_bad: Option<(f32, [f32; 4], [f32; 4])> = None; // (worst overflow)
-            for owners in 0..16u32 {
-                let mine = |k: usize| owners & (1 << k) != 0;
-                let hi: [f32; 4] = core::array::from_fn(|j| limit(if mine(j) { None } else { Some(depth[(j + 1) % 4]) }));
-                let lo: [f32; 4] = core::array::from_fn(|j| {
-                    let k = (j + 3) % 4;
-                    -limit(if !mine(k) { None } else { Some(depth[k]) })
-                });
-                let over = (0..4).map(|j| width[j] - (hi[j] - lo[j])).fold(f32::MIN, f32::max);
-                if over <= 1e-3 {
-                    let moves = (0..4).filter(|&j| width[j] / 2.0 > hi[j].min(-lo[j]) + 1e-3).count() as u32;
-                    if best.as_ref().is_none_or(|b| moves < b.0) {
-                        best = Some((moves, lo, hi));
-                    }
-                } else if least_bad.as_ref().is_none_or(|b| over < b.0) {
-                    least_bad = Some((over, lo, hi));
+        for _ in 0..80 {
+            let half: [f32; 4] = core::array::from_fn(|j| full[j] * size[j] / WORD_SIZE / 2.0);
+            // How far a word may reach before it is in neighbour `k`'s letters.
+            let clear = |k: usize| HALF - WORD_EDGE - WORD_INK * size[k] - WORD_GAP;
+            let mut bad = [false; 4];
+            for j in 0..4 {
+                bad[j] |= half[j] > WORD_REACH;
+                let k = (j + 1) % 4;
+                if half[j] > clear(k) && half[k] > clear(j) {
+                    bad[j] = true;
+                    bad[k] = true;
                 }
             }
-            if let Some((_, lo, hi)) = best {
-                return core::array::from_fn(|j| {
-                    let off = (0.0f32).max(lo[j] + width[j] / 2.0).min(hi[j] - width[j] / 2.0);
-                    (size[j], off)
-                });
-            }
-            // Still colliding: shrink the biggest word that doesn't fit.
-            let (_, lo, hi) = least_bad.unwrap();
-            let j = (0..4).filter(|&j| width[j] > hi[j] - lo[j] + 1e-3).max_by(|&a, &b| width[a].total_cmp(&width[b])).unwrap();
+            let Some(j) = (0..4).filter(|&j| bad[j]).max_by(|&a, &b| half[a].total_cmp(&half[b])) else { break };
             size[j] *= 0.97;
         }
-        // Give up gracefully (the shell shrinks anything still too wide).
-        core::array::from_fn(|j| (size[j], 0.0))
+        size
     }
 
     /// Just the sizes (see `card_word_layout`).

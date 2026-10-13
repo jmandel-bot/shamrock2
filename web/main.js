@@ -907,6 +907,7 @@ window.__cl = {
   shareFromText,
   unseal,
   wordFit: () => wordsMeasured && scratchJson(X.word_fit()),
+  wordScales: (card) => scratchJson(X.card_word_scales(writeText(card.join('|')))),
   wordSize: () => X.word_size(),
   measure: async (words, size = X.word_size()) => {
     await document.fonts.load(`700 ${size}px Figtree`);

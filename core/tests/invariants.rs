@@ -1138,38 +1138,27 @@ fn guessers_choose_the_order_of_clovers() {
     assert_eq!(t.apps[1].shared.phase(), Phase::End);
 }
 
-/// Card words use the corners when their neighbours leave them free: a long
-/// word between two short ones keeps full size; two long neighbours each take
-/// their free corner; a corner is never given to both words beside it.
+/// Card words stay centred. A long word between short ones keeps full size
+/// (it may reach into both corners); two long neighbours collide and the
+/// bigger shrinks step by step until neither reaches into the other's letters.
 #[test]
 fn long_card_words_use_free_corners() {
     use cloverleaf::app::{WORD_SAFE_W, WORD_SIZE};
     let mut a = App::new(1);
-    // Widths at size 100: "long" needs the corners, "short" doesn't.
-    // "long" needs one corner's worth of extra room; "longer" needs two.
-    let long = (WORD_SAFE_W * 1.2) * 100.0 / WORD_SIZE;
-    let longer = (WORD_SAFE_W * 1.45) * 100.0 / WORD_SIZE;
-    a.set_word_widths(&format!("long\t{long}\nlong2\t{long}\nlonger\t{longer}\nshort\t100"));
-    let s = a.card_word_sizes(&["long", "short", "short", "short"]);
-    assert_eq!(s, [WORD_SIZE; 4], "a long word between short ones stays full size");
-    // Two long neighbours: each takes its other, free corner (sliding off
-    // centre toward it) instead of both shrinking to the corner-free room.
+    let long = (WORD_SAFE_W * 1.25) * 100.0 / WORD_SIZE;
+    a.set_word_widths(&format!("long\t{long}\nlong2\t{long}\nshort\t100"));
+    let l = a.card_word_layout(&["long", "short", "short", "short"]);
+    assert!(l.iter().all(|x| x.0 == WORD_SIZE && x.1 == 0.0), "{l:?}");
     let l = a.card_word_layout(&["long", "long2", "short", "short"]);
-    assert!(l.iter().all(|x| x.0 == WORD_SIZE), "both full size: {l:?}");
-    assert!(l.iter().any(|x| x.1.abs() > 1e-3), "one slid toward its free corner: {l:?}");
-    // A word needing both its corners beside one needing one: it keeps both,
-    // the neighbour takes its other corner.
-    let l = a.card_word_layout(&["longer", "long", "short", "short"]);
-    assert!(l[0].0 == WORD_SIZE && l[0].1.abs() < 1e-3 && l[1].0 == WORD_SIZE && l[1].1 > 0.0, "{l:?}");
-    // Four words needing one corner each: one corner each, all full size.
-    assert_eq!(a.card_word_sizes(&["long", "long2", "long", "long2"]), [WORD_SIZE; 4]);
-    // Corners never go to both words beside them: four words each needing
-    // two corners can't all be full size.
-    let s = a.card_word_sizes(&["longer", "longer", "longer", "longer"]);
-    assert!(s.iter().any(|&x| x < WORD_SIZE), "{s:?}");
+    assert!(l.iter().all(|x| x.1 == 0.0), "centred: {l:?}");
+    assert!(l[0].0 < WORD_SIZE || l[1].0 < WORD_SIZE, "neighbouring long words collide: {l:?}");
+    assert!(l[2].0 == WORD_SIZE && l[3].0 == WORD_SIZE, "short words untouched: {l:?}");
+    // Resolved: at most one of the two reaches past the other's letters.
+    let reach = |j: usize| long * l[j].0 / 100.0 / 2.0;
+    let clear = |k: usize| 105.0 - 3.0 - 0.96 * l[k].0 - 6.0;
+    assert!(reach(0) <= clear(1) + 1e-3 || reach(1) <= clear(0) + 1e-3, "{l:?}");
 }
 
-/// One test owns the process-wide imported-clover registry.
 #[test]
 fn imported_and_shared_boards_are_guessed_first_and_check_against_their_layout() {
     // A board read off a screenshot.
