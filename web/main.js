@@ -76,14 +76,21 @@ function paint(n) {
       }
       case 4: { // text x y size color face off len maxw
         // Too wide for its room: shrink the type evenly (not the canvas's
-        // sideways squeeze), down to 60%; squeeze only past that.
+        // sideways squeeze), down to 60%; squeeze only past that. A clue of
+        // several words that would shrink a lot goes onto two lines instead.
         const text = dec.decode(bytes(strs + f[i + 6], f[i + 7]));
-        let size = f[i + 3];
-        ctx.font = FONTS[f[i + 5]](size);
-        const wide = ctx.measureText(text).width;
-        if (wide > f[i + 8]) { size = Math.max(size * 0.6, size * f[i + 8] / wide); ctx.font = FONTS[f[i + 5]](size); }
+        const face = f[i + 5], full = f[i + 3], maxw = f[i + 8];
+        ctx.font = FONTS[face](full);
+        let lines = [text], wide = ctx.measureText(text).width;
+        if (face === 2 && wide > maxw / 0.8 && text.includes(' ')) {
+          const cut = [...text.matchAll(/ /g)].map((m) => m.index).reduce((a, b) => (Math.abs(b - text.length / 2) < Math.abs(a - text.length / 2) ? b : a));
+          lines = [text.slice(0, cut), text.slice(cut + 1)];
+          wide = Math.max(...lines.map((l) => ctx.measureText(l).width));
+        }
+        const size = wide > maxw ? Math.max(full * 0.6, full * maxw / wide) : full;
+        ctx.font = FONTS[face](size);
         ctx.fillStyle = css(u[i + 4]);
-        ctx.fillText(text, f[i + 1], f[i + 2], f[i + 8]);
+        lines.forEach((l, k) => ctx.fillText(l, f[i + 1], f[i + 2] + (k - (lines.length - 1) / 2) * size * 1.05, maxw));
         i += 9; break;
       }
       case 6: { // clover leaf w h fill stroke lw: tip at origin, lobes toward -y
@@ -641,7 +648,7 @@ function renderUi(force = false) {
     case 'writing': {
       const left = s.progress.filter((p) => !p.ready).map((p) => short(p.name));
       const who = left.length ? names(left.map((n) => `<b>${esc(n)}</b>`)) : 'the others';
-      const waiting = left.length > 1 ? [`Waiting for ${who}`, `Waiting for ${plural(left.length, 'player')}`] : `Waiting for ${who}`;
+      const waiting = left.length > 1 ? [`Waiting for ${who}`, `Waiting for ${plural(left.length, 'player')}`, `Waiting for ${left.length}`] : `Waiting for ${who}`;
       if (!s.inRound) {
         hint = "You're in the next round";
       } else if (!s.ready) {

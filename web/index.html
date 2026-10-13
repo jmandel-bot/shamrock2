@@ -72,9 +72,9 @@
   #clue { position: absolute; display: none; transform-origin: center; text-align: center; font: 600 22px var(--serif);
           border: 3px solid var(--go); border-radius: 16px; background: #f6fcf6; color: #0b2414; outline: none; padding: 0 12px;
           box-shadow: 0 8px 24px #0006; }
-  #toast { position: absolute; left: 50%; bottom: 12px; transform: translate(-50%, 8px); max-width: calc(100% - 24px); background: var(--toast); color: var(--toast-fg);
+  #toast { overflow-wrap: anywhere; position: absolute; left: 12px; right: 12px; margin-inline: auto; width: fit-content; max-width: 420px; bottom: 12px; transform: translateY(8px); background: var(--toast); color: var(--toast-fg);
            padding: 10px 16px; border-radius: 14px; font-size: 16px; font-weight: 600; pointer-events: none; opacity: 0; transition: opacity .25s, transform .25s; text-align: center; box-shadow: 0 6px 20px #0008; }
-  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #toast.show { opacity: 1; transform: none; }
   #toast.show.act { pointer-events: auto; }
   #toast button { display: block; margin: 8px auto 0; font: 700 15px var(--sans); background: var(--go); color: var(--go-fg); border: 0; border-radius: 10px; padding: 7px 14px; }
   .happened { font-size: 15px; color: var(--fg); background: var(--menu-item); border-radius: 12px; padding: 8px 12px; }
@@ -88,7 +88,7 @@
   #segs i { flex: 1; opacity: .35; background: currentColor; transition: opacity .35s ease; }
   #segs i.done { opacity: 1; }
   #segs i.away { opacity: .15; }
-  #hint { flex: 1; min-width: 0; color: var(--hint); font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #hint { flex: 1; min-width: 0; line-height: 44px; color: var(--hint); font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #hint b { color: var(--fg); }
   .pulse { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--hint); margin-right: 7px; vertical-align: 1px; animation: pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .25; } }
@@ -110,6 +110,10 @@
   .sheet { width: min(460px, 100%); background: var(--sheet); border-radius: 22px 22px 0 0; padding: 22px 18px calc(20px + env(safe-area-inset-bottom, 0px));
            display: flex; flex-direction: column; gap: 14px; max-height: 92%; overflow-y: auto; transform: translateY(24px); transition: transform .3s cubic-bezier(.2,.8,.2,1); }
   .overlay.open .sheet { transform: none; }
+  /* A sheet taller than the screen scrolls; its parts keep their size, and a
+     long unbroken name wraps rather than running off the side. */
+  .sheet { overflow-wrap: anywhere; }
+  .sheet > * { flex-shrink: 0; }
   @media (min-width: 600px) { .overlay { align-items: center; } .sheet { border-radius: 22px; } }
   .sheet h2 { margin: 0; font: 600 24px var(--serif); }
   .sheet p { margin: 0; color: var(--dim); font-size: 16px; }
@@ -163,6 +167,8 @@
   .leafTag { background: var(--leaf); color: var(--leaf-fg); border-radius: 46% 46% 40% 40% / 62% 62% 38% 38%; padding: 4px 10px; text-align: center; max-width: 100%; overflow-wrap: anywhere; }
   .leafTag b { display: block; font: 600 17px var(--serif); }
   .leafTag small { display: block; font-size: 12px; opacity: .8; }
+  .mclover .leafTag.c1, .mclover .leafTag.c3 { writing-mode: vertical-rl; border-radius: 62% 38% 38% 62% / 46% 40% 40% 46%; padding: 10px 4px; }
+  .mclover .leafTag.c3 { transform: rotate(180deg); }
   .mclover .c0 { grid-area: t; } .mclover .c1 { grid-area: r; } .mclover .c2 { grid-area: b; } .mclover .c3 { grid-area: l; } .mgrid { grid-area: g; }
   .mgrid { display: grid; grid-template-columns: repeat(2, var(--card)); gap: 4px; }
   .mc { position: relative; height: var(--card); background: #fcf8ee; border: 1px solid #cdbf9a; border-radius: 10px; color: #1c1710; font: 700 12px var(--sans); }
@@ -181,6 +187,13 @@
   .decoys { font-size: 14px; color: var(--dim); margin-top: 6px; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { transition: none !important; animation: none !important; }
+  }
+  /* Short screens (a phone on its side): sheets use the height they have. */
+  @media (max-height: 500px) {
+    .sheet { max-height: calc(100% - 8px); gap: 10px; padding-top: 14px; }
+    .brand svg { display: none; }
+    .brand h1 { font-size: 30px; }
+    .stats { display: none; }
   }
 </style>
 <script>
