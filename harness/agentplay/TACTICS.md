@@ -8,6 +8,22 @@ How to play well, not just legally. Read this before playing.
 - So every card placement is a hypothesis that must satisfy **two clues at once**, and every clue is satisfied by **two cards**. Reason about pairs and corners, never single words.
 - Each card has four words; turning it changes which two face out. The two words that face out at a spot are always **adjacent edges** of the card (top+left, top+right…), never opposite ones.
 
+## Think laterally: kinds of connection
+
+A clue can join two words in many ways. When writing, run through these to find the link that fits *only* your pair; when guessing, run through them for each candidate pair to imagine what the writer saw.
+
+- **Phrase or compound**: each word pairs with the clue to make a common phrase (*fire* + *fly*: "firefly"; *match* + *captain*: "captain" works for both "match captain" and "Captain America").
+- **Shared category**: both are kinds of the clue (*salmon*, *trout*: "fish").
+- **Instance**: the clue is an example of both, or both are examples of it (*god*, *astronaut*: "Apollo").
+- **Shared property**: same colour, texture, shape, sound, feeling (*tomato*, *fire truck*: "red").
+- **Part and whole**: both are parts of the clue, or it is part of both (*key*, *lid*: "piano").
+- **Relation**: tool and user, cause and effect, opposites, before and after (*suspect*, *adventure*: "Sherlock").
+- **Shared setting**: where you'd find both (*cabin*, *mother*: "ship" — ship's cabin, mothership).
+- **Names and titles**: people, brands, books, films, songs (*cat*, *chef*: "hat" — Cat in the Hat, chef's hat).
+- **Sound and wordplay**: rhymes, homophones, hidden words, used sparingly: they misfire more often.
+
+The best clues usually join the two words through *different* kinds of link (a phrase for one, a category for the other), because a pair of unrelated words rarely shares one link that nothing else on the board shares.
+
 ## Writing clues: specificity versus risk
 
 1. **Need both words.** A good clue joins the two words; a clue that fits one word strongly and the other weakly lets guessers place one card but not its partner. (For *climbing* & *clothing*: "harness" — you climb in one and wear it.)
