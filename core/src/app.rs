@@ -282,8 +282,7 @@ pub struct Scene {
 }
 
 pub struct App {
-    /// Card-word widths at size 100 in the card font, measured by the shell.
-    /// Card-word metrics at size 100 (see `WordInk`).
+    /// Card-word metrics at size 100 in the card font (see `WordInk`).
     word_w: std::collections::HashMap<String, WordInk>,
     /// Solved card-word layouts, keyed by the card's words.
     word_layouts: std::cell::RefCell<std::collections::HashMap<String, [(f32, f32); 4]>>,
@@ -1588,6 +1587,40 @@ impl App {
             sc.words[s][side]
         };
         Some(format!("{} & {}", word(d as usize), word((d as usize + 1) % NSLOTS)))
+    }
+
+    /// The current clover described for an automated player (the agent
+    /// test harness): whose it is, the four clues (top, right, bottom, left),
+    /// each card's location and its words as they currently face (top, right,
+    /// bottom, left; board frame, which is the screen's while the view is
+    /// upright), which spots are solved, and, while writing, the two words
+    /// each leaf links.
+    pub fn agent_view_json(&self) -> String {
+        let sc = self.scene();
+        let cards: Vec<String> = sc
+            .cards
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let at = match c.loc {
+                    Loc::Table { .. } => "\"tray\"".to_string(),
+                    Loc::Slot(s) => format!("\"slot {s}\""),
+                    Loc::Float { .. } => "\"loose on board\"".to_string(),
+                };
+                let words = turn_words(sc.words[i], c.rot).map(json_str).join(",");
+                format!("{{\"card\":{i},\"at\":{at},\"words\":[{words}],\"movable\":{}}}", sc.movable.get(i).copied().unwrap_or(false))
+            })
+            .collect();
+        let leaves: Vec<String> = (0..4u8).map(|d| self.keywords(&sc, d).map_or("null".into(), |k| json_str(&k))).collect();
+        format!(
+            "{{\"writer\":{},\"clues\":[{}],\"solvedSlots\":[{}],\"cards\":[{}],\"leafWords\":[{}],\"viewQuarter\":{}}}",
+            sc.writer.map_or("null".into(), |w| json_str(&self.name_of(w))),
+            sc.clues.iter().map(|c| json_str(c)).collect::<Vec<_>>().join(","),
+            (0..NSLOTS).filter(|&s| sc.locked & (1 << s) != 0).map(|s| s.to_string()).collect::<Vec<_>>().join(","),
+            cards.join(","),
+            leaves.join(","),
+            self.q.rem_euclid(4)
+        )
     }
 
     pub fn render(&mut self) {

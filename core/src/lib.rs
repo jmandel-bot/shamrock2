@@ -321,6 +321,12 @@ pub extern "C" fn probe_shown_angle(i: u32) -> f32 {
 }
 
 /// Widest a card word may be (card units) before it would crowd a corner.
+/// The current clover for an automated player (see `App::agent_view_json`).
+#[no_mangle]
+pub extern "C" fn agent_view() -> u32 {
+    to_scratch(g().app.agent_view_json())
+}
+
 /// Card word size, board units.
 #[no_mangle]
 pub extern "C" fn word_size() -> f32 {

@@ -948,6 +948,7 @@ requestAnimationFrame(tick);
 
 const probe = (fn, ...a) => { fn(...a); return Array.from(new Float32Array(X.memory.buffer, X.probe_ptr(), 3)); };
 window.__cl = {
+  agentView: () => scratchJson(X.agent_view()),
   myTables: () => myTables(),
   setTheme: (t) => { themePref = t; applyTheme(); },
   peerCount: () => peers.size,
