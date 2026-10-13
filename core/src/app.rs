@@ -756,10 +756,10 @@ impl App {
 
     fn solve_card_words(&self, words: &[&str; 4]) -> [f32; 4] {
         let full = words.map(|x| self.word_width(x));
-        let mut size = [WORD_SIZE; 4];
-        for _ in 0..80 {
+        // Which words are in trouble at these sizes: longer than the edge, or
+        // in a pair that both reach into their shared corner.
+        let trouble = |size: &[f32; 4]| -> [bool; 4] {
             let half: [f32; 4] = core::array::from_fn(|j| full[j] * size[j] / WORD_SIZE / 2.0);
-            // How far a word may reach before it is in neighbour `k`'s letters.
             let clear = |k: usize| HALF - WORD_EDGE - WORD_INK * size[k] - WORD_GAP;
             let mut bad = [false; 4];
             for j in 0..4 {
@@ -770,10 +770,57 @@ impl App {
                     bad[k] = true;
                 }
             }
-            let Some(j) = (0..4).filter(|&j| bad[j]).max_by(|&a, &b| half[a].total_cmp(&half[b])) else { break };
-            size[j] *= 0.97;
+            bad
+        };
+        if !trouble(&[WORD_SIZE; 4]).iter().any(|&b| b) {
+            return [WORD_SIZE; 4];
         }
-        size
+        // In a colliding pair only one word has to stay out of the corner.
+        // Try each choice of which words may shrink (16): shrink the biggest
+        // of them in trouble a step at a time, then grow them back as far as
+        // the card stays clear. Keep the most total text, then the biggest
+        // smallest word.
+        let mut best: Option<([f32; 4], (f32, f32))> = None;
+        for may in 1..16u32 {
+            let can = |j: usize| may & (1 << j) != 0;
+            let mut size = [WORD_SIZE; 4];
+            let mut ok = false;
+            for _ in 0..80 {
+                let bad = trouble(&size);
+                if !bad.iter().any(|&b| b) {
+                    ok = true;
+                    break;
+                }
+                let Some(j) = (0..4).filter(|&j| bad[j] && can(j)).max_by(|&a, &b| (full[a] * size[a]).total_cmp(&(full[b] * size[b]))) else {
+                    break; // only words that may not shrink are in trouble
+                };
+                size[j] *= 0.97;
+            }
+            if !ok {
+                continue;
+            }
+            loop {
+                let mut grew = false;
+                let mut order: Vec<usize> = (0..4).filter(|&j| size[j] < WORD_SIZE).collect();
+                order.sort_by(|&a, &b| size[a].total_cmp(&size[b]));
+                for j in order {
+                    let mut next = size;
+                    next[j] = (size[j] * 1.01).min(WORD_SIZE);
+                    if !trouble(&next).iter().any(|&b| b) {
+                        size = next;
+                        grew = true;
+                    }
+                }
+                if !grew {
+                    break;
+                }
+            }
+            let score = (size.iter().sum::<f32>(), size.iter().copied().fold(f32::MAX, f32::min));
+            if best.as_ref().is_none_or(|b| score > b.1) {
+                best = Some((size, score));
+            }
+        }
+        best.map_or([WORD_SIZE * 0.6; 4], |b| b.0)
     }
 
     /// Just the sizes (see `card_word_layout`).
