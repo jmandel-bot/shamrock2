@@ -6,13 +6,17 @@ use crate::model::*;
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod strip;
+pub use strip::*;
+
 // Outbox event kinds (to JS).
 pub const EV_NET: u8 = 1;
 pub const EV_EDIT_CLUE: u8 = 2;
 pub const EV_STATUS: u8 = 3;
 /// The round changed under this device (not by its own hand): JSON
-/// {kind, by, n, dealtIn, names}; kind is next | missed | crossed | newGame |
-/// otherTable. One per change, for the shell's notice and history.
+/// {kind, by, n, dealtIn, names, text, action}; kind is next | missed |
+/// crossed | newGame | otherTable, text the sentence to show, action null or
+/// {kind, label} for its button. One per change, for the notice and history.
 pub const EV_NOTICE: u8 = 4;
 /// A round to keep (or update) in this device's Past games, by `key`: JSON
 /// {key, n, finished, players, boards}. Raised when a round with anything in
@@ -20,7 +24,7 @@ pub const EV_NOTICE: u8 = 4;
 /// change reaches it.
 pub const EV_KEEP: u8 = 5;
 /// Someone moved this device's group (the table it came from) to another
-/// room: JSON {room, by}. Raised once.
+/// room: JSON {room, by, text, action}. Raised once.
 pub const EV_MOVED: u8 = 6;
 /// A peer speaks a newer protocol: this page should reload. Raised once.
 pub const EV_OUTDATED: u8 = 7;
@@ -363,6 +367,10 @@ pub struct App {
     pub motion: bool,
     /// This room has an imported clover to open with (see `Custom`).
     pub custom_room: bool,
+    /// Solo play from a share link: no table, no connections.
+    pub solo: bool,
+    /// Connections open to other devices right now (told by the shell).
+    pub links: u32,
     /// Soft glow on the leaves after a clover is completed (1 → 0).
     glow: f32,
     last_done: Option<(u32, bool)>,
@@ -415,6 +423,8 @@ impl App {
             zoom: 1.0,
             motion: true,
             custom_room: false,
+            solo: false,
+            links: 0,
             glow: 0.0,
             last_done: None,
             last_guess: None,
@@ -574,7 +584,9 @@ impl App {
         }
         self.new_round_local();
         let new = self.shared.round;
-        if let Some(json) = keep_json(&old) {
+        let kept = keep_json(&old);
+        let kept_unfinished = kept.is_some() && old.phase() != Phase::End;
+        if let Some(json) = kept {
             self.event(EV_KEEP, json.as_bytes());
         }
         let from = old.round;
@@ -605,17 +617,21 @@ impl App {
                 .seats
                 .iter()
                 .filter(|(id, x)| x.active && !old.seats.get(id).is_some_and(|o| o.active) && Some(**id) != self.seat)
-                .map(|(_, x)| json_str(&x.name))
+                .map(|(_, x)| x.name.clone())
                 .collect()
         } else {
             Vec::new()
         };
+        let (text, action) = self.notice_text(kind, &names, kept_unfinished);
+        let action = action.map_or("null".into(), |(k, l)| format!("{{\"kind\":\"{k}\",\"label\":{}}}", json_str(l)));
+        let names: Vec<String> = names.iter().map(|n| json_str(n)).collect();
         let by = if new.dealer != 0 { json_str(&self.name_of(new.dealer)) } else { "null".into() };
         let dealt_in = self.seat.is_some_and(|me| new.players().contains(&me));
         let json = format!(
-            "{{\"kind\":\"{kind}\",\"by\":{by},\"n\":{},\"dealtIn\":{dealt_in},\"names\":[{}]}}",
+            "{{\"kind\":\"{kind}\",\"by\":{by},\"n\":{},\"dealtIn\":{dealt_in},\"names\":[{}],\"text\":{},\"action\":{action}}}",
             new.n,
-            names.join(",")
+            names.join(","),
+            json_str(&text)
         );
         self.event(EV_NOTICE, json.as_bytes());
     }
@@ -628,7 +644,15 @@ impl App {
         let Some(t) = self.origin.as_ref().map(|o| o.round.table) else { return };
         if let Some(m) = self.shared.moves.get(&t).cloned() {
             self.move_prompted = true;
-            let json = format!("{{\"room\":{},\"by\":{}}}", json_str(&m.room), json_str(&self.name_of(m.by)));
+            let by = self.name_of(m.by);
+            let json = format!(
+                "{{\"room\":{},\"by\":{},\"text\":{},\"action\":{{\"kind\":\"follow\",\"label\":{},\"room\":{}}}}}",
+                json_str(&m.room),
+                json_str(&by),
+                json_str(&format!("{by} moved your group to #{}.", m.room)),
+                json_str(&format!("Go to #{}", m.room)),
+                json_str(&m.room)
+            );
             self.event(EV_MOVED, json.as_bytes());
         }
     }
@@ -1471,19 +1495,18 @@ impl App {
         self.seated_writing().is_some() && self.my_sub().clues.iter().all(|c| !c.is_empty())
     }
 
-    /// 1 start / next round · 2 toggle ready · 3 check · 4 next clover ·
-    /// 5 start guessing without the stragglers · 6 deal new cards · 7 new game.
+    /// What a button does: see the `ACT_` codes.
     pub fn action(&mut self, code: u32) {
         let phase = self.shared.phase();
         match code {
-            1 if matches!(phase, Phase::Lobby | Phase::End) => self.new_round(),
-            6 => self.new_round(),
-            2 if self.can_ready() => {
+            ACT_DEAL if matches!(phase, Phase::Lobby | Phase::End) => self.new_round(),
+            ACT_REDEAL => self.new_round(),
+            ACT_READY if self.can_ready() => {
                 let r = !self.my_sub().ready;
                 self.put_sub(|s| s.ready = r);
             }
-            3 => self.check(),
-            4 => {
+            ACT_CHECK => self.check(),
+            ACT_NEXT => {
                 if let Phase::Guessing(k) = phase {
                     let w = self.shared.puzzles()[k];
                     if self.shared.check(w).done() {
@@ -1492,11 +1515,11 @@ impl App {
                     }
                 }
             }
-            5 if phase == Phase::Writing && self.seat.is_some() && self.ready_count() > 0 => {
+            ACT_PROCEED if phase == Phase::Writing && self.seat.is_some() && self.ready_count() > 0 => {
                 let s = self.stamp();
                 self.commit(Body::Start(s));
             }
-            7 => self.new_game(),
+            ACT_NEW_GAME => self.new_game(),
             _ => {}
         }
     }
@@ -2091,7 +2114,7 @@ impl App {
             "{{\"phase\":\"{pname}\",\"seat\":{},\"seated\":{seated},\"name\":{},\"players\":[{}],\"watchers\":{},\
              \"inRound\":{in_round},\"ready\":{},\"canReady\":{},\"filled\":{},\"decoys\":{},\"progress\":[{}],\"readyCount\":{},\"dealable\":[{}],\
              \"k\":{k},\"n\":{n},\"writerName\":{},\"writerDecoys\":{},\"isWriter\":{},\"attempts\":{},\"done\":{},\
-             \"canCheck\":{},\"claimed\":{},\"round\":{},\"boards\":[{}]}}",
+             \"canCheck\":{},\"claimed\":{},\"round\":{},\"boards\":[{}],\"strip\":{},\"menu\":{}}}",
             self.seat.map_or("null".into(), |x| x.to_string()),
             self.seat.map_or("null".into(), |x| json_str(&self.name_of(x))),
             rows.join(","),
@@ -2112,6 +2135,8 @@ impl App {
             sc.claim.iter().filter(|c| c.is_some()).count(),
             s.round.n,
             boards.join(","),
+            self.strip_json(),
+            self.menu_json(),
         )
     }
 

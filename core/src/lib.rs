@@ -98,6 +98,29 @@ pub extern "C" fn on_message(len: u32, link: u32) {
     g().inbox = bytes;
 }
 
+/// How many connections to other devices are open (for the status strip).
+#[no_mangle]
+pub extern "C" fn set_links(n: u32) {
+    g().app.links = n;
+}
+
+/// Solo play from a share link (no table, no connections).
+#[no_mangle]
+pub extern "C" fn set_solo() {
+    g().app.solo = true;
+}
+
+/// A table saved on this device is in the inbox: restore it if it's from
+/// this protocol version and recent enough (see `App::restore`). Returns 1
+/// if it was used.
+#[no_mangle]
+pub extern "C" fn restore(len: u32, version: u32, age_ms: f64) -> u32 {
+    let bytes = core::mem::take(&mut g().inbox);
+    let ok = g().app.restore(&bytes[..(len as usize).min(bytes.len())], version, age_ms);
+    g().inbox = bytes;
+    ok as u32
+}
+
 #[no_mangle]
 pub extern "C" fn on_link_lost(link: u32) {
     g().app.on_link_lost(link);

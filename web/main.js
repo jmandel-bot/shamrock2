@@ -135,7 +135,6 @@ function toast(msg, ms = 4500, action = null) {
 function drainOutbox() {
   const len = X.outbox_len();
   if (!len) return;
-  let keptUnfinished = false;
   const out = bytes(X.outbox_ptr(), len).slice();
   X.outbox_clear();
   const dv = new DataView(out.buffer);
@@ -152,13 +151,11 @@ function drainOutbox() {
     } else if (kind === 3) {
       toast(dec.decode(body));
     } else if (kind === 5) {
-      const k = JSON.parse(dec.decode(body));
-      keepRound(k);
-      if (!k.finished) keptUnfinished = true;
-    } else if (kind === 4) {
-      notice(JSON.parse(dec.decode(body)), keptUnfinished);
-    } else if (kind === 6) {
-      moved(JSON.parse(dec.decode(body)));
+      keepRound(JSON.parse(dec.decode(body)));
+    } else if (kind === 4 || kind === 6) {
+      // A change someone else made, or a move of this group: worded by the core.
+      const { text, action } = JSON.parse(dec.decode(body));
+      if (!solo && !home) happened(text, action);
     } else if (kind === 7) {
       toast('A newer version of Shamrock is at this table. Reload to keep playing.', 1e9, ['Reload', () => location.reload()]);
     }
@@ -283,7 +280,9 @@ addEventListener('keydown', (e) => {
   if (e.key === 'q') X.rotate_view(-1);
   if (e.key === 'e' || e.key === ' ') X.rotate_view(1);
 });
-const act = (code) => { stats.presses++; X.action(code); drainOutbox(); renderUi(true); };
+// What the buttons do, by name (the Rust core's ACT_ codes).
+const ACT = { deal: 1, ready: 2, check: 3, next: 4, proceed: 5, redeal: 6, newGame: 7 };
+const act = (name) => { stats.presses++; X.action(ACT[name]); drainOutbox(); renderUi(true); };
 
 let editing = -1;
 let editorAt = null;
@@ -489,7 +488,7 @@ $('watchBtn').onclick = watch;
 $('menuBtn').onclick = () => {
   const s = ui();
   renderHappened();
-  $('unsubmitBtn').hidden = !(s.phase === 'writing' && s.ready);
+  $('unsubmitBtn').hidden = !s.menu.unsubmit;
   $('linkText').textContent = location.href;
   // Everyone at the table, by name, with what they're up to.
   const doing = { writing: 'writing', ready: 'submitted', writer: 'their clover is up' };
@@ -523,9 +522,9 @@ $('copyLink').onclick = async () => {
 };
 $('switchBtn').onclick = () => { closeSheets(); openJoin(); };
 $('watchMenuBtn').onclick = watch;
-$('redealBtn').onclick = () => { closeSheets(); act(6); };
-$('newGameBtn').onclick = () => { closeSheets(); act(7); };
-$('unsubmitBtn').onclick = () => { closeSheets(); act(2); };
+$('redealBtn').onclick = () => { closeSheets(); act('redeal'); };
+$('newGameBtn').onclick = () => { closeSheets(); act('newGame'); };
+$('unsubmitBtn').onclick = () => { closeSheets(); act('ready'); };
 $('freshBtn').onclick = () => { closeSheets(); freshTable(); };
 
 // Card size is per device (display only): bigger cards just overlap more.
@@ -592,7 +591,6 @@ $('decUp').onclick = () => { stats.presses++; setDecoys(ui().decoys + 1); };
 
 const ui = () => scratchJson(X.ui());
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
-const names = (xs) => xs.length <= 2 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`;
 let lastUi = '';
 
 function renderUi(force = false) {
@@ -601,103 +599,15 @@ function renderUi(force = false) {
   if (!force && key === lastUi) return;
   lastUi = key;
 
-  // One short line in plain words: who or what, and its state. Buttons
-  // carry the actions, so the text never repeats them; things that would
-  // crowd it (decoys, withdrawing a submitted clover, sharing) live on the
-  // board, in the menu or in the recap. How-to tips show once per device.
-  // A hint may be a list, longest first: the strip shows the first that fits.
-  let hint = '', go = null, alt = null, side = null, decoys = false;
-  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
-  // The strip uses first names (full ones in the menu and recap), unless two
-  // players share one; capped so a long name can't push the buttons off.
-  const first = (n) => String(n ?? '').trim().split(/\s+/)[0];
-  const short = (n) => {
-    const f = first(n), t = s.players.some((p) => p.name !== n && first(p.name) === f) ? String(n) : f;
-    return t.length > 12 ? `${t.slice(0, 11)}…` : t;
-  };
-  const ORDINAL = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth'];
-  const whose = `<b>${esc(short(s.writerName))}'s</b> clover`;
-  const clover = s.n ? [`${whose}, ${ORDINAL[s.k] ?? `number ${s.k + 1}`} of ${s.n}`, `${whose}, ${s.k + 1} of ${s.n}`, whose] : '';
-  const solved = `Solved <b>${esc(short(s.writerName))}'s</b> clover!`;
-  if (s.phase === 'guessing' && !(s.isWriter && !s.done) && (solo || s.seated)) tip('guess');
-  if (solo) {
-    if (s.phase === 'guessing' && s.done) {
-      hint = solved;
-      go = [s.k + 1 < s.n ? 'Next clover' : 'Done', true, () => act(4)];
-    } else if (s.phase === 'guessing') {
-      hint = clover;
-      go = ['Guess', s.canCheck, () => act(3)];
-    } else {
-      hint = customNames.length ? 'All done' : 'No clovers in this link';
-      go = ['Start your own table', true, ownTable];
-    }
-  } else if (!s.seated) {
-    hint = !s.players.length ? "No one's playing yet"
-      : s.phase === 'guessing' ? `Watching ${whose}` : 'Watching';
-    go = ['Join', true, openJoin];
-  } else switch (s.phase) {
-    case 'lobby':
-      if (customNames.length && s.round === 0) {
-        hint = `Opens with ${names(customNames.map((n) => `<b>${esc(n)}</b>`))}`;
-        go = ['Start guessing', s.dealable.length > 0, () => act(1)];
-        break;
-      }
-      hint = s.dealable.length < 2 ? 'Just you here' : `${s.dealable.length} players here`;
-      go = ['Start', s.dealable.length > 0, () => act(1)];
-      break;
-    case 'writing': {
-      const left = s.progress.filter((p) => !p.ready).map((p) => short(p.name));
-      const who = left.length ? names(left.map((n) => `<b>${esc(n)}</b>`)) : 'the others';
-      const waiting = left.length > 1 ? [`Waiting for ${who}`, `Waiting for ${plural(left.length, 'player')}`, `Waiting for ${left.length}`] : `Waiting for ${who}`;
-      if (!s.inRound) {
-        hint = "You're in the next round";
-      } else if (!s.ready) {
-        tip('write');
-        hint = s.filled < 4 ? `${s.filled} of 4 clues written` : `Clues done · ${plural(s.decoys, 'decoy')}`;
-        go = ['Submit', s.canReady, () => act(2)];
-      } else {
-        hint = [`Submitted · waiting for ${who}`, waiting].flat();
-      }
-      decoys = s.inRound && s.filled >= 4;
-      if ((s.ready || !s.inRound) && s.readyCount > 0 && s.readyCount < s.progress.length) {
-        // The status beside it names who is missing, so the button needn't.
-        alt = ['Start anyway', () => act(5)];
-        if (s.ready) hint = waiting;
-      }
-      // Everyone dealt in has gone and nobody submitted: nothing to start
-      // with, so offer a fresh deal for whoever is here.
-      if (!s.inRound && s.readyCount === 0 && s.progress.every((p) => p.away) && s.dealable.length) {
-        hint = 'The writers have left';
-        go = ['Deal again', true, () => act(6)];
-      }
-      break;
-    }
-    case 'guessing':
-      if (s.done) {
-        hint = solved;
-        go = [s.k + 1 < s.n ? 'Next clover' : 'Finish round', true, () => act(4)];
-      } else if (s.isWriter) {
-        hint = "They're guessing your clover";
-      } else {
-        hint = clover;
-        go = ['Guess', s.canCheck, () => act(3)];
-      }
-      break;
-    case 'end':
-      hint = `Round ${s.round} is over`;
-      go = ['Next round', s.dealable.length > 0, () => act(1)];
-      break;
-  }
-  // When a round ends, its recap opens once by itself; the status reopens it.
+  // The strip as the Rust core words it (see app/strip.rs): this only
+  // shows it. Side effects of the page's own stay here: tips once per
+  // device, and the recap opening once by itself when a round ends.
+  const st = s.strip;
+  if (st.tip) tip(st.tip);
   if (!home && s.phase === 'end' && recapShown !== s.round) { recapShown = s.round; setTimeout(openRecap, 600); }
-  // Not connected to anyone: say so rather than look normal while broken.
-  if (!solo && !peers.size) {
-    const others = s.players.some((p) => !p.you);
-    hint = `<span class="pulse"></span>${others ? 'Reconnecting to the table…' : 'Waiting for others'}`;
-  }
   // Submission progress: a thin bar along the top of the strip.
   const segs = $('segs');
-  segs.hidden = s.phase !== 'writing';
+  segs.hidden = !st.segs;
   if (!segs.hidden) {
     segs.replaceChildren(...s.progress.map((p) => {
       const seg = document.createElement('i');
@@ -707,29 +617,26 @@ function renderUi(force = false) {
       return seg;
     }));
   }
-  // While guessing, the status names the clover; tap it to pick another.
-  const picking = s.phase === 'guessing' && (solo ? s.n : s.boards.length) > 1;
-  const recap = !home && s.phase === 'end' && s.boards.length > 0;
-  $('hint').classList.toggle('pick', picking || recap);
-  $('hint').onclick = picking ? openClovers : recap ? openRecap : null;
-  // Invite sits in the strip itself in the lobby, or whenever you're alone.
-  $('invite').hidden = solo || home || !(s.phase === 'lobby' || !peers.size);
+  const DO = { join: openJoin, ownTable };
+  const press = (b) => DO[b.act] ?? (() => act(b.act));
+  $('hint').classList.toggle('pick', !!st.tap);
+  $('hint').onclick = st.tap === 'clovers' ? openClovers : st.tap === 'recap' ? openRecap : null;
+  $('invite').hidden = !st.invite;
   const goBtn = $('go');
-  goBtn.textContent = go?.[0] ?? '';
-  goBtn.hidden = !go;
-  goBtn.disabled = !go?.[1];
-  goBtn.onclick = go?.[2] ?? null;
-  goBtn.classList.toggle('on', go?.[3] === 'on');
-  const sideBtn = $('side');
-  sideBtn.hidden = !side;
-  if (side) { sideBtn.textContent = side[0]; sideBtn.onclick = side[1]; }
-  $('shareMenuBtn').hidden = !s.boards.length;
+  goBtn.hidden = !st.go;
+  goBtn.textContent = st.go?.label ?? '';
+  goBtn.disabled = !st.go?.enabled;
+  goBtn.onclick = st.go ? press(st.go) : null;
   const altBtn = $('alt');
-  altBtn.hidden = !alt;
-  if (alt) { altBtn.textContent = alt[0]; altBtn.onclick = alt[1]; }
-  $('decoys').hidden = !decoys;
+  altBtn.hidden = !st.alt;
+  altBtn.textContent = st.alt?.label ?? '';
+  altBtn.onclick = st.alt ? press(st.alt) : null;
+  $('shareMenuBtn').hidden = !s.menu.share;
+  $('decoys').hidden = !st.decoys;
   $('decLabel').textContent = `${s.decoys} decoy${s.decoys === 1 ? '' : 's'}`;
-  fitHint(hint);
+  // Names come marked \u0001…\u0002 for bold.
+  const html = (t) => esc(t).replace(/\u0001/g, '<b>').replace(/\u0002/g, '</b>');
+  fitHint(st.hint.map((h) => (st.pulse ? '<span class="pulse"></span>' : '') + html(h)));
 }
 
 // Show the longest version of the status that fits beside the buttons (the
@@ -873,22 +780,6 @@ function happened(text, action) {
   list.unshift({ at: Date.now(), text, action });
   remember(HAPPENED, JSON.stringify(list.slice(0, 10)));
 }
-function notice({ kind, by, n, dealtIn, names: others }, kept) {
-  if (solo || home) return;
-  const who = by ?? 'Someone';
-  const later = dealtIn ? '' : " You're in next round.";
-  const text = {
-    next: `${who} dealt round ${n}.${later}`,
-    missed: `${who} dealt round ${n} while you were away.${later}`,
-    crossed: `${who} dealt at the same moment as you; continuing ${who}'s.${later}`,
-    newGame: `${who} started a new game.`,
-    otherTable: `${others.length ? names(others) : 'Others'} ${others.length === 1 ? 'has' : 'have'} also been playing at this table.${later}`,
-  }[kind] + (kept ? ' Your round is in Past games.' : '');
-  happened(text, kind === 'otherTable' ? { label: 'Move us to a new table', kind: 'move' } : null);
-}
-function moved({ room, by }) {
-  happened(`${by} moved your group to #${room}.`, { label: `Go to #${room}`, kind: 'follow', room });
-}
 function renderHappened() {
   const list = readJson(HAPPENED, []);
   $('happenedEmpty').hidden = list.length > 0;
@@ -966,19 +857,19 @@ function openRecap() {
   const boards = scratchJson(X.review());
   if (!boards.length) return;
   const solved = boards.filter((b) => b.solved).length;
-  $('recapHead').textContent = solo ? 'All done ☘' : `Round ${s.round} done ☘`;
+  $('recapHead').textContent = s.menu.recapHead;
   $('recapStats').innerHTML = [[`${solved}/${boards.length}`, 'solved'], [boards.reduce((n, b) => n + b.guesses, 0), 'guesses'],
     [boards.filter((b) => b.solved && b.guesses === 1).length, 'first try']].map(([v, k]) => `<div class="stat"><b>${v}</b>${k}</div>`).join('');
   $('recapList').innerHTML = boards.map(cloverHtml).join('');
   $('recapList').scrollTop = 0;
-  $('recapShare').hidden = solo;
-  $('recapNext').hidden = solo || !s.seated;
+  $('recapShare').hidden = !s.menu.recapShare;
+  $('recapNext').hidden = !s.menu.recapNext;
   $('recapNext').disabled = !s.dealable.length;
   closeSheets();
   $('recapSheet').classList.add('open');
 }
 $('recapShare').onclick = openShare;
-$('recapNext').onclick = () => { closeSheets(); act(1); };
+$('recapNext').onclick = () => { closeSheets(); act('deal'); };
 $('recapClose').onclick = () => closeSheets();
 let recapShown = null;
 function openLog() {
@@ -1044,8 +935,8 @@ $('homeMenuBtn').onclick = () => goTo('');
 // ---- network ----------------------------------------------------------------
 
 const peers = new Set();
-const joined = (id) => { peers.add(id); X.on_peer_join(); drainOutbox(); renderUi(true); };
-const left = (id) => { peers.delete(id); X.on_link_lost(linkId(id)); renderUi(true); };
+const joined = (id) => { peers.add(id); X.set_links(peers.size); X.on_peer_join(); drainOutbox(); renderUi(true); };
+const left = (id) => { peers.delete(id); X.set_links(peers.size); X.on_link_lost(linkId(id)); renderUi(true); };
 
 async function connect() {
   const mode = params.get('net');
@@ -1110,7 +1001,6 @@ const REJOIN_FIRST_MS = +(params.get('rejoin') ?? 12000);
 // sync, so it can't undo newer moves. Saves older than a few hours are
 // ignored: a table name reused another day starts fresh.
 const stateKey = `shamrock:${roomId}:state`;
-const STATE_TTL_MS = 6 * 3600e3;
 let savedState = '';
 function saveTable() {
   const s = b64.enc(bytes(X.scratch_ptr(), X.snapshot()));
@@ -1118,9 +1008,9 @@ function saveTable() {
 }
 if (!solo && !home) {
   const kept = readJson(stateKey, null);
-  // Only a save in this page's message format (an older one starts fresh).
-  if (kept?.s && kept.v === X.protocol() && Date.now() - kept.at < STATE_TTL_MS) {
-    try { X.on_message(writeInbox(b64.dec(kept.s)), 0); savedState = kept.s; } catch {}
+  // The core decides whether the save is still good (recent, this version).
+  if (kept?.s) {
+    try { if (X.restore(writeInbox(b64.dec(kept.s)), kept.v ?? 0, Date.now() - kept.at)) savedState = kept.s; } catch {}
   }
   setInterval(saveTable, 2000);
   addEventListener('pagehide', saveTable);
@@ -1138,8 +1028,9 @@ if (home) {
 } else if (solo) {
   // Just play: an anonymous local seat, straight into the shared clovers.
   document.body.classList.add('solo');
+  X.set_solo();
   X.join(writeText('You'));
-  if (customNames.length) X.action(1);
+  if (customNames.length) X.action(ACT.deal);
   drainOutbox();
 } else {
   const saved = params.has('fresh') ? null : recall(nameKey);
@@ -1181,7 +1072,7 @@ const tools = agentTools({
   X, ui, act, joinAs, writeText, probe,
   agentView: () => scratchJson(X.agent_view()),
   review: () => scratchJson(X.review()),
-  status: () => $('hint').textContent.replace(/ ▾$/, ''),
+  status: () => $('hint').textContent,
   sync: () => { drainOutbox(); renderUi(true); },
   trayPoint: () => [canvas.clientWidth / 2, canvas.clientHeight - 60],
 });

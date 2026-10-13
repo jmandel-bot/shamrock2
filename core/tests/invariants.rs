@@ -1,6 +1,6 @@
 //! Native harness: properties the game must satisfy, independent of browsers.
 
-use cloverleaf::app::{App, EV_EDIT_CLUE, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE, EV_OUTDATED, ZOOM_MAX, ZOOM_MIN};
+use cloverleaf::app::{App, BOLD_OFF, BOLD_ON, EV_EDIT_CLUE, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE, EV_OUTDATED, SAVE_TTL_MS, ZOOM_MAX, ZOOM_MIN};
 use cloverleaf::model::*;
 
 const TAU: f32 = std::f32::consts::TAU;
@@ -1571,4 +1571,88 @@ fn a_new_game_mid_round_keeps_the_round_it_replaced() {
     assert!(kept.iter().any(|(k, j)| *k == 0 && j.contains("kept")) && kept.iter().any(|(k, j)| *k == 1 && j.contains("kept")), "both keep it: {kept:?}");
     let n = of(&events, EV_NOTICE);
     assert!(n.len() == 1 && n[0].0 == 1 && n[0].1.contains("newGame"), "only the other device is told: {n:?}");
+}
+
+/// The status strip's first line, with names in bold shown as *name*.
+fn status(a: &App) -> String {
+    a.strip().hint.first().cloned().unwrap_or_default().replace(BOLD_ON, "*").replace(BOLD_OFF, "*")
+}
+
+#[test]
+fn the_strip_calls_players_by_first_name_unless_two_share_it() {
+    let mut t = Table { apps: vec![app(1), app(2), app(3), app(4)], t: 0.0 };
+    for (k, n) in ["Bartholomew Wigglesworth", "Ben Smith", "Ben Jones", "WWWWWWWWWWWWWWWWWWWWWWWW"].iter().enumerate() {
+        t.apps[k].join(n);
+        t.pump();
+    }
+    let a = &t.apps[0];
+    let short: Vec<String> = a.shared.players().iter().map(|&p| a.short_name(p)).collect();
+    for want in ["Bartholomew", "Ben Smith", "Ben Jones", "WWWWWWWWWWW…"] {
+        assert!(short.iter().any(|s| s == want), "{want} in {short:?}");
+    }
+}
+
+#[test]
+fn the_strip_says_who_is_missing_and_offers_to_start_anyway() {
+    let mut t = Table::new(3);
+    for a in t.apps.iter_mut() {
+        a.links = 2;
+    }
+    assert_eq!(status(&t.apps[0]), "3 players here");
+    assert_eq!(t.apps[0].strip().go.map(|b| (b.label, b.act)), Some(("Start".into(), "deal")));
+    t.apps[0].action(1);
+    t.pump();
+    assert_eq!(status(&t.apps[0]), "0 of 4 clues written");
+    write_and_ready(&mut t.apps[0]);
+    t.pump();
+    // Everyone is a "Player": full names, and the override needn't repeat them.
+    let st = t.apps[0].strip();
+    assert_eq!(status(&t.apps[0]), "Waiting for *Player 1* and *Player 2*");
+    assert_eq!(st.hint.last().map(String::as_str), Some("Waiting for 2"), "shorter versions for narrow screens: {:?}", st.hint);
+    assert_eq!(st.alt.map(|b| (b.label, b.act)), Some(("Start anyway".into(), "proceed")));
+    assert!(st.go.is_none());
+    // Cut off: say so rather than look normal.
+    t.apps[0].links = 0;
+    let st = t.apps[0].strip();
+    assert!(st.pulse && status(&t.apps[0]) == "Reconnecting to the table…" && st.invite);
+}
+
+#[test]
+fn a_watcher_and_the_writer_see_who_is_being_guessed() {
+    let mut t = table_in_guessing(3);
+    for a in t.apps.iter_mut() {
+        a.links = 2;
+    }
+    let w = t.writer_now();
+    let writer = t.idx_of_seat(w);
+    let guesser = t.guesser_for(w);
+    assert_eq!(status(&t.apps[writer]), "They're guessing your clover");
+    assert_eq!(status(&t.apps[guesser]), format!("*Player {writer}'s* clover, first of 3"));
+    assert_eq!(t.apps[guesser].strip().tap, Some("clovers"));
+}
+
+#[test]
+fn a_notice_says_what_happened_in_a_sentence() {
+    let mut t = Table::new(2);
+    t.apps[0].action(1);
+    pump_events(&mut t);
+    write(&mut t.apps[0], ["moon", "", "", ""]);
+    t.pump();
+    t.apps[1].action(6);
+    let n = of(&pump_events(&mut t), EV_NOTICE);
+    assert!(n.iter().any(|(k, j)| *k == 0 && j.contains("\"text\":\"Player 1 dealt round 2. Your round is in Past games.\"") && j.contains("\"action\":null")), "{n:?}");
+}
+
+#[test]
+fn a_saved_table_is_restored_only_if_recent_and_from_this_version() {
+    let mut t = Table::new(2);
+    t.apps[0].action(1);
+    t.pump();
+    let saved = t.apps[0].snapshot();
+    let fresh = || app(77);
+    assert!(!fresh().restore(&saved, PROTOCOL as u32 + 1, 1000.0), "another version's save");
+    assert!(!fresh().restore(&saved, PROTOCOL as u32, SAVE_TTL_MS + 1.0), "too old");
+    let mut b = fresh();
+    assert!(b.restore(&saved, PROTOCOL as u32, 60_000.0));
+    assert_eq!(b.shared.digest(), t.apps[0].shared.digest());
 }

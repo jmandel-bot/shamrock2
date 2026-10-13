@@ -73,7 +73,7 @@ export function agentTools(g) {
         const u = g.ui();
         if (!['lobby', 'end'].includes(u.phase)) return done(`a round is already under way (${u.phase})`, false);
         if (!u.dealable.length) return done('nobody is seated yet', false);
-        g.act(1);
+        g.act('deal');
         return done(`dealt to ${u.dealable.join(', ')}`);
       },
     },
@@ -105,7 +105,7 @@ export function agentTools(g) {
         const u = g.ui();
         if (u.ready) return done('already submitted');
         if (!u.canReady) return done('write all four clues first', false);
-        g.act(2);
+        g.act('ready');
         return done('submitted');
       },
     },
@@ -141,7 +141,7 @@ export function agentTools(g) {
       run() {
         const u = g.ui();
         if (!u.canCheck) return done(u.phase === 'guessing' ? 'fill all four spots first (and it cannot be your own clover)' : 'nothing to check', false);
-        g.act(3);
+        g.act('check');
         const v = view();
         return done(v.solvedSlots.length === 4 ? 'solved!' : `right so far: spots ${v.solvedSlots.join(', ') || 'none'}`);
       },
@@ -150,7 +150,7 @@ export function agentTools(g) {
       name: 'next_clover',
       description: 'Once the clover on screen is solved, move on to the next one (or finish the round after the last).',
       inputSchema: { type: 'object', properties: {} },
-      run() { if (!g.ui().done) return done('this clover is not solved yet', false); g.act(4); return done(`now: ${g.ui().phase}`); },
+      run() { if (!g.ui().done) return done('this clover is not solved yet', false); g.act('next'); return done(`now: ${g.ui().phase}`); },
     },
     {
       name: 'choose_clover',

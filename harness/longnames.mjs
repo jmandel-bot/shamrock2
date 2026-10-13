@@ -26,7 +26,7 @@ async function shot(tag, k = 0) {
   const p = ps[k];
   const m = await p.evaluate(() => {
     const h = document.getElementById('hint'), W = innerWidth;
-    const btns = ['go', 'alt', 'side'].map((id) => document.getElementById(id)).filter((b) => b && !b.hidden && b.offsetParent);
+    const btns = ['go', 'alt'].map((id) => document.getElementById(id)).filter((b) => b && !b.hidden && b.offsetParent);
     return { text: h.textContent, cut: h.scrollWidth > h.clientWidth + 1, hintW: h.clientWidth,
       btns: btns.map((b) => `${b.textContent}[${Math.round(b.getBoundingClientRect().width)}]`).join(' '),
       overflow: Math.max(0, ...btns.map((b) => b.getBoundingClientRect().right - W)), pageScroll: document.documentElement.scrollWidth > W };

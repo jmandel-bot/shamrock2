@@ -6,7 +6,7 @@
 //! must satisfy the properties at the bottom: one state everywhere, nobody
 //! connected loses their seat, nothing is wiped without a New game, no card
 //! stays "held" by a hand that has gone, and the round can still be played
-//! to its end.
+//! to its end. Throughout, every device's status strip must tell the truth.
 //!
 //! The model follows the real transport (Trystero over WebRTC): each pair of
 //! devices has at most one connection; a packet is broadcast on every open
@@ -17,7 +17,7 @@
 //! `SEED=123 cargo test --release --test network -- --nocapture` replays one
 //! run with its event log.
 
-use cloverleaf::app::{keep_json, App, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE};
+use cloverleaf::app::{keep_json, App, BOLD_OFF, BOLD_ON, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE};
 use cloverleaf::model::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -79,6 +79,8 @@ struct Dev {
     /// after that (it mustn't).
     was_outdated: bool,
     leaked: bool,
+    /// The first time this device's status strip said something untrue.
+    strip_bad: Option<String>,
 }
 
 struct Packet {
@@ -126,7 +128,7 @@ fn pair(i: usize, j: usize) -> (usize, usize) {
 impl Sim {
     fn new(seed: u64, n: usize, rough: Rough) -> Sim {
         let devs = (0..n)
-            .map(|k| Dev { app: Some(app(seed * 100 + k as u64 + 1)), name: None, join_at: None, online: true, dragging: false, saved: Vec::new(), best: (0, 0), kept: BTreeSet::new(), lost: None, notices: 0, notice_bad: None, moved: 0, was_outdated: false, leaked: false })
+            .map(|k| Dev { app: Some(app(seed * 100 + k as u64 + 1)), name: None, join_at: None, online: true, dragging: false, saved: Vec::new(), best: (0, 0), kept: BTreeSet::new(), lost: None, notices: 0, notice_bad: None, moved: 0, was_outdated: false, leaked: false, strip_bad: None })
             .collect();
         Sim {
             devs,
@@ -286,6 +288,16 @@ impl Sim {
         }
         for k in 0..self.devs.len() {
             self.flush(k);
+        }
+        // What each page shows: told how many connections it has (as the
+        // page tells it), its status strip must be true to its own table.
+        for k in 0..self.devs.len() {
+            let links = self.links.keys().filter(|(i, j)| *i == k || *j == k).count() as u32;
+            let Some(a) = self.devs[k].app.as_mut() else { continue };
+            a.links = links;
+            if let Some(why) = strip_lie(a).filter(|_| self.devs[k].strip_bad.is_none()) {
+                self.devs[k].strip_bad = Some(format!("at {:.0} ms: {why}", self.now));
+            }
         }
         if std::env::var("SEED").is_ok() {
             let games: Vec<String> = self
@@ -496,7 +508,7 @@ impl Sim {
     /// A new device at this table: `a` (already seeded), sitting as `name`.
     fn add(&mut self, mut a: App, name: &str) -> usize {
         a.join(name);
-        self.devs.push(Dev { app: Some(a), name: Some(name.into()), join_at: None, online: true, dragging: false, saved: Vec::new(), best: (0, 0), kept: BTreeSet::new(), lost: None, notices: 0, notice_bad: None, moved: 0, was_outdated: false, leaked: false });
+        self.devs.push(Dev { app: Some(a), name: Some(name.into()), join_at: None, online: true, dragging: false, saved: Vec::new(), best: (0, 0), kept: BTreeSet::new(), lost: None, notices: 0, notice_bad: None, moved: 0, was_outdated: false, leaked: false, strip_bad: None });
         self.devs.len() - 1
     }
 
@@ -752,6 +764,9 @@ fn run(seed: u64, rough: Rough, story: Story, cov: &mut Coverage) {
         if let Some(why) = &d.notice_bad {
             s.fail(&format!("device {k}: {why}"));
         }
+        if let Some(why) = &d.strip_bad {
+            s.fail(&format!("device {k}'s status strip: {why}"));
+        }
         let size = a.snapshot().len();
         cov.biggest = cov.biggest.max(size);
         cov.most_seats = cov.most_seats.max(a.shared.seats.len());
@@ -843,6 +858,49 @@ fn run(seed: u64, rough: Rough, story: Story, cov: &mut Coverage) {
         s.fail("devices disagree at the end of the round");
     }
     cov.runs += 1;
+}
+
+/// 7. What the status strip says is true of this device's own table: who
+/// it's waiting for is exactly who hasn't submitted, the clover it names is
+/// the one on the board, and a seated, connected player always has
+/// something to press unless waiting is the point (submitted, sitting this
+/// round out, or watching others guess their own clover).
+fn strip_lie(a: &App) -> Option<String> {
+    let st = a.strip();
+    let sh = &a.shared;
+    let first = st.hint.first().cloned().unwrap_or_default();
+    let bold: Vec<String> = first.split(BOLD_ON).skip(1).filter_map(|t| t.split(BOLD_OFF).next()).map(String::from).collect();
+    let seated = a.seat.is_some_and(|me| sh.players().contains(&me));
+    let in_round = a.seat.is_some_and(|me| sh.round.players().contains(&me));
+    let me_ready = a.seat.is_some_and(|me| sh.is_ready(me));
+    if first.contains("aiting for") && !st.pulse {
+        let mut want: Vec<String> = sh.round_players().iter().filter(|p| !sh.is_ready(**p)).map(|&p| a.short_name(p)).collect();
+        let mut got = bold.clone();
+        want.sort();
+        got.sort();
+        if got != want {
+            return Some(format!("{first:?} but still writing: {want:?}"));
+        }
+    }
+    if st.alt.is_some() && bold.is_empty() && !st.pulse {
+        return Some(format!("offers {:?} without saying who is missing ({first:?})", st.alt));
+    }
+    if let Phase::Guessing(k) = sh.phase() {
+        let w = sh.puzzles()[k];
+        let named = format!("{}'s", a.short_name(w));
+        if !st.pulse && Some(w) != a.seat && first.contains("clover") && bold.first() != Some(&named) {
+            return Some(format!("{first:?} but the clover on the board is {named}"));
+        }
+    }
+    let waiting = match sh.phase() {
+        Phase::Writing => me_ready || !in_round,
+        Phase::Guessing(k) => a.seat == Some(sh.puzzles()[k]) && !sh.check(sh.puzzles()[k]).done(),
+        _ => false,
+    };
+    if seated && a.links > 0 && st.go.is_none() && st.alt.is_none() && !waiting {
+        return Some(format!("nothing to press in {:?} ({first:?})", sh.phase()));
+    }
+    None
 }
 
 /// A point where a touch picks up card `i` (not one lying over it).
