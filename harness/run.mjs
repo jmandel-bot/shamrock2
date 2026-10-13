@@ -528,6 +528,14 @@ try {
     await homePage.waitForSelector('#homeSheet.open');
     const reloaded = await homePage.$$eval('#tableList .tableRow b', (els) => els.map((e) => e.textContent));
     gate('Forget removes a table from my tables, for good', before.includes('#zzold') && !after.includes('#zzold') && !reloaded.includes('#zzold') && reloaded.includes(`#${room}`), `${before.join(' ')} → ${reloaded.join(' ')}`);
+    // From the home page, tap a table; Back returns to the home page, Forward to the table.
+    await homePage.click(`.tableItem:has(b:text("#${room}")) .tableRow`);
+    await homePage.waitForFunction((r) => location.hash === `#${r}` && !document.getElementById('homeSheet').classList.contains('open') && window.__cl?.digest, room, { timeout: 8000 });
+    await homePage.goBack();
+    const backHome = await homePage.waitForSelector('#homeSheet.open', { timeout: 8000 }).then(() => true, () => false);
+    await homePage.goForward();
+    const forwardTable = await homePage.waitForFunction((r) => location.hash === `#${r}` && !document.getElementById('homeSheet').classList.contains('open'), room, { timeout: 8000 }).then(() => true, () => false);
+    gate('Back from a table opened on the home page returns home (and Forward goes back in)', backHome && forwardTable, `back ${backHome}, forward ${forwardTable}`);
     await homePage.close();
   }
   await A.page.screenshot({ path: `${OUT}5-end.png` });

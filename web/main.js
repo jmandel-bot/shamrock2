@@ -709,7 +709,11 @@ const TABLES = 'shamrock:tables', LOG = 'shamrock:log', LOG_MAX = 60;
 const readJson = (k, d) => { try { return JSON.parse(recall(k)) ?? d; } catch { return d; } };
 const newRoom = () => Math.random().toString(36).slice(2, 8);
 const tableUrl = (room) => `${location.origin}${location.pathname}${room ? `#${room}` : ''}`;
-const goTo = (room) => { location.href = tableUrl(room); location.reload(); };
+// The page is one table (or the home page) for its whole life: when the
+// #room changes, as with Back/Forward between the home page and a table,
+// start over as whatever the address now says.
+const goTo = (room) => { location.href = tableUrl(room); };
+addEventListener('hashchange', () => { if (decodeURIComponent(location.hash.slice(1)) !== roomId) location.reload(); });
 const when = (t) => (t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'earlier');
 const guesses = (n) => `${n} guess${n === 1 ? '' : 'es'}`;
 function noteTable(name) {
