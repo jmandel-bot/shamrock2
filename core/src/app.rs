@@ -778,8 +778,9 @@ impl App {
         // In a colliding pair only one word has to stay out of the corner.
         // Try each choice of which words may shrink (16): shrink the biggest
         // of them in trouble a step at a time, then grow them back as far as
-        // the card stays clear. Keep the most total text, then the biggest
-        // smallest word.
+        // the card stays clear. Keep the least squared shrinkage (a deep cut
+        // to one word costs more than two light trims; small trims are
+        // cheap), then the biggest smallest word.
         let mut best: Option<([f32; 4], (f32, f32))> = None;
         for may in 1..16u32 {
             let can = |j: usize| may & (1 << j) != 0;
@@ -815,7 +816,7 @@ impl App {
                     break;
                 }
             }
-            let score = (size.iter().sum::<f32>(), size.iter().copied().fold(f32::MAX, f32::min));
+            let score = (-size.iter().map(|&x| (1.0 - x / WORD_SIZE).powi(2)).sum::<f32>(), size.iter().copied().fold(f32::MAX, f32::min));
             if best.as_ref().is_none_or(|b| score > b.1) {
                 best = Some((size, score));
             }
