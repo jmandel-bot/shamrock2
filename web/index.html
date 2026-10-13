@@ -130,7 +130,9 @@
   .tip { color: var(--dim); font-size: 15px; }
   body.home #top, body.home #dock { visibility: hidden; }
   #invite { padding: 9px 12px; white-space: nowrap; }
-  .tableRow { text-decoration: none; color: var(--fg); background: var(--menu-item); border-radius: 14px; padding: 10px 14px; }
+  .tableItem { display: flex; gap: 8px; align-items: stretch; }
+  .tableRow { flex: 1; min-width: 0; text-decoration: none; color: var(--fg); background: var(--menu-item); border-radius: 14px; padding: 10px 14px; }
+  .tableItem .forget { border-radius: 14px; background: var(--menu-item); color: var(--dim); }
   .tableRow small, .logEntry small { color: var(--dim); font-size: 14px; }
   .logEntry { background: var(--menu-item); border-radius: 14px; padding: 10px 12px; }
   .logEntry summary { cursor: pointer; font-size: 15px; line-height: 1.35; }

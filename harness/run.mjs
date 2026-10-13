@@ -517,6 +517,17 @@ try {
     const rows = await homePage.$$eval('#tableList .tableRow b', (els) => els.map((e) => e.textContent));
     const pastGames = await homePage.textContent('#homeLog');
     gate('the home page lists my tables and past games', rows.includes(`#${room}`) && pastGames.includes('(1)'), `${rows.join(' ')} | ${pastGames}`);
+    // Forget drops a table from the list (and its saved name), and it stays gone.
+    await homePage.evaluate(() => { localStorage.setItem('shamrock:zzold:name', 'Old'); });
+    await homePage.reload();
+    await homePage.waitForSelector('#homeSheet.open');
+    const before = await homePage.$$eval('#tableList .tableRow b', (els) => els.map((e) => e.textContent));
+    await homePage.click('.tableItem:has(b:text("#zzold")) .forget');
+    const after = await homePage.$$eval('#tableList .tableRow b', (els) => els.map((e) => e.textContent));
+    await homePage.reload();
+    await homePage.waitForSelector('#homeSheet.open');
+    const reloaded = await homePage.$$eval('#tableList .tableRow b', (els) => els.map((e) => e.textContent));
+    gate('Forget removes a table from my tables, for good', before.includes('#zzold') && !after.includes('#zzold') && !reloaded.includes('#zzold') && reloaded.includes(`#${room}`), `${before.join(' ')} → ${reloaded.join(' ')}`);
     await homePage.close();
   }
   await A.page.screenshot({ path: `${OUT}5-end.png` });

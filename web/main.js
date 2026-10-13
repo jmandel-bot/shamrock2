@@ -727,6 +727,14 @@ function myTables() {
   } catch {}
   return Object.entries(t).map(([room, v]) => ({ room, ...v })).sort((a, b) => b.at - a.at);
 }
+/** Drop a table from this device's list (and the name saved for it there).
+ *  Its past games stay under Past games; the invite link still works. */
+function forgetTable(room) {
+  const t = readJson(TABLES, {});
+  delete t[room];
+  remember(TABLES, JSON.stringify(t));
+  remember(`shamrock:${room}:name`, null);
+}
 /** Keep a finished round's clovers (answers included) on this device. */
 function logRound(s) {
   const boards = scratchJson(X.review());
@@ -774,12 +782,17 @@ function openLog() {
 function openHome() {
   const tables = myTables();
   $('tableList').replaceChildren(...tables.map((t) => {
+    const row = document.createElement('div');
+    row.className = 'tableItem';
     const a = document.createElement('a');
     a.className = 'item tableRow';
     a.href = tableUrl(t.room);
     a.onclick = (e) => { e.preventDefault(); goTo(t.room); };
     a.innerHTML = `<span class="grow"><b>#${esc(t.room)}</b><br><small>as ${esc(t.name ?? '?')} · ${when(t.at)}</small></span><span aria-hidden="true">›</span>`;
-    return a;
+    const drop = Object.assign(document.createElement('button'), { className: 'forget', textContent: 'Forget', title: `Forget #${t.room} on this device` });
+    drop.onclick = () => { forgetTable(t.room); openHome(); };
+    row.append(a, drop);
+    return row;
   }));
   $('tablesHead').hidden = !tables.length;
   const n = readJson(LOG, []).length;
@@ -895,6 +908,7 @@ requestAnimationFrame(tick);
 
 const probe = (fn, ...a) => { fn(...a); return Array.from(new Float32Array(X.memory.buffer, X.probe_ptr(), 3)); };
 window.__cl = {
+  myTables: () => myTables(),
   setTheme: (t) => { themePref = t; applyTheme(); },
   peerCount: () => peers.size,
   camera: () => ({ ...cam }),
