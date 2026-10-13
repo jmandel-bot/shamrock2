@@ -346,7 +346,14 @@ async function measureWords() {
   const list = scratchText(X.word_list()).split('\n');
   c.textBaseline = 'middle';
   // Width and how far below the centre line each word's letters reach.
-  X.set_word_widths(writeText(list.map((w) => { const t = c.measureText(w); return `${w}\t${t.width.toFixed(2)}\t${t.actualBoundingBoxDescent.toFixed(2)}`; }).join('\n')));
+  // …and, letter by letter, where each sits and how far it descends, so a
+  // corner only counts the letters actually near it.
+  const line = (w) => {
+    const t = c.measureText(w);
+    const letters = [...w].map((ch, i) => `${c.measureText(w.slice(0, i + 1)).width.toFixed(1)}:${c.measureText(ch).actualBoundingBoxDescent.toFixed(1)}`).join(' ');
+    return `${w}\t${t.width.toFixed(2)}\t${t.actualBoundingBoxDescent.toFixed(2)}\t${letters}`;
+  };
+  X.set_word_widths(writeText(list.map(line).join('\n')));
   wordsMeasured = true;
 }
 

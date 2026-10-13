@@ -104,7 +104,7 @@ const HELLO_EVERY_MS: f64 = 2000.0;
 /// card font, see `set_word_widths`): a word may run into a corner whenever
 /// the words on both neighbouring edges are short enough to stay clear of it,
 /// so ~90% of the deck renders at full size; the rest shrink evenly to fit.
-pub const WORD_SIZE: f32 = 34.0;
+pub const WORD_SIZE: f32 = 35.0;
 /// Gap between a card's edge and the top of its words' letters.
 const WORD_EDGE: f32 = 3.0;
 /// Figtree Bold, per unit of size, around the text's centre line (measured):
@@ -115,6 +115,15 @@ const WORD_INK: f32 = 0.96;
 /// How far along its edge a word may reach from the centre: the card's
 /// rounded corner (radius 18) at the letters' top.
 const WORD_REACH: f32 = 96.0;
+/// A card word's ink at size 100: its width, and for each letter where it
+/// sits along the word (from the word's left) and how far it descends below
+/// the centre line.
+#[derive(Clone, Debug)]
+pub struct WordInk {
+    pub width: f32,
+    pub letters: Vec<(f32, f32, f32)>,
+}
+
 /// Clear space kept between a word's end and the letters of the word on the
 /// neighbouring edge (so they never read as touching).
 const WORD_GAP: f32 = 6.0;
@@ -274,8 +283,8 @@ pub struct Scene {
 
 pub struct App {
     /// Card-word widths at size 100 in the card font, measured by the shell.
-    /// (width, descent below the centre line), both at size 100.
-    word_w: std::collections::HashMap<String, (f32, f32)>,
+    /// Card-word metrics at size 100 (see `WordInk`).
+    word_w: std::collections::HashMap<String, WordInk>,
     /// Solved card-word layouts, keyed by the card's words.
     word_layouts: std::cell::RefCell<std::collections::HashMap<String, [(f32, f32); 4]>>,
     /// Colours for the current theme (display only, per device).
@@ -719,24 +728,56 @@ impl App {
         }
     }
 
-    /// Card-word metrics at size 100, one `word\twidth[\tdescent]` per line
-    /// (descent: how far the word's letters reach below the centre line).
+    /// Card-word metrics at size 100, one word per line:
+    /// `word\twidth[\tdescent[\tx1:d1 x2:d2 …]]` — the last field gives each
+    /// letter's right edge (from the word's left) and descent below the
+    /// centre line. Missing fields fall back to the whole word's descent.
     pub fn set_word_widths(&mut self, text: &str) {
         self.word_layouts.borrow_mut().clear();
         for line in text.lines() {
             let mut f = line.split('\t');
-            let (Some(w), Some(Ok(x))) = (f.next(), f.next().map(str::parse::<f32>)) else { continue };
+            let (Some(w), Some(Ok(width))) = (f.next(), f.next().map(str::parse::<f32>)) else { continue };
             let desc = f.next().and_then(|d| d.parse::<f32>().ok()).unwrap_or((WORD_INK - WORD_ASC) * 100.0);
-            self.word_w.insert(w.to_string(), (x, desc));
+            let mut letters = Vec::new();
+            let mut x0 = 0.0;
+            for g in f.next().unwrap_or("").split(' ') {
+                if let Some((x1, d)) = g.split_once(':') {
+                    if let (Ok(x1), Ok(d)) = (x1.parse::<f32>(), d.parse::<f32>()) {
+                        letters.push((x0, x1, d));
+                        x0 = x1;
+                    }
+                }
+            }
+            if letters.is_empty() {
+                letters.push((0.0, width, desc));
+            }
+            self.word_w.insert(w.to_string(), WordInk { width, letters });
         }
     }
 
-    /// A card word's width and ink depth from the card edge, per unit of
-    /// size (estimates until measured). Letters' tops line up WORD_ASC above
-    /// the centre line, so depth = that plus how far this word descends.
-    fn word_metrics(&self, w: &str) -> (f32, f32) {
-        let (x, desc) = self.word_w.get(w).copied().unwrap_or((w.chars().count() as f32 * 56.0, (WORD_INK - WORD_ASC) * 100.0));
-        (x / 100.0, WORD_ASC + desc / 100.0)
+    fn word_ink(&self, w: &str) -> WordInk {
+        self.word_w.get(w).cloned().unwrap_or_else(|| {
+            let width = w.chars().count() as f32 * 56.0;
+            WordInk { width, letters: vec![(0.0, width, (WORD_INK - WORD_ASC) * 100.0)] }
+        })
+    }
+
+    /// How deep a word's letters reach from the card edge, per unit of size,
+    /// at one end: only the letters that sit in the corner zone count (the
+    /// part of the edge that a neighbouring word's letters could share at
+    /// full size). Letters' tops line up WORD_ASC above the centre line, so
+    /// depth = that plus the deepest descent among those letters.
+    fn end_depth(ink: &WordInk, plus_end: bool) -> f32 {
+        // Zone: past this distance from the word's centre (size-100 units).
+        let zone = (HALF - WORD_EDGE - WORD_INK * WORD_SIZE - WORD_GAP) * 100.0 / WORD_SIZE;
+        let half = ink.width / 2.0;
+        let desc = ink
+            .letters
+            .iter()
+            .filter(|&&(x0, x1, _)| if plus_end { x1 - half >= zone } else { half - x0 >= zone })
+            .map(|l| l.2)
+            .fold(0.0f32, f32::max);
+        WORD_ASC + desc / 100.0
     }
 
     /// Each edge word's size on a card (top, right, bottom, left) and its
@@ -764,16 +805,20 @@ impl App {
     /// checking the KKT conditions of every small set of tight constraints.
     /// Keep the best; ties go to the bigger smallest word.
     fn solve_card_words(&self, words: &[&str; 4]) -> [f32; 4] {
-        let m = words.map(|w| self.word_metrics(w));
-        let a: [f32; 4] = core::array::from_fn(|j| m[j].0 * WORD_SIZE / 2.0);
-        let d: [f32; 4] = core::array::from_fn(|j| m[j].1 * WORD_SIZE);
+        let ink = words.map(|w| self.word_ink(w));
+        let a: [f32; 4] = core::array::from_fn(|j| ink[j].width / 100.0 * WORD_SIZE / 2.0);
+        // Depth at each end: `dp` at the +x end (toward corner j), `dm` at
+        // the −x end (toward corner j−1).
+        let dp: [f32; 4] = core::array::from_fn(|j| Self::end_depth(&ink[j], true) * WORD_SIZE);
+        let dm: [f32; 4] = core::array::from_fn(|j| Self::end_depth(&ink[j], false) * WORD_SIZE);
         let c = HALF - WORD_EDGE - WORD_GAP;
         let cap: [f32; 4] = core::array::from_fn(|j| (WORD_REACH / a[j]).min(1.0));
         // Corner k between word k and word k+1; `yields(k, j)`: word j's end
         // must clear the other's letters.
+        // At corner k, word k's +x end meets word k+1's −x end.
         let collides = |x: &[f32; 4], k: usize| {
             let n = (k + 1) % 4;
-            a[k] * x[k] > c - d[n] * x[n] + 1e-4 && a[n] * x[n] > c - d[k] * x[k] + 1e-4
+            a[k] * x[k] > c - dm[n] * x[n] + 1e-4 && a[n] * x[n] > c - dp[k] * x[k] + 1e-4
         };
         if (0..4).all(|k| !collides(&[1.0; 4], k)) && cap.iter().all(|&u| u >= 1.0) {
             return [WORD_SIZE; 4];
@@ -784,10 +829,15 @@ impl App {
             let mut rows: Vec<([f32; 4], f32)> = Vec::new();
             for k in 0..4 {
                 let n = (k + 1) % 4;
-                let (y, o) = if who & (1 << k) != 0 { (k, n) } else { (n, k) };
+                // Who yields: its end must clear the other's letters there.
                 let mut r = [0.0; 4];
-                r[y] = a[y];
-                r[o] = d[o];
+                if who & (1 << k) != 0 {
+                    r[k] = a[k];
+                    r[n] = dm[n];
+                } else {
+                    r[n] = a[n];
+                    r[k] = dp[k];
+                }
                 rows.push((r, c));
             }
             for j in 0..4 {
