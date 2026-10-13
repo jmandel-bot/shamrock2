@@ -106,6 +106,11 @@ pub const WORD_SIZE: f32 = 26.0;
 pub const WORD_INSET: f32 = 86.0;
 pub const WORD_MAX_W: f32 = 2.0 * (WORD_INSET - WORD_SIZE / 2.0);
 /// Tray depth (short axis) in board units: two rows of cards plus air.
+/// Clue size on a leaf, board units: as big as the band between the centre
+/// circle (300) and the notch between the lobes (400) allows. Longer clues
+/// shrink evenly to fit the leaf's width (see the shell's text command).
+const CLUE_SIZE: f32 = 74.0;
+
 /// Gap between loose cards in the tray, CSS px.
 const TRAY_GAP: f32 = 4.0;
 /// Gap between the tray's edge and its cards, CSS px.
@@ -1438,8 +1443,8 @@ impl App {
             // The writer sees "a & b" on an empty leaf as a prompt; once a clue
             // is written the two words are right there on the cards beside it.
             match (clue.is_empty(), keys) {
-                (false, _) => self.text(0.0, mid, 54.0, self.pal.clue_ink, F_SERIF, &clue, maxw),
-                (true, Some(k)) => self.text(0.0, mid, 38.0, self.pal.keyword_ink, F_SANS_BOLD, &k, maxw),
+                (false, _) => self.text(0.0, mid, CLUE_SIZE, self.pal.clue_ink, F_SERIF, &clue, maxw),
+                (true, Some(k)) => self.text(0.0, mid, 46.0, self.pal.keyword_ink, F_SANS_BOLD, &k, maxw),
                 (true, None) => {}
             }
         }

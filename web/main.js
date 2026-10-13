@@ -70,9 +70,15 @@ function paint(n) {
         i += 7; break;
       }
       case 4: { // text x y size color face off len maxw
-        ctx.font = FONTS[f[i + 5]](f[i + 3]);
+        // Too wide for its room: shrink the type evenly (not the canvas's
+        // sideways squeeze), down to 60%; squeeze only past that.
+        const text = dec.decode(bytes(strs + f[i + 6], f[i + 7]));
+        let size = f[i + 3];
+        ctx.font = FONTS[f[i + 5]](size);
+        const wide = ctx.measureText(text).width;
+        if (wide > f[i + 8]) { size = Math.max(size * 0.6, size * f[i + 8] / wide); ctx.font = FONTS[f[i + 5]](size); }
         ctx.fillStyle = css(u[i + 4]);
-        ctx.fillText(dec.decode(bytes(strs + f[i + 6], f[i + 7])), f[i + 1], f[i + 2], f[i + 8]);
+        ctx.fillText(text, f[i + 1], f[i + 2], f[i + 8]);
         i += 9; break;
       }
       case 6: { // clover leaf w h fill stroke lw: tip at origin, lobes toward -y
