@@ -3,7 +3,9 @@
 //! bytes and text into `inbox`.
 
 pub mod app;
+pub mod json;
 pub mod model;
+pub mod pages;
 pub mod words;
 
 use app::App;
@@ -467,4 +469,60 @@ pub extern "C" fn answer_rot(s: u32) -> u32 {
         }
         _ => 255,
     }
+}
+
+// ---- what the page shows ----------------------------------------------------
+
+/// A sheet's content (`app::SHEET_*`), as JSON.
+#[no_mangle]
+pub extern "C" fn sheet(kind: u32) -> u32 {
+    to_scratch(g().app.sheet_json(kind))
+}
+
+/// Parts of the inbox text, separated by U+001F.
+fn inbox_parts(len: u32) -> Vec<String> {
+    inbox_str(len).split('\u{1f}').map(String::from).collect()
+}
+
+/// Past games (inbox: stored log, U+001F, an EV_KEEP payload, U+001F, room)
+/// with that round kept; the new log to store. Solo play keeps nothing.
+#[no_mangle]
+pub extern "C" fn keep_round(len: u32, now: f64) -> u32 {
+    let p = inbox_parts(len);
+    let log = p.first().cloned().unwrap_or_default();
+    if g().app.solo || p.len() < 3 {
+        return to_scratch(log);
+    }
+    to_scratch(pages::keep_into(&log, &p[1], &p[2], now))
+}
+
+/// Past games as listed (inbox: the stored log).
+#[no_mangle]
+pub extern "C" fn past_games(len: u32) -> u32 {
+    to_scratch(pages::past_games_view(&inbox_str(len)))
+}
+
+/// "What happened" with a notice added (inbox: stored list, U+001F, notice JSON).
+#[no_mangle]
+pub extern "C" fn happened_add(len: u32, now: f64) -> u32 {
+    let p = inbox_parts(len);
+    to_scratch(pages::happened_add(p.first().map_or("", |x| x), p.get(1).map_or("", |x| x), now))
+}
+
+/// This device's tables as listed (inbox: room → {name, at}).
+#[no_mangle]
+pub extern "C" fn tables(len: u32) -> u32 {
+    to_scratch(pages::tables_view(&inbox_str(len)))
+}
+
+/// A typed table name made link-safe (inbox: the typed name).
+#[no_mangle]
+pub extern "C" fn norm_room(len: u32) -> u32 {
+    to_scratch(pages::norm_room(&inbox_str(len)))
+}
+
+/// A suggested table name, from a random number.
+#[no_mangle]
+pub extern "C" fn suggest_room(random: u32) -> u32 {
+    to_scratch(pages::suggest_room(random))
 }

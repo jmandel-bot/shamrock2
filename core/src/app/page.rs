@@ -1,10 +1,21 @@
-//! What the page says: the status strip (its words, shorter versions for
-//! narrow screens, and which buttons show), the menu's switches, the
-//! recap's heading, and the sentences for notices. The shell only shows
-//! these; every decision is made here, where native tests and the network
-//! simulator can check it.
+//! What the page says about the table: the status strip (its words,
+//! shorter versions for narrow screens, and which buttons show), the menu,
+//! every sheet's content (seats to continue as, players, clovers to pick or
+//! share, the recap), and the sentences for notices. The shell only lays
+//! these out; every decision is made here, where native tests and the
+//! network simulator can check it. (What the page says from this device's
+//! own records is in `pages`.)
 
 use super::*;
+use crate::json::Json;
+use crate::pages::board_view;
+
+/// Sheets the shell asks for (`App::sheet_json`).
+pub const SHEET_JOIN: u32 = 1;
+pub const SHEET_PLAYERS: u32 = 2;
+pub const SHEET_CLOVERS: u32 = 3;
+pub const SHEET_SHARE: u32 = 4;
+pub const SHEET_RECAP: u32 = 5;
 
 /// `App::action` codes. The strip names them (`"deal"`, `"ready"`, …) for
 /// the shell, which also has two of its own: `"join"` and `"ownTable"`.
@@ -47,6 +58,8 @@ pub struct Strip {
     pub tip: Option<&'static str>,
     /// The submission progress bar shows.
     pub segs: bool,
+    /// The decoy stepper's label.
+    pub decoy_label: String,
 }
 
 const ORDINAL: [&str; 10] = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
@@ -108,7 +121,7 @@ impl App {
         ];
         let solved = writer.map(|w| format!("Solved {} clover!", bold(&format!("{}'s", self.short_name(w))))).unwrap_or_default();
         let dealable = !self.dealable().is_empty();
-        let mut st = Strip { segs: phase == Phase::Writing, ..Strip::default() };
+        let mut st = Strip { segs: phase == Phase::Writing, decoy_label: plural(self.my_sub().decoys as usize, "decoy"), ..Strip::default() };
 
         if self.solo {
             match phase {
@@ -224,7 +237,7 @@ impl App {
         let opt = |o: Option<&str>| o.map_or("null".into(), |x| format!("\"{x}\""));
         let hint: Vec<String> = st.hint.iter().map(|h| json_str(h)).collect();
         format!(
-            "{{\"hint\":[{}],\"pulse\":{},\"go\":{},\"alt\":{},\"decoys\":{},\"tap\":{},\"invite\":{},\"tip\":{},\"segs\":{}}}",
+            "{{\"hint\":[{}],\"pulse\":{},\"go\":{},\"alt\":{},\"decoys\":{},\"tap\":{},\"invite\":{},\"tip\":{},\"segs\":{},\"decoyLabel\":{}}}",
             hint.join(","),
             st.pulse,
             btn(&st.go),
@@ -233,7 +246,8 @@ impl App {
             opt(st.tap),
             st.invite,
             opt(st.tip),
-            st.segs
+            st.segs,
+            json_str(&st.decoy_label)
         )
     }
 
@@ -243,14 +257,111 @@ impl App {
         let s = &self.shared;
         let seated = self.seat.is_some_and(|me| s.players().contains(&me));
         let unsubmit = s.phase() == Phase::Writing && seated && self.my_sub().ready;
-        let head = if self.solo { "All done ☘".to_string() } else { format!("Round {} done ☘", s.round.n) };
-        format!(
-            "{{\"unsubmit\":{unsubmit},\"share\":{},\"recapHead\":{},\"recapShare\":{},\"recapNext\":{}}}",
-            !s.puzzles().is_empty(),
-            json_str(&head),
-            !self.solo,
-            !self.solo && seated
-        )
+        format!("{{\"unsubmit\":{unsubmit},\"share\":{},\"watch\":{seated}}}", !s.puzzles().is_empty())
+    }
+
+    /// A sheet's content (see the `SHEET_` codes), as JSON for the shell to
+    /// lay out.
+    pub fn sheet_json(&self, kind: u32) -> String {
+        let s = &self.shared;
+        let me = self.seat;
+        let seated = me.is_some_and(|m| s.players().contains(&m));
+        let present = self.present();
+        let color = |p: u32| s_(&format!("#{:06x}", self.color_of(p) >> 8));
+        let v = match kind {
+            // Joining: the players you could continue as (taking over a seat).
+            SHEET_JOIN => {
+                let rows: Vec<Json> = s
+                    .players()
+                    .into_iter()
+                    .filter(|&p| Some(p) != me)
+                    .map(|p| {
+                        let away = !present.contains(&p);
+                        obj(vec![("name", s_(&self.name_of(p))), ("color", color(p)), ("away", Json::Bool(away)), ("note", s_(if away { "away" } else { "" }))])
+                    })
+                    .collect();
+                obj(vec![("heading", if rows.is_empty() { Json::Null } else { s_("Or continue as:") }), ("rows", Json::Arr(rows))])
+            }
+            // The menu's players: what each is up to, and who can be removed.
+            SHEET_PLAYERS => {
+                let phase = s.phase();
+                let writer = match phase {
+                    Phase::Guessing(k) => s.puzzles().get(k).copied(),
+                    _ => None,
+                };
+                let rows: Vec<Json> = s
+                    .players()
+                    .into_iter()
+                    .map(|p| {
+                        let away = !present.contains(&p);
+                        let doing = match phase {
+                            _ if away => "away",
+                            Phase::Writing if !s.round.players().contains(&p) => "in the next round",
+                            Phase::Writing if s.is_ready(p) => "submitted",
+                            Phase::Writing => "writing",
+                            Phase::Guessing(_) if writer == Some(p) => "their clover is up",
+                            _ => "here",
+                        };
+                        obj(vec![
+                            ("id", Json::Num(p as f64)),
+                            ("name", s_(&self.name_of(p))),
+                            ("you", s_(if Some(p) == me { " (you)" } else { "" })),
+                            ("doing", s_(doing)),
+                            ("removable", Json::Bool(away && Some(p) != me)),
+                        ])
+                    })
+                    .collect();
+                let w = self.watchers();
+                obj(vec![("rows", Json::Arr(rows)), ("watching", if w > 0 { s_(&format!("{w} watching")) } else { Json::Null })])
+            }
+            // Which clover everyone guesses: any, in any order.
+            SHEET_CLOVERS => {
+                let k = match s.phase() {
+                    Phase::Guessing(k) => Some(k),
+                    _ => None,
+                };
+                let rows: Vec<Json> = s
+                    .puzzles()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &w)| {
+                        let note = if Some(i) == k { "now" } else if s.check(w).done() { "solved ✓" } else { "" };
+                        obj(vec![("label", s_(&format!("{}. {} clover", i + 1, bold(&format!("{}'s", self.name_of(w)))))), ("note", s_(note)), ("now", Json::Bool(Some(i) == k))])
+                    })
+                    .collect();
+                obj(vec![("rows", Json::Arr(rows))])
+            }
+            // Clovers to share: this round's.
+            SHEET_SHARE => {
+                let rows: Vec<Json> = s.puzzles().iter().map(|&w| s_(&format!("{}'s clover", self.name_of(w)))).collect();
+                obj(vec![("rows", Json::Arr(rows))])
+            }
+            // The end of a round: totals, then every clover's answer.
+            _ => {
+                let boards: Vec<Json> = Json::parse(&self.review_json()).map(|b| b.arr().iter().map(board_view).collect()).unwrap_or_default();
+                let n = boards.len();
+                let solved = s.puzzles().iter().filter(|&&w| s.check(w).done()).count();
+                let tries: u32 = s.puzzles().iter().map(|&w| s.check(w).attempts as u32).sum();
+                let first = boards.iter().filter(|b| b.get("first").bool() == Some(true)).count();
+                let stat = |v: String, k: &str| Json::Arr(vec![s_(&v), s_(k)]);
+                obj(vec![
+                    ("head", s_(&if self.solo { "All done ☘".to_string() } else { format!("Round {} done ☘", s.round.n) })),
+                    (
+                        "stats",
+                        Json::Arr(vec![
+                            stat(format!("{solved}/{n}"), "solved"),
+                            stat(tries.to_string(), if tries == 1 { "guess" } else { "guesses" }),
+                            stat(first.to_string(), "first try"),
+                        ]),
+                    ),
+                    ("boards", Json::Arr(boards)),
+                    ("share", Json::Bool(!self.solo)),
+                    ("next", Json::Bool(!self.solo && seated)),
+                    ("nextEnabled", Json::Bool(!self.dealable().is_empty())),
+                ])
+            }
+        };
+        v.to_string()
     }
 
     /// The sentence for a change of round someone else made (see
@@ -289,6 +400,13 @@ impl App {
         self.on_packet(bytes, 0);
         true
     }
+}
+
+fn obj(kv: Vec<(&str, Json)>) -> Json {
+    Json::Obj(kv.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+}
+fn s_(x: &str) -> Json {
+    Json::str_of(x)
 }
 
 /// How long a save on this device stays good for restoring a table.

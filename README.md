@@ -18,14 +18,19 @@ for the up-front decisions.
 core/                Rust crate; all game logic. No dependencies, no wasm-bindgen.
   src/model.rs       replicated state: LWW registers + Lamport stamps, wire format
   src/app.rs         per-player view rotation, input, drag/drop, draw-command buffer
-  src/app/strip.rs   what the page says: status strip (words, shorter versions, buttons),
-                     menu switches, recap heading, notice sentences, whether a save is good
+  src/app/page.rs    what the page says about the table: status strip (words, shorter
+                     versions, buttons), menu, every sheet's content (seats, players,
+                     clovers, share list, recap), notice sentences, whether a save is good
+  src/pages.rs       what the page says from this device's own records (Past games, its
+                     tables, what happened, a finished clover read back), table names
+  src/json.rs        just enough JSON to read back what the page stores
   src/lib.rs         raw extern "C" exports
   tests/             native property tests (convergence, rotation invariants, …) and the
                      network simulator, which also checks every status strip it shows
 web/                 static site: index.html, main.js, core.wasm, vendored Trystero.
                      main.js does what needs the browser (WebRTC, storage, DOM and CSS,
-                     font measuring, encryption, links); every decision is the core's.
+                     font measuring, encryption, links, dates in the local format) and
+                     lays out what the core says; every decision and word is the core's.
 legacy-web.html      deployed as /web/: sends old /web/ links to the site root
 web/agent.js         the game as tools for AI assistants (WebMCP) and the agent play test
 harness/serve.mjs    static server + local signaling relay

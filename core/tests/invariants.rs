@@ -1,6 +1,6 @@
 //! Native harness: properties the game must satisfy, independent of browsers.
 
-use cloverleaf::app::{App, BOLD_OFF, BOLD_ON, EV_EDIT_CLUE, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE, EV_OUTDATED, SAVE_TTL_MS, ZOOM_MAX, ZOOM_MIN};
+use cloverleaf::app::{App, BOLD_OFF, BOLD_ON, SHEET_CLOVERS, SHEET_JOIN, SHEET_PLAYERS, SHEET_RECAP, EV_EDIT_CLUE, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE, EV_OUTDATED, SAVE_TTL_MS, ZOOM_MAX, ZOOM_MIN};
 use cloverleaf::model::*;
 
 const TAU: f32 = std::f32::consts::TAU;
@@ -1655,4 +1655,37 @@ fn a_saved_table_is_restored_only_if_recent_and_from_this_version() {
     let mut b = fresh();
     assert!(b.restore(&saved, PROTOCOL as u32, 60_000.0));
     assert_eq!(b.shared.digest(), t.apps[0].shared.digest());
+}
+
+#[test]
+fn sheets_say_who_is_doing_what_and_how_the_round_went() {
+    let mut t = table_in_guessing(3);
+    for a in t.apps.iter_mut() {
+        a.links = 2;
+    }
+    let w = t.writer_now();
+    let g = t.guesser_for(w);
+    let players = cloverleaf::json::Json::parse(&t.apps[g].sheet_json(SHEET_PLAYERS)).unwrap();
+    let doing: Vec<(String, String)> = players.get("rows").arr().iter().map(|r| (format!("{}{}", r.get("name").str().unwrap(), r.get("you").str().unwrap()), r.get("doing").str().unwrap().to_string())).collect();
+    assert!(doing.contains(&(format!("Player {}", t.idx_of_seat(w)), "their clover is up".into())), "{doing:?}");
+    assert!(doing.contains(&(format!("Player {g} (you)"), "here".into())), "{doing:?}");
+    let join = cloverleaf::json::Json::parse(&t.apps[g].sheet_json(SHEET_JOIN)).unwrap();
+    assert_eq!((join.get("heading").str(), join.get("rows").arr().len()), (Some("Or continue as:"), 2), "everyone but you");
+    let clovers = cloverleaf::json::Json::parse(&t.apps[g].sheet_json(SHEET_CLOVERS)).unwrap();
+    assert_eq!(clovers.get("rows").arr()[0].get("note").str(), Some("now"));
+    // Solve every clover first try: the recap says so.
+    for _ in 0..3 {
+        let w = t.writer_now();
+        let k = t.guesser_for(w);
+        solve(&mut t, k, false);
+        t.pump();
+        t.apps[k].action(3);
+        t.pump();
+        t.apps[k].action(4);
+        t.pump();
+    }
+    let recap = cloverleaf::json::Json::parse(&t.apps[0].sheet_json(SHEET_RECAP)).unwrap();
+    assert_eq!(recap.get("stats").to_string(), r#"[["3/3","solved"],["3","guesses"],["3","first try"]]"#);
+    assert_eq!(recap.get("boards").arr()[0].get("badge").str(), Some("☘ first try"));
+    assert_eq!((recap.get("head").str(), recap.get("next").bool()), (Some("Round 1 done ☘"), Some(true)));
 }

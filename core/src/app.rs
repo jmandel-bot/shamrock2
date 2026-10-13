@@ -6,8 +6,8 @@ use crate::model::*;
 use core::f32::consts::{FRAC_PI_2, PI, TAU};
 use std::collections::{BTreeMap, BTreeSet};
 
-mod strip;
-pub use strip::*;
+mod page;
+pub use page::*;
 
 // Outbox event kinds (to JS).
 pub const EV_NET: u8 = 1;
@@ -661,7 +661,10 @@ impl App {
     /// it here for the rest of the group, and return that table, to seed the
     /// new room with. None if this device didn't come from another table.
     pub fn record_move(&mut self, room: &str) -> Option<Vec<u8>> {
-        let origin = self.origin.as_ref()?;
+        let Some(origin) = self.origin.as_ref() else {
+            self.status("Only a group whose game was set aside here can move.");
+            return None;
+        };
         let (t, snap) = (origin.round.table, snapshot_of(origin));
         let (by, stamp) = (self.seat.unwrap_or(0), self.stamp());
         self.move_prompted = true;

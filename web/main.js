@@ -151,11 +151,10 @@ function drainOutbox() {
     } else if (kind === 3) {
       toast(dec.decode(body));
     } else if (kind === 5) {
-      keepRound(JSON.parse(dec.decode(body)));
+      keepRound(dec.decode(body));
     } else if (kind === 4 || kind === 6) {
       // A change someone else made, or a move of this group: worded by the core.
-      const { text, action } = JSON.parse(dec.decode(body));
-      if (!solo && !home) happened(text, action);
+      if (!solo && !home) happened(dec.decode(body));
     } else if (kind === 7) {
       toast('A newer version of Shamrock is at this table. Reload to keep playing.', 1e9, ['Reload', () => location.reload()]);
     }
@@ -391,8 +390,8 @@ async function measureWords() {
   wordsMeasured = true;
 }
 
-const customNames = [];
-const loadBoard = (text) => { if (X.load_custom(writeText(text))) customNames.push(text.split('\n')[0]); };
+let customs = 0; // clovers loaded from a share link
+const loadBoard = (text) => { customs += X.load_custom(writeText(text)); };
 if (solo) {
   try { (await unseal(params.get('b'), roomId)).forEach(loadBoard); }
   catch { setTimeout(() => toast("This shared-boards link is damaged; check it was copied in full.", 8000), 500); }
@@ -412,13 +411,11 @@ const shareLink = async (mask) => linkFor(scratchText(X.export_boards(mask)));
 // To the home page, where a new table gets its name (and yours).
 const ownTable = () => { location.href = `${location.origin}${location.pathname}`; };
 function openShare() {
-  const s = ui();
   const list = $('shareList');
-  list.replaceChildren(...s.boards.map((b, i) => {
+  list.replaceChildren(...sheet('share').rows.map((label, i) => {
     const row = document.createElement('label');
     row.className = 'item';
-    row.innerHTML = `<input type="checkbox" checked data-i="${i}"> <span class="grow"></span>`;
-    row.querySelector('span').textContent = `${b.name}'s clover`;
+    row.innerHTML = `<input type="checkbox" checked data-i="${i}"> <span class="grow">${esc(label)}</span>`;
     return row;
   }));
   const update = async () => {
@@ -459,14 +456,13 @@ function watch() {
 }
 const closeSheets = () => document.querySelectorAll('.overlay').forEach((o) => o.classList.remove('open'));
 function openJoin() {
-  const s = ui();
-  const others = s.players.filter((p) => !p.you);
+  const s = ui(), j = sheet('join');
   $('seatList').replaceChildren(
-    ...(others.length ? [Object.assign(document.createElement('p'), { textContent: 'Or continue as:' })] : []),
-    ...others.map((p) => {
+    ...(j.heading ? [Object.assign(document.createElement('p'), { textContent: j.heading })] : []),
+    ...j.rows.map((p) => {
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'menuBtn';
-      b.innerHTML = `<span class="chip${p.away ? ' away' : ''}"><i style="background:${p.color}"></i>${esc(p.name)}</span>${p.away ? ' <small>away</small>' : ''}`;
+      b.innerHTML = `<span class="chip${p.away ? ' away' : ''}"><i style="background:${esc(p.color)}"></i>${esc(p.name)}</span>${p.note ? ` <small>${esc(p.note)}</small>` : ''}`;
       b.onclick = () => joinAs(p.name);
       return b;
     }));
@@ -491,22 +487,22 @@ $('menuBtn').onclick = () => {
   $('unsubmitBtn').hidden = !s.menu.unsubmit;
   $('linkText').textContent = location.href;
   // Everyone at the table, by name, with what they're up to.
-  const doing = { writing: 'writing', ready: 'submitted', writer: 'their clover is up' };
-  $('playerList').replaceChildren(...s.players.map((p) => {
+  const who = sheet('players');
+  $('playerList').replaceChildren(...who.rows.map((p) => {
     const row = document.createElement('div');
     row.className = 'who-row';
     const label = document.createElement('span');
     label.className = 'grow';
-    label.innerHTML = `<b>${esc(p.name)}</b>${p.you ? ' (you)' : ''}<br><small>${p.away ? 'away' : doing[p.status] ?? 'here'}</small>`;
+    label.innerHTML = `<b>${esc(p.name)}</b>${esc(p.you)}<br><small>${esc(p.doing)}</small>`;
     row.append(label);
-    if (p.away && !p.you) {
+    if (p.removable) {
       const rm = Object.assign(document.createElement('button'), { textContent: 'Remove' });
       rm.onclick = () => { X.remove_seat(p.id); drainOutbox(); row.remove(); };
       row.append(rm);
     }
     return row;
-  }), ...(s.watchers ? [Object.assign(document.createElement('div'), { className: 'who-row', textContent: `${s.watchers} watching` })] : []));
-  $('watchMenuBtn').hidden = !s.seated;
+  }), ...(who.watching ? [Object.assign(document.createElement('div'), { className: 'who-row', textContent: who.watching })] : []));
+  $('watchMenuBtn').hidden = !s.menu.watch;
   syncSize();
   $('menuSheet').classList.add('open');
 };
@@ -591,6 +587,13 @@ $('decUp').onclick = () => { stats.presses++; setDecoys(ui().decoys + 1); };
 
 const ui = () => scratchJson(X.ui());
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+// Text from the core with names marked \u0001…\u0002 for bold, as HTML.
+const marked = (t) => esc(t).replace(/\u0001/g, '<b>').replace(/\u0002/g, '</b>');
+// What a sheet shows, as the core has it (see app/page.rs).
+const SHEET = { join: 1, players: 2, clovers: 3, share: 4, recap: 5 };
+const sheet = (kind) => scratchJson(X.sheet(SHEET[kind]));
+// Core functions over text (parts joined by U+001F), returning text.
+const coreText = (fn, parts, ...args) => scratchText(fn(writeText(parts.join('\u001f')), ...args));
 let lastUi = '';
 
 function renderUi(force = false) {
@@ -599,7 +602,7 @@ function renderUi(force = false) {
   if (!force && key === lastUi) return;
   lastUi = key;
 
-  // The strip as the Rust core words it (see app/strip.rs): this only
+  // The strip as the Rust core words it (see app/page.rs): this only
   // shows it. Side effects of the page's own stay here: tips once per
   // device, and the recap opening once by itself when a round ends.
   const st = s.strip;
@@ -633,10 +636,8 @@ function renderUi(force = false) {
   altBtn.onclick = st.alt ? press(st.alt) : null;
   $('shareMenuBtn').hidden = !s.menu.share;
   $('decoys').hidden = !st.decoys;
-  $('decLabel').textContent = `${s.decoys} decoy${s.decoys === 1 ? '' : 's'}`;
-  // Names come marked \u0001…\u0002 for bold.
-  const html = (t) => esc(t).replace(/\u0001/g, '<b>').replace(/\u0002/g, '</b>');
-  fitHint(st.hint.map((h) => (st.pulse ? '<span class="pulse"></span>' : '') + html(h)));
+  $('decLabel').textContent = st.decoyLabel;
+  fitHint(st.hint.map((h) => (st.pulse ? '<span class="pulse"></span>' : '') + marked(h)));
 }
 
 // Show the longest version of the status that fits beside the buttons (the
@@ -671,13 +672,10 @@ canvas.addEventListener('pointerdown', () => $('toast').classList.remove('show')
 // ---- choosing the clover, inviting ---------------------------------------------
 
 function openClovers() {
-  const s = ui();
   const list = $('cloverList');
-  const names = solo ? customNames : s.boards.map((b) => b.name);
-  list.replaceChildren(...names.map((name, i) => {
-    const b = Object.assign(document.createElement('button'), { className: `clover-row${i === s.k ? ' now' : ''}` });
-    const solved = s.boards[i]?.solved;
-    b.innerHTML = `<span>${i + 1}. <b>${esc(name)}</b>'s clover</span><small>${i === s.k ? 'now' : solved ? 'solved ✓' : ''}</small>`;
+  list.replaceChildren(...sheet('clovers').rows.map((r, i) => {
+    const b = Object.assign(document.createElement('button'), { className: `clover-row${r.now ? ' now' : ''}` });
+    b.innerHTML = `<span>${marked(r.label)}</span><small>${esc(r.note)}</small>`;
     b.onclick = () => { stats.presses++; X.jump(i); drainOutbox(); closeSheets(); renderUi(true); };
     return b;
   }));
@@ -696,22 +694,15 @@ $('invite').onclick = async () => {
 
 // ---- this device's tables and game log (localStorage only) ------------------------
 
-const TABLES = 'shamrock:tables', LOG = 'shamrock:log', LOG_MAX = 60;
+const TABLES = 'shamrock:tables', LOG = 'shamrock:log';
 const readJson = (k, d) => { try { return JSON.parse(recall(k)) ?? d; } catch { return d; } };
-// Table names are the link (and the only key to the table): suggestions are
-// easy to type and unlikely to collide; typed names are used as typed, just
-// made link-safe ("Family Night" -> family-night).
-const ADJ = 'amber brave bright calm clever cosy daring eager fancy gentle golden happy jolly kind lively lucky merry mellow noble plucky proud quick quiet rapid shiny silly sleepy snappy spry sunny swift tidy witty zesty bold breezy chirpy dapper fuzzy giddy hearty nimble perky rosy sturdy cheery crisp dandy dreamy fluffy frisky gleeful grand humble jaunty keen leafy loyal lucid misty modest nifty peppy polite prime quaint quirky ready regal rustic sage savvy serene sharp snug sparky spunky steady sweet tender trusty upbeat vivid warm wise wild zany able agile airy brisk bubbly chummy comfy dainty dusky elated fair feisty fond frank fresh gallant glad hardy jazzy jovial lofty lush mighty mild nippy plush pure'.split(' ');
-const ANIMAL = 'otter badger falcon heron koala lemur marten panda puffin raven robin seal tiger walrus wombat beaver bison camel crane dingo eagle ferret gecko goose hare ibis jackal lark llama moose newt oriole owl parrot quail rabbit shrew sloth swan toad viper wren yak zebra alpaca bear bobcat canary cobra condor cougar coyote crow deer dove duck egret elk finch fox frog gibbon gopher hawk hedgehog hippo hyena iguana impala jaguar kiwi kudu lion lynx magpie mink mole monkey moth mule ocelot okapi oryx osprey ox pelican penguin pigeon pony possum puma rhino salmon shark sheep skunk sparrow squid stork tapir tern trout turtle vole weasel whale wolf'.split(' ');
-const PLACE = 'cove bay brook cliff creek dale dell dune field fjord forest glade glen grove harbor heath hill hollow island lagoon lake marsh meadow mesa moor nook oasis orchard park pass peak pier plain pond prairie quay reef ridge river rock shore slope spring summit thicket trail tundra vale valley wharf wood acre arbor atoll basin beach bluff bridge burrow butte canyon cape castle cavern cellar chapel court crater delta den depot docks downs estate farm fen ferry fort garden gate gorge grotto hamlet haven inlet isle jetty knoll lane ledge lodge loft manor market mill mound oaks outpost palace pasture patio pavilion perch plaza porch pueblo ranch rapids retreat ridgeway roost square steppe tower village vista'.split(' ');
-const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
-// adjective-animal-place, e.g. merry-otter-cove: 114×107×116 ≈ 1.4M names.
-const suggestRoom = () => `${pick(ADJ)}-${pick(ANIMAL)}-${pick(PLACE)}`;
-const normRoom = (t) => t.trim().toLowerCase().replace(/[\s_]+/g, '-').replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 32);
-const newRoom = suggestRoom;
+// Table names are the link (the core suggests them, and makes typed ones
+// link-safe: "Family Night" -> family-night).
+const suggestRoom = () => scratchText(X.suggest_room((Math.random() * 2 ** 32) >>> 0));
+const normRoom = (t) => scratchText(X.norm_room(writeText(t)));
 // Your name, carried across tables as the default.
 const NAME = 'shamrock:name';
-const myName = () => recall(NAME) ?? myTables().find((t) => t.name)?.name ?? '';
+const myName = () => recall(NAME) ?? myTables().name ?? '';
 /** Go to `room` as `name`: remembered for that table, so it joins on arrival. */
 function startAt(room, name) {
   name = name.trim();
@@ -729,7 +720,6 @@ const tableUrl = (room) => `${location.origin}${location.pathname}${netQuery()}$
 const goTo = (room) => { location.href = tableUrl(room); };
 addEventListener('hashchange', () => { if (decodeURIComponent(location.hash.slice(1)) !== roomId) location.reload(); });
 const when = (t) => (t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'earlier');
-const guesses = (n) => `${n} guess${n === 1 ? '' : 'es'}`;
 function noteTable(name) {
   const t = readJson(TABLES, {});
   t[roomId] = { name, at: Date.now() };
@@ -743,7 +733,7 @@ function myTables() {
       if (m && !t[m[1]]) t[m[1]] = { name: recall(m[0]), at: 0 };
     }
   } catch {}
-  return Object.entries(t).map(([room, v]) => ({ room, ...v })).sort((a, b) => b.at - a.at);
+  return scratchJson(X.tables(writeText(JSON.stringify(t))));
 }
 /** Drop a table from this device's list (and the name saved for it there).
  *  Its past games stay under Past games; the invite link still works. */
@@ -759,13 +749,8 @@ function forgetTable(room) {
  *  Rust raises this when a round with anything in it ends or stops being
  *  current, for any reason, and again if a late change reaches it. */
 function keepRound(k) {
-  if (solo || home || !k.boards.length) return;
-  const log = readJson(LOG, []);
-  const i = log.findIndex((e) => e.id === k.key);
-  const at = i >= 0 ? log[i].at : Date.now();
-  if (i >= 0) log.splice(i, 1);
-  log.unshift({ id: k.key, room: roomId, round: k.n, at, players: k.players, boards: k.boards, finished: k.finished });
-  remember(LOG, JSON.stringify(log.slice(0, LOG_MAX)));
+  if (home) return;
+  remember(LOG, coreText(X.keep_round, [recall(LOG) ?? '[]', k, roomId], Date.now()));
 }
 
 // ---- what happened at this table ------------------------------------------------
@@ -774,11 +759,10 @@ function keepRound(k) {
 // (the last 10, in the menu) besides the notice itself.
 const HAPPENED = `shamrock:${roomId}:happened`;
 const ACTIONS = { move: () => moveGroup(), follow: (a) => followMove(a.room) };
-function happened(text, action) {
+function happened(notice) {
+  const { text, action } = JSON.parse(notice);
   toast(text, action ? 20000 : 8000, action && [action.label, () => ACTIONS[action.kind](action)]);
-  const list = readJson(HAPPENED, []);
-  list.unshift({ at: Date.now(), text, action });
-  remember(HAPPENED, JSON.stringify(list.slice(0, 10)));
+  remember(HAPPENED, coreText(X.happened_add, [recall(HAPPENED) ?? '[]', notice], Date.now()));
 }
 function renderHappened() {
   const list = readJson(HAPPENED, []);
@@ -813,7 +797,7 @@ function moveGroup() {
   if (!ui().seated && recall(nameKey)) joinAs(recall(nameKey));
   const room = suggestRoom();
   const len = X.record_move(writeText(room));
-  if (!len) return toast('Only a group whose game was set aside here can move.');
+  if (!len) return drainOutbox(); // the core says why
   const seed = scratchBytes(len);
   drainOutbox();
   seedRoom(room, seed);
@@ -833,38 +817,29 @@ function freshTable() {
   goTo(room);
 }
 
-/** A finished clover, read-only: each clue on its leaf with the two words
- *  it linked, round the four answer cards showing only their outward words. */
-function cloverHtml(b) {
-  const [name, ...rest] = b.text.split('\n');
-  const clues = rest.slice(0, 4), cards = rest.slice(4).map((l) => l.split('|'));
-  const W = cards.slice(0, 4);
-  // Leaf d links spot d and the next spot clockwise, both on side d.
-  const leaf = (d) => `<span class="leafTag c${d}"><b>${esc(clues[d])}</b><small>${esc(W[d]?.[d] ?? '')} + ${esc(W[(d + 1) % 4]?.[d] ?? '')}</small></span>`;
-  const OUT = [[0, 3], [0, 1], [1, 2], [2, 3]];
-  const card = (s) => `<div class="mc">${OUT[s].map((e) => `<span class="${'trbl'[e]}">${esc(W[s]?.[e] ?? '')}</span>`).join('')}</div>`;
-  const badge = !b.solved ? `<span class="badge">${b.guesses ? 'not solved' : 'not guessed'}</span>`
-    : b.guesses === 1 ? '<span class="badge first">☘ first try</span>' : `<span class="badge">${guesses(b.guesses)}</span>`;
+/** A finished clover, read-only, as the core describes it (pages.rs):
+ *  each clue on its leaf with the two words it linked, round the four
+ *  answer cards showing only their outward words. */
+function cloverHtml(v) {
+  const leaf = (d) => `<span class="leafTag c${d}"><b>${esc(v.leaves[d].clue)}</b><small>${esc(v.leaves[d].words)}</small></span>`;
+  const card = (sp) => `<div class="mc">${v.cards[sp].map((w, e) => (w ? `<span class="${'trbl'[e]}">${esc(w)}</span>` : '')).join('')}</div>`;
   return `<div class="mini">
-    <div class="who"><span>${esc(name)}'s clover</span>${badge}</div>
+    <div class="who"><span>${esc(v.title)}</span><span class="badge${v.first ? ' first' : ''}">${esc(v.badge)}</span></div>
     <div class="mclover">${leaf(0)}${leaf(1)}${leaf(2)}${leaf(3)}<div class="mgrid">${[0, 1, 3, 2].map(card).join('')}</div></div>
-    ${cards.length > 4 ? `<div class="decoys">Decoy${cards.length > 5 ? 's' : ''}: ${cards.slice(4).map((w) => esc(w.join(' · '))).join('; ')}</div>` : ''}
+    ${v.decoys ? `<div class="decoys">${esc(v.decoys)}</div>` : ''}
   </div>`;
 }
 /** The end of a round: every clover's answer, one after another. */
 function openRecap() {
-  const s = ui();
-  const boards = scratchJson(X.review());
-  if (!boards.length) return;
-  const solved = boards.filter((b) => b.solved).length;
-  $('recapHead').textContent = s.menu.recapHead;
-  $('recapStats').innerHTML = [[`${solved}/${boards.length}`, 'solved'], [boards.reduce((n, b) => n + b.guesses, 0), 'guesses'],
-    [boards.filter((b) => b.solved && b.guesses === 1).length, 'first try']].map(([v, k]) => `<div class="stat"><b>${v}</b>${k}</div>`).join('');
-  $('recapList').innerHTML = boards.map(cloverHtml).join('');
+  const r = sheet('recap');
+  if (!r.boards.length) return;
+  $('recapHead').textContent = r.head;
+  $('recapStats').innerHTML = r.stats.map(([v, k]) => `<div class="stat"><b>${esc(v)}</b>${esc(k)}</div>`).join('');
+  $('recapList').innerHTML = r.boards.map(cloverHtml).join('');
   $('recapList').scrollTop = 0;
-  $('recapShare').hidden = !s.menu.recapShare;
-  $('recapNext').hidden = !s.menu.recapNext;
-  $('recapNext').disabled = !s.dealable.length;
+  $('recapShare').hidden = !r.share;
+  $('recapNext').hidden = !r.next;
+  $('recapNext').disabled = !r.nextEnabled;
   closeSheets();
   $('recapSheet').classList.add('open');
 }
@@ -873,29 +848,28 @@ $('recapNext').onclick = () => { closeSheets(); act('deal'); };
 $('recapClose').onclick = () => closeSheets();
 let recapShown = null;
 function openLog() {
-  const log = readJson(LOG, []);
+  const log = scratchJson(X.past_games(writeText(recall(LOG) ?? '[]')));
   const list = $('logList');
-  list.replaceChildren(...log.map((e, i) => {
+  list.replaceChildren(...log.rows.map((e) => {
     const d = document.createElement('details');
     d.className = 'logEntry';
-    const playable = e.boards.filter((b) => b.text.split('\n').slice(1, 5).every((c) => c.trim()));
-    d.innerHTML = `<summary><b>${when(e.at)}</b> · round ${e.round} at #${esc(e.room)}${e.finished === false ? ' · unfinished' : ''}<br><small>${esc(e.players.join(', '))} · ${e.boards.length} clover${e.boards.length === 1 ? '' : 's'}</small></summary>
+    d.innerHTML = `<summary><b>${when(e.at)}</b> · ${esc(e.line)}<br><small>${esc(e.who)}</small></summary>
       ${e.boards.map(cloverHtml).join('')}
-      <div class="row"><button class="go replay"${playable.length ? '' : ' hidden'}>Play ${playable.length === e.boards.length ? 'these' : 'the finished clovers'} again</button><button class="forget">Delete</button></div>`;
+      <div class="row"><button class="go replay"${e.replay ? '' : ' hidden'}>${esc(e.replay ?? '')}</button><button class="forget">Delete</button></div>`;
     // Only clovers with all four clues can be played; half-written ones are for reading.
-    d.querySelector('.replay').onclick = async () => { location.href = await shareFromText(playable.map((b) => b.text)); };
+    d.querySelector('.replay').onclick = async () => { location.href = await shareFromText(e.replayTexts); };
     d.querySelector('.forget').onclick = () => {
       remember(LOG, JSON.stringify(readJson(LOG, []).filter((x) => x.id !== e.id)));
       d.remove();
     };
     return d;
   }));
-  $('logEmpty').hidden = log.length > 0;
+  $('logEmpty').hidden = log.rows.length > 0;
   closeSheets();
   $('logSheet').classList.add('open');
 }
 function openHome() {
-  const tables = myTables();
+  const tables = myTables().rows;
   $('tableList').replaceChildren(...tables.map((t) => {
     const row = document.createElement('div');
     row.className = 'tableItem';
@@ -903,16 +877,16 @@ function openHome() {
     a.className = 'item tableRow';
     a.href = tableUrl(t.room);
     a.onclick = (e) => { e.preventDefault(); goTo(t.room); };
-    a.innerHTML = `<span class="grow"><b>#${esc(t.room)}</b><br><small>as ${esc(t.name ?? '?')} · ${when(t.at)}</small></span><span aria-hidden="true">›</span>`;
+    a.innerHTML = `<span class="grow"><b>${esc(t.title)}</b><br><small>${esc(t.by)} · ${when(t.at)}</small></span><span aria-hidden="true">›</span>`;
     const drop = Object.assign(document.createElement('button'), { className: 'forget', textContent: 'Forget', title: `Forget #${t.room} on this device` });
     drop.onclick = () => { forgetTable(t.room); openHome(); };
     row.append(a, drop);
     return row;
   }));
   $('tablesHead').hidden = !tables.length;
-  const n = readJson(LOG, []).length;
-  $('homeLog').hidden = !n;
-  $('homeLog').textContent = `Past games (${n})`;
+  const past = scratchJson(X.past_games(writeText(recall(LOG) ?? '[]'))).homeButton;
+  $('homeLog').hidden = !past;
+  $('homeLog').textContent = past ?? '';
   if (!$('homeRoom').value) $('homeRoom').value = suggestRoom();
   if (!$('homeName').value) $('homeName').value = myName();
   $('homeSheet').classList.add('open');
@@ -1030,7 +1004,7 @@ if (home) {
   document.body.classList.add('solo');
   X.set_solo();
   X.join(writeText('You'));
-  if (customNames.length) X.action(ACT.deal);
+  if (customs) X.action(ACT.deal);
   drainOutbox();
 } else {
   const saved = params.has('fresh') ? null : recall(nameKey);
