@@ -170,7 +170,7 @@ fn wire_roundtrip() {
         op(Body::Card(9, 5, Card { loc: Loc::Table { x: 0.25, y: 1.0 }, rot: 3, stamp: s })),
         op(Body::Card(9, 0, Card { loc: Loc::Slot(2), rot: 1, stamp: s })),
         op(Body::Card(9, 4, Card { loc: Loc::Float { x: -3.0, y: 4.0 }, rot: 0, stamp: s })),
-        op(Body::Check(9, Check { attempts: 1, mask: 0b0101, stamp: s })),
+        op(Body::Check(9, Check { attempts: 1, mask: 0b0101, stamp: s, tried: 1 << 77 | 5 })),
         op(Body::Next(3, s)),
         op(Body::Move(st(1, 5), Moved { room: "quiet-heron-dell".into(), by: 9, stamp: s })),
         Msg::Hello { device: 5, seat: 9, sum: 0xdead_beef, ver: PROTOCOL },
@@ -1688,4 +1688,50 @@ fn sheets_say_who_is_doing_what_and_how_the_round_went() {
     assert_eq!(recap.get("stats").to_string(), r#"[["3/3","solved"],["3","guesses"],["3","first try"]]"#);
     assert_eq!(recap.get("boards").arr()[0].get("badge").str(), Some("☘ first try"));
     assert_eq!((recap.get("head").str(), recap.get("next").bool()), (Some("Round 1 done ☘"), Some(true)));
+}
+
+#[test]
+fn a_rejected_placement_is_marked_when_it_comes_back() {
+    let mut t = table_in_guessing(3);
+    let w = t.writer_now();
+    let g = t.guesser_for(w);
+    let other = (0..3).find(|&k| k != g).unwrap();
+    // Everything right except card 0, turned a quarter wrong.
+    solve(&mut t, g, false);
+    let at = card_at(&t.apps[g], 0);
+    tap(&mut t.apps[g], at);
+    t.pump();
+    let wrong = t.apps[g].scene().cards[0].rot;
+    assert_eq!(t.apps[g].rejected_at(0), None, "nothing rejected yet");
+    t.apps[g].action(3);
+    t.pump();
+    assert!(t.apps[g].shared.check(w).rejected(0, 0, wrong));
+    // Put it back in spot 0, turned the same wrong way: every screen marks it.
+    let a = &mut t.apps[g];
+    a.settle();
+    let (from, to) = (card_at(a, 0), a.slot_screen(0));
+    drag(a, from, to);
+    while t.apps[g].scene().cards[0].rot != wrong {
+        let at = card_at(&t.apps[g], 0);
+        tap(&mut t.apps[g], at);
+    }
+    t.pump();
+    assert_eq!(t.apps[g].rejected_at(0), Some(0));
+    assert_eq!(t.apps[other].rejected_at(0), Some(0), "the mark is shared");
+    // Turned once more: a turn not yet tried here, so no mark.
+    let at = card_at(&t.apps[g], 0);
+    tap(&mut t.apps[g], at);
+    t.pump();
+    assert_eq!(t.apps[g].rejected_at(0), None);
+    // Right at last: no mark, and checking solves it.
+    let a = &mut t.apps[g];
+    let want = a.shared.deal(w).sol_rot[0];
+    while a.scene().cards[0].rot != want {
+        let at = card_at(a, 0);
+        tap(a, at);
+    }
+    assert_eq!(t.apps[g].rejected_at(0), None);
+    t.apps[g].action(3);
+    t.pump();
+    assert!(t.apps[g].shared.check(w).done() && t.apps[g].rejected_at(0).is_none());
 }

@@ -41,7 +41,7 @@ pub const CLAIM_R: f32 = 100.0;
 pub const MAX_TEXT: usize = 60;
 /// The message format's version. Bump it whenever the wire format changes:
 /// pages hearing a newer one ask their player to reload.
-pub const PROTOCOL: u16 = 2;
+pub const PROTOCOL: u16 = 3;
 pub const MAX_PLAYERS: usize = 12;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, Hash)]
@@ -142,12 +142,24 @@ pub struct Check {
     /// Bit s set = spot s was right at the last check (and is now locked).
     pub mask: u8,
     pub stamp: Stamp,
+    /// Every placement a check has rejected: card, spot and turn (relative
+    /// to the board), one bit each (see `Check::bit`). It only grows, and
+    /// merges as a union, so two checks made at once both count.
+    pub tried: u128,
 }
 
 impl Check {
     /// Solved: guesses keep going until every spot is right (no scoring).
     pub fn done(&self) -> bool {
         self.mask == 0b1111
+    }
+    /// The bit for card `card` in spot `spot` turned `rot`.
+    pub fn bit(card: usize, spot: usize, rot: u8) -> u128 {
+        1u128 << ((card * NSLOTS + spot) * 4 + (rot as usize & 3))
+    }
+    /// Whether that placement was already rejected.
+    pub fn rejected(&self, card: usize, spot: usize, rot: u8) -> bool {
+        card < MAX_CARDS && spot < NSLOTS && self.tried & Self::bit(card, spot, rot) != 0
     }
 }
 
@@ -448,10 +460,13 @@ impl Shared {
                 n
             }
             Body::Check(w, c) => {
-                let n = self.checks.get(w).is_none_or(|o| (c.attempts, c.stamp) > (o.attempts, o.stamp));
-                if n {
-                    self.checks.insert(*w, *c);
-                }
+                // The newest check wins; what was rejected is kept from both.
+                let old = self.checks.get(w).copied();
+                let newer = old.is_none_or(|o| (c.attempts, c.stamp) > (o.attempts, o.stamp));
+                let tried = c.tried | old.map_or(0, |o| o.tried);
+                let next = if newer { Check { tried, ..*c } } else { Check { tried, ..old.unwrap() } };
+                let n = old != Some(next);
+                self.checks.insert(*w, next);
                 n
             }
             Body::Next(k, s) => {
@@ -669,9 +684,10 @@ impl Shared {
                     .collect();
                 let claim: Vec<String> = claim.iter().map(|o| o.map_or("null".into(), |i| i.to_string())).collect();
                 format!(
-                    "{{\"writer\":{w},\"attempts\":{},\"mask\":{},\"claim\":[{}],\"cards\":[{}]}}",
+                    "{{\"writer\":{w},\"attempts\":{},\"mask\":{},\"tried\":\"{:x}\",\"claim\":[{}],\"cards\":[{}]}}",
                     c.attempts,
                     c.mask,
+                    c.tried,
                     claim.join(","),
                     cards.join(",")
                 )
@@ -842,6 +858,7 @@ pub fn encode(m: &Msg, b: &mut Vec<u8>) {
                     put_stamp(b, c.stamp);
                     b.push(c.attempts);
                     b.push(c.mask);
+                    b.extend_from_slice(&c.tried.to_le_bytes());
                 }
                 Body::Next(k, s) => {
                     b.extend_from_slice(&k.to_le_bytes());
@@ -977,7 +994,8 @@ impl<'a> Reader<'a> {
                 let stamp = self.stamp()?;
                 let attempts = self.u8()?;
                 let mask = self.lt(16)?;
-                Body::Check(w, Check { attempts, mask, stamp })
+                let tried = u128::from_le_bytes(self.take(16)?.try_into().ok()?);
+                Body::Check(w, Check { attempts, mask, stamp, tried })
             }
             T_NEXT => {
                 let k = self.u16()?;

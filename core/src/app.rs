@@ -62,6 +62,8 @@ pub struct Palette {
     pub keyword_ink: u32,
     pub hub: u32,
     pub gold: u32,
+    /// The mark on a placement a check already rejected.
+    pub tried: u32,
 }
 
 /// Daylight: a pale sage table, white cards, the clover as before.
@@ -82,6 +84,7 @@ pub const LIGHT: Palette = Palette {
     keyword_ink: 0x1d4a2bff,
     hub: 0x173a27ff,
     gold: 0xd99a1eff,
+    tried: 0xa63d2cff,
 };
 
 /// Night: a near-neutral charcoal table, muted leaves, and cards dimmed a
@@ -103,6 +106,7 @@ pub const DARK: Palette = Palette {
     keyword_ink: 0x10301bff,
     hub: 0x0e1f15ff,
     gold: 0xf2c14eff,
+    tried: 0xa63d2cff,
 };
 
 fn mix(a: u32, b: u32, t: f32) -> u32 {
@@ -1665,8 +1669,17 @@ impl App {
                 mask |= 1 << s;
             }
         }
+        // Remember each placement this check rejects, so nobody tries it again
+        // without noticing.
+        let mut tried = prev.tried;
+        for s in 0..NSLOTS {
+            if mask & (1 << s) == 0 {
+                let k = sc.claim[s].unwrap();
+                tried |= Check::bit(k, s, sc.cards[k].rot);
+            }
+        }
         let stamp = self.stamp();
-        let check = Check { attempts: prev.attempts.saturating_add(1), mask, stamp };
+        let check = Check { attempts: prev.attempts.saturating_add(1), mask, stamp, tried };
         let n = sc.cards.len();
         for s in 0..NSLOTS {
             if mask & (1 << s) == 0 {
@@ -1905,9 +1918,10 @@ impl App {
                 };
                 let words = turn_words(sc.words[i], c.rot).map(json_str).join(",");
                 format!(
-                    "{{\"card\":{},\"_i\":{i},\"at\":{at},\"words\":[{words}],\"movable\":{}}}",
+                    "{{\"card\":{},\"_i\":{i},\"at\":{at},\"words\":[{words}],\"movable\":{},\"rejectedHere\":{}}}",
                     rank[i],
-                    sc.movable.get(i).copied().unwrap_or(false)
+                    sc.movable.get(i).copied().unwrap_or(false),
+                    self.rejected_in(&sc, i).is_some()
                 )
             })
             .collect();
@@ -1926,6 +1940,19 @@ impl App {
             leaves.join(","),
             self.q.rem_euclid(4)
         )
+    }
+
+    /// The spot where card `i` lies now, if a check already rejected it
+    /// there turned as it is now (it would count for that spot at a check).
+    pub fn rejected_at(&self, i: usize) -> Option<usize> {
+        self.rejected_in(&self.scene(), i)
+    }
+
+    fn rejected_in(&self, sc: &Scene, i: usize) -> Option<usize> {
+        let w = sc.writer.filter(|_| matches!(self.shared.phase(), Phase::Guessing(_)))?;
+        let check = self.shared.check(w);
+        let s = (0..NSLOTS).find(|&s| sc.claim[s] == Some(i) && sc.locked & (1 << s) == 0).filter(|_| !check.done())?;
+        check.rejected(i, s, sc.cards[i].rot).then_some(s)
     }
 
     pub fn render(&mut self) {
@@ -1971,12 +1998,15 @@ impl App {
             let (x, y) = slot_pos(s);
             let solved = sc.locked & (1 << s) != 0 && phase != Phase::Writing;
             let claimed = sc.claim[s].is_some() && matches!(phase, Phase::Guessing(_));
-            let (fill, stroke) = match (solved, claimed) {
-                (true, _) => (0x9be7a8aa, 0xffffff60),
-                (false, true) => (0x0000002e, self.pal.gold),
-                _ => (0x0000002e, 0xffffff38),
+            // The card here, turned as it is, was already rejected here.
+            let repeat = sc.claim[s].and_then(|k| self.rejected_in(&sc, k)) == Some(s);
+            let (fill, stroke, lw) = match (solved, claimed) {
+                (true, _) => (0x9be7a8aa, 0xffffff60, 3.0),
+                (false, true) if repeat => (0x0000002e, self.pal.tried, 6.0),
+                (false, true) => (0x0000002e, self.pal.gold, 3.0),
+                _ => (0x0000002e, 0xffffff38, 3.0),
             };
-            self.rrect(x - HALF - 6.0, y - HALF - 6.0, CARD + 12.0, CARD + 12.0, 18.0, fill, stroke, 3.0);
+            self.rrect(x - HALF - 6.0, y - HALF - 6.0, CARD + 12.0, CARD + 12.0, 18.0, fill, stroke, lw);
         }
 
         // Cards.
@@ -2016,7 +2046,17 @@ impl App {
                 None => (self.pal.paper_edge, 2.0),
             };
             self.rrect(-HALF, -HALF, CARD, CARD, 18.0, self.pal.paper, stroke, lw);
-            self.circle(0.0, 0.0, 11.0, 0xeee4c8ff, 0, 0.0);
+            // Already rejected here, turned this way: a ✗ in the middle (where
+            // no word goes), upright whatever the board's turn.
+            if self.rejected_in(&sc, i).is_some() {
+                let (cx, cy) = f.apply(0.0, 0.0);
+                let (ex, ey) = f.apply(HALF, 0.0);
+                self.xform(M::t(cx, cy).then(M::s((ex - cx).hypot(ey - cy) / HALF)));
+                self.circle(0.0, 0.0, 30.0, self.pal.tried, self.pal.paper, 4.0);
+                self.text(0.0, 2.0, 38.0, self.pal.paper, F_SANS_BOLD, "✗", 40.0);
+            } else {
+                self.circle(0.0, 0.0, 11.0, 0xeee4c8ff, 0, 0.0);
+            }
             let layout = self.card_word_layout(&sc.words[i]);
             for s in 0..4u8 {
                 self.xform(f.then(M::r(turn(s))));
@@ -2153,6 +2193,7 @@ impl App {
             ("keywords on leaf", self.pal.keyword_ink, self.pal.leaf),
             ("keywords on active leaf", self.pal.keyword_ink, self.pal.leaf_active),
             ("hub glyph", self.pal.paper, self.pal.hub),
+            ("already-tried mark", self.pal.paper, self.pal.tried),
         ];
         let rows: Vec<String> =
             pairs.iter().map(|(n, f, b)| format!("[\"{n}\",\"#{:06x}\",\"#{:06x}\"]", f >> 8, b >> 8)).collect();

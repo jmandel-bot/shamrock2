@@ -35,7 +35,7 @@ export function agentTools(g) {
   return [
     {
       name: 'get_table',
-      description: `Read the table: phase (lobby, writing, guessing, end), players, and the clover on screen with its clues and cards. ${RULES}`,
+      description: `Read the table: phase (lobby, writing, guessing, end), players, and the clover on screen with its clues and cards (rejectedHere on a card: a check already rejected it in that spot, turned that way). ${RULES}`,
       annotations: { readOnlyHint: true },
       inputSchema: { type: 'object', properties: {} },
       run() {
@@ -54,6 +54,8 @@ export function agentTools(g) {
             solvedSpots: v.solvedSlots,
             // words: by edge, as the card is turned now. at:
             // "tray", "slot N", or "board" (set down outside any spot).
+            // rejectedHere: an earlier check already rejected this card in
+            // this spot, turned as it is now.
             cards: v.cards.map(({ _i, ...c }) => ({ ...c, words: Object.fromEntries(LEAVES.map((l, e) => [l, c.words[e]])) })),
           },
         };
