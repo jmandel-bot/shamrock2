@@ -894,10 +894,11 @@ window.__cl = {
   shareFromText,
   unseal,
   wordBudget: () => X.word_budget(),
-  measure: async (words) => {
-    await document.fonts.load('700 26px Figtree');
+  wordSize: () => X.word_size(),
+  measure: async (words, size = X.word_size()) => {
+    await document.fonts.load(`700 ${size}px Figtree`);
     const c = document.createElement('canvas').getContext('2d');
-    c.font = FONTS[1](26);
+    c.font = FONTS[1](size);
     return words.map((w) => [w, c.measureText(w).width]);
   },
 };

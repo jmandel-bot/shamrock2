@@ -99,11 +99,17 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
 const DRAG_THRESHOLD: f32 = 6.0;
 const CURSOR_TTL_MS: f64 = 4000.0;
 const HELLO_EVERY_MS: f64 = 2000.0;
-pub const WORD_SIZE: f32 = 26.0;
-/// Distance from a card's centre to the middle of each edge word. Deep
-/// enough that a word up to `WORD_MAX_W` wide never reaches the corner
-/// squares where the neighbouring edges' words sit, however long they are.
-pub const WORD_INSET: f32 = 86.0;
+/// Card word size, board units (a card is 210 across). Sized so ~90% of the
+/// deck's words fit their edge at full size (measured in Figtree Bold, see the
+/// harness); the longer ones shrink evenly to fit (the shell's text command),
+/// rather than every word being small enough for the longest.
+pub const WORD_SIZE: f32 = 33.0;
+/// Gap between a card's edge and its edge words.
+const WORD_EDGE: f32 = 6.0;
+/// Distance from a card's centre to the middle of each edge word.
+pub const WORD_INSET: f32 = HALF - WORD_EDGE - WORD_SIZE / 2.0;
+/// Room for an edge word: never reaching the corner squares where the
+/// neighbouring edges' words sit, however long those are.
 pub const WORD_MAX_W: f32 = 2.0 * (WORD_INSET - WORD_SIZE / 2.0);
 /// Tray depth (short axis) in board units: two rows of cards plus air.
 /// Clue size on a leaf, board units: as big as the band between the centre

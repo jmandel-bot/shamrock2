@@ -321,6 +321,12 @@ pub extern "C" fn probe_shown_angle(i: u32) -> f32 {
 }
 
 /// Widest a card word may be (card units) before it would crowd a corner.
+/// Card word size, board units.
+#[no_mangle]
+pub extern "C" fn word_size() -> f32 {
+    app::WORD_SIZE
+}
+
 #[no_mangle]
 pub extern "C" fn word_budget() -> f32 {
     app::WORD_MAX_W
