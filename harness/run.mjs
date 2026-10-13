@@ -321,6 +321,14 @@ try {
     for (let k = 0; k < 8 && !(await E.page.isDisabled('#sizeUp')); k++) await E.page.click('#sizeUp');
     const atLimit = await E.page.isDisabled('#sizeUp') && await E.page.isVisible('#sizeNote') && !(await E.page.isDisabled('#sizeDown'));
     gate('at the size limit, + greys out and the menu says to pinch for more', atLimit);
+    // The strategy guide opens from the menu and stays short.
+    await E.page.click('#helpMenuBtn');
+    await E.page.waitForSelector('#helpSheet.open');
+    const helpWords = (await E.page.textContent('#helpSheet')).trim().split(/\s+/).length;
+    await E.page.click('#helpClose');
+    gate('"How to play well" opens from the menu (under 500 words)', helpWords > 150 && helpWords < 500, `${helpWords} words`);
+    await E.page.click('#menuBtn');
+    await E.page.waitForSelector('#menuSheet.open');
     await E.page.click('#closeMenu');
     const w1 = await E.ev(() => window.__cl.wordPx());
     metric('word_px_phone_max_size', w1, ' px');

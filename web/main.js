@@ -844,6 +844,11 @@ $('homeForm').onsubmit = (e) => {
 $('homeLog').onclick = openLog;
 $('logClose').onclick = () => { closeSheets(); if (home) openHome(); };
 $('logMenuBtn').onclick = openLog;
+// The strategy guide: from the menu, or from the home page.
+const openHelp = () => { closeSheets(); $('helpSheet').classList.add('open'); };
+$('helpMenuBtn').onclick = openHelp;
+$('homeHelp').onclick = openHelp;
+$('helpClose').onclick = () => { closeSheets(); if (home) openHome(); };
 $('homeMenuBtn').onclick = () => goTo('');
 
 // ---- network ----------------------------------------------------------------

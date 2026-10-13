@@ -136,6 +136,10 @@
   .withBtn input { flex: 1; min-width: 0; }
   .withBtn button { flex: none; min-width: 52px; font-size: 22px; border-radius: 14px; }
   .startForm { display: flex; flex-direction: column; gap: 12px; }
+  .help h3 { margin: 6px 0 0; font: 600 19px var(--serif); color: var(--fg); }
+  .help ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; font-size: 16px; line-height: 1.4; color: var(--fg); }
+  .help li b { color: var(--fg); }
+  .help li::marker { color: var(--go); }
   .tableItem { display: flex; gap: 8px; align-items: stretch; }
   .tableRow { flex: 1; min-width: 0; text-decoration: none; color: var(--fg); background: var(--menu-item); border-radius: 14px; padding: 10px 14px; }
   .tableItem .forget { border-radius: 14px; background: var(--menu-item); color: var(--dim); }
@@ -227,6 +231,7 @@
     </div>
     <p id="sizeNote" class="tip" hidden>That's as big as cards get while every card still fits. Pinch the board to zoom in further.</p>
     <div id="tipText" class="tip"></div>
+    <button class="menuBtn" id="helpMenuBtn">How to play well</button>
     <div class="row"><button class="menuBtn" id="logMenuBtn">Past games…</button><button class="menuBtn" id="homeMenuBtn">All my tables</button></div>
     <div id="tableItems">
     <h2>Table</h2>
@@ -251,6 +256,30 @@
     <button id="cloverClose">Close</button>
   </div>
 </div>
+<div class="overlay" id="helpSheet">
+  <div class="sheet help">
+    <h2>Play like a clover champ ☘</h2>
+    <h3>Writing your clover</h3>
+    <ul>
+      <li><b>Hook both words.</b> A great clue grabs both words on its leaf. For <i>climbing</i> and <i>clothing</i>, “harness” beats “rope”: you climb in one <i>and</i> wear it.</li>
+      <li><b>Scan all sixteen.</b> Every card has four words, and any of them could swing round to face your leaf. Before you commit, check your clue against every word on your board. If it fits another pair just as well, find a sharper one.</li>
+      <li><b>Sharp beats clever.</b> Go for the link your friends will actually make. Deep cuts and inside jokes are booby traps.</li>
+      <li><b>Think in corners.</b> Each card sits between two leaves. If one clue has to be a little loose, make its neighbour crisp, so the card is pinned from both sides.</li>
+      <li><b>Pick decoys by nerve.</b> Shaky clues? One decoy. Feeling bold? Throw in more.</li>
+    </ul>
+    <h3>Guessing a clover</h3>
+    <ul>
+      <li><b>Grab the giveaway.</b> Find the clue with an obvious pair and lock it in first.</li>
+      <li><b>Be the writer.</b> For any pair you’re eyeing, ask: “Would I have written <i>this</i> clue for <i>these</i> two words?”</li>
+      <li><b>Ask “why not the obvious one?”</b> If a pair has a far more natural clue, wonder why the writer skipped it. Spot another word on the board that would have made the obvious clue risky? That’s your confirmation. Can’t find a reason? Rethink that pair.</li>
+      <li><b>Check both sides.</b> A card in a corner faces two leaves. Turn it in your head until <i>both</i> outward words fit their clues.</li>
+      <li><b>Sniff out the decoy.</b> A card that fits nothing comfortably is probably a stranger. Leave it in the tray.</li>
+      <li><b>Bank your wins.</b> Cards that stay after a Guess are locked in. Use their words to crack the neighbours.</li>
+      <li><b>Don’t overthink.</b> Most clues mean just what they say. Hunt for twists only when the simple reading breaks.</li>
+    </ul>
+    <button id="helpClose">Got it</button>
+  </div>
+</div>
 <div class="overlay" id="homeSheet">
   <div class="sheet">
     <div class="brand">
@@ -267,6 +296,7 @@
     <h2 id="tablesHead">Your tables</h2>
     <div class="list" id="tableList"></div>
     <button class="menuBtn" id="homeLog" hidden>Past games</button>
+    <button class="menuBtn" id="homeHelp">How to play well</button>
   </div>
 </div>
 <div class="overlay" id="logSheet">
