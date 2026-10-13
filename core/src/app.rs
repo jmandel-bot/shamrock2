@@ -298,6 +298,8 @@ pub struct App {
     pub device: u32,
     /// The seat this device plays, if any (None = watching).
     pub seat: Option<u32>,
+    /// The name I sat down under, to take my seat back if a merge drops it.
+    my_name: Option<String>,
     clock: u64,
     rng: Rng,
     /// Target view rotation in quarter turns (local only).
@@ -350,6 +352,7 @@ impl App {
             shared: Shared::default(),
             device,
             seat: None,
+            my_name: None,
             clock: 0,
             rng,
             q: 0,
@@ -522,13 +525,27 @@ impl App {
         }
         let id = seat_id(&name);
         let stamp = self.stamp();
-        self.commit(Body::Seat(id, Seat { name, active: true, stamp }));
+        self.commit(Body::Seat(id, Seat { name: name.clone(), active: true, stamp }));
         self.seat = Some(id);
+        self.my_name = Some(name);
         self.hello();
+    }
+
+    /// Joining before this device has heard from the table starts a game of
+    /// its own; when the tables meet, the later game replaces the earlier one
+    /// wholesale, seats included. Whoever was seated only in the replaced
+    /// game sits back down under the same name.
+    fn keep_my_seat(&mut self) {
+        let (Some(id), Some(name)) = (self.seat, self.my_name.clone()) else { return };
+        if self.shared.game != Stamp::default() && !self.shared.seats.contains_key(&id) {
+            let stamp = self.stamp();
+            self.commit(Body::Seat(id, Seat { name, active: true, stamp }));
+        }
     }
 
     pub fn watch(&mut self) {
         self.seat = None;
+        self.my_name = None;
         self.hello();
     }
 
@@ -1449,6 +1466,7 @@ impl App {
         if now - self.last_hello_ms >= HELLO_EVERY_MS {
             self.hello();
         }
+        self.keep_my_seat();
         self.maybe_start_guessing();
         let phase = self.shared.phase();
         // A clover just got finished: let the leaves glow briefly.
@@ -1658,7 +1676,12 @@ impl App {
             "{{\"writer\":{},\"clues\":[{}],\"solvedSlots\":[{}],\"cards\":[{}],\"leafWords\":[{}],\"viewQuarter\":{}}}",
             sc.writer.map_or("null".into(), |w| json_str(&self.name_of(w))),
             sc.clues.iter().map(|c| json_str(c)).collect::<Vec<_>>().join(","),
-            (0..NSLOTS).filter(|&s| sc.locked & (1 << s) != 0).map(|s| s.to_string()).collect::<Vec<_>>().join(","),
+            // Writers' own cards are locked too; only guessing has solved spots.
+            (0..NSLOTS)
+                .filter(|&s| sc.locked & (1 << s) != 0 && matches!(self.shared.phase(), Phase::Guessing(_)))
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join(","),
             cards.join(","),
             leaves.join(","),
             self.q.rem_euclid(4)

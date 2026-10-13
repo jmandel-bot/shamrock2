@@ -11,7 +11,10 @@ const RULES = 'Shamrock is a cooperative word game (So Clover! rules). Each play
   + 'left links the left words of spots 3 and 0. Everyone writes four clues for their own clover (traditionally one word, '
   + 'lowercase unless a name or title, linking both words), then the table guesses each clover in turn: its cards are shuffled '
   + 'and turned in a tray with decoy cards mixed in, and the guessers place and turn them, then check. Right spots lock; wrong '
-  + 'cards bounce back. Card numbers are tray labels only and say nothing about the answer.';
+  + 'cards bounce back to the tray unturned (back to how they were dealt). Card numbers are tray labels only and say nothing '
+  + 'about the answer. Each card\'s words are given by edge (top, right, bottom, left) as it faces now; turning it a quarter '
+  + 'clockwise moves every word one edge on (left to top, top to right, and so on). A card in spot s shows two words outward: spot 0 its top and left, '
+  + 'spot 1 top and right, spot 2 right and bottom, spot 3 bottom and left.';
 
 /** The tool list. `g` is the page's game handle (see main.js). */
 export function agentTools(g) {
@@ -47,10 +50,11 @@ export function agentTools(g) {
             clues: Object.fromEntries(LEAVES.map((l, d) => [l, v.clues[d] || null])),
             // While writing your own clover: the two words each leaf must link.
             leafWords: Object.fromEntries(LEAVES.map((l, d) => [l, v.leafWords[d]])),
+            // Spots locked by a right guess (guessing only).
             solvedSpots: v.solvedSlots,
-            // words: [top, right, bottom, left] as the card is turned now. at:
+            // words: by edge, as the card is turned now. at:
             // "tray", "slot N", or "board" (set down outside any spot).
-            cards: v.cards.map(({ _i, ...c }) => c),
+            cards: v.cards.map(({ _i, ...c }) => ({ ...c, words: Object.fromEntries(LEAVES.map((l, e) => [l, c.words[e]])) })),
           },
         };
       },
@@ -107,7 +111,7 @@ export function agentTools(g) {
     },
     {
       name: 'place_card',
-      description: 'Move a card into a spot (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left) or back to the tray, while guessing.',
+      description: 'Move a card into a spot (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left) or back to the tray, while guessing. A card keeps its turn when moved; a card already in that spot is pushed back to where this one came from.',
       inputSchema: { type: 'object', properties: { card, spot: { oneOf: [{ type: 'integer', minimum: 0, maximum: 3 }, { const: 'tray' }] } }, required: ['card', 'spot'] },
       run({ card: label, spot }) {
         const i = labelToIndex(label);
@@ -121,7 +125,7 @@ export function agentTools(g) {
     },
     {
       name: 'turn_card',
-      description: 'Turn a card a quarter clockwise, `times` times (its new top word is its old left word).',
+      description: 'Turn a card a quarter clockwise, `times` times: each word moves one edge on (left to top, top to right, right to bottom, bottom to left).',
       inputSchema: { type: 'object', properties: { card, times: { type: 'integer', minimum: 1, maximum: 3, default: 1 } }, required: ['card'] },
       run({ card: label, times = 1 }) {
         const i = labelToIndex(label);
@@ -132,7 +136,7 @@ export function agentTools(g) {
     },
     {
       name: 'check_guess',
-      description: 'Check the cards in the spots. Right spots lock; wrong cards go back to the tray.',
+      description: 'Check the cards in the spots. Right spots lock (see solvedSpots); wrong cards go back to the tray, unturned, and need placing and turning again. Any guesser may check; agree among yourselves who moves cards.',
       inputSchema: { type: 'object', properties: {} },
       run() {
         const u = g.ui();
@@ -156,7 +160,7 @@ export function agentTools(g) {
     },
     {
       name: 'get_recap',
-      description: 'After a round ends: every clover with its clues, answer cards in spot order, decoys and how many guesses it took.',
+      description: 'After a round ends: every clover with its clues, the two words each clue linked, the answer cards in spot order (each card\'s words as [top, right, bottom, left] as it sits), decoys, and how many guesses it took.',
       annotations: { readOnlyHint: true },
       inputSchema: { type: 'object', properties: {} },
       run() {
@@ -164,7 +168,9 @@ export function agentTools(g) {
         return g.review().map((b) => {
           const [writer, ...rest] = b.text.split('\n');
           const cards = rest.slice(4).map((l) => l.split('|'));
-          return { writer, clues: Object.fromEntries(LEAVES.map((l, d) => [l, rest[d]])), answer: cards.slice(0, 4), decoys: cards.slice(4), guesses: b.guesses, solved: b.solved };
+          // Leaf d links spot d and the next spot clockwise, both on side d.
+          const clues = Object.fromEntries(LEAVES.map((l, d) => [l, { clue: rest[d], linked: [cards[d]?.[d], cards[(d + 1) % 4]?.[d]] }]));
+          return { writer, clues, answer: cards.slice(0, 4), decoys: cards.slice(4), guesses: b.guesses, solved: b.solved };
         });
       },
     },

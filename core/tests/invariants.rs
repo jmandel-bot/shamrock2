@@ -1311,3 +1311,26 @@ fn tray_order_does_not_follow_the_answer() {
     eprintln!("answer cards in spot order: {ordered} of {total} deals ({:.1}%)", share * 100.0);
     assert!(share < 0.12, "answer cards in spot order in {ordered} of {total} deals");
 }
+
+#[test]
+fn players_who_join_before_meeting_both_stay_seated() {
+    // Each sits down before hearing from the other, so each starts a game of
+    // its own; when they meet, the later game wins and the other's seat is
+    // taken back under the same name.
+    let (mut a, mut b) = (app(71), app(72));
+    a.join("Ana");
+    b.join("Ben");
+    drain(&mut a);
+    drain(&mut b);
+    let mut t = Table { apps: vec![a, b], t: 0.0 };
+    t.apps[0].on_peer_join();
+    t.apps[1].on_peer_join();
+    for _ in 0..4 {
+        t.pump();
+    }
+    for a in &t.apps {
+        let names: Vec<_> = a.shared.seats.values().filter(|s| s.active).map(|s| s.name.clone()).collect();
+        assert!(names.contains(&"Ana".to_string()) && names.contains(&"Ben".to_string()), "{names:?}");
+    }
+    assert!(t.digests_equal());
+}

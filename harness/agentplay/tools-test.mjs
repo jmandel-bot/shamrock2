@@ -41,6 +41,8 @@ try {
   for (const p of P) {
     const t = await p.table();
     check(Object.values(t.clover.leafWords).every((w) => / & /.test(w)), `${p.name} sees the two words on each leaf`, JSON.stringify(t.clover.leafWords));
+    check(t.clover.solvedSpots.length === 0 && t.clover.cards.every((c) => typeof c.words.top === 'string' && typeof c.words.left === 'string'),
+      `${p.name}: no solved spots while writing, and card words named by edge`, JSON.stringify(t.clover.cards[0]));
     for (const leaf of ['top', 'right', 'bottom', 'left']) await p.tool('write_clue', { leaf, text: `${p.name.toLowerCase()} ${leaf}` });
     await p.tool('set_decoys', { count: 1 });
     const r = await p.tool('submit_clover');
@@ -78,7 +80,7 @@ try {
   }
   check(await until(async () => (await P[0].table()).phase === 'end'), 'the round ends');
   const recap = await P[2].tool('get_recap');
-  check(Array.isArray(recap) && recap.length === 3 && recap.every((c) => c.solved && c.answer.length === 4 && c.clues.top.endsWith(' top') && c.decoys.length === 1),
+  check(Array.isArray(recap) && recap.length === 3 && recap.every((c) => c.solved && c.answer.length === 4 && c.clues.top.clue.endsWith(' top') && c.clues.top.linked.every((w) => typeof w === 'string') && c.decoys.length === 1),
     'get_recap returns every clover with clues, answers and decoys', JSON.stringify(recap).slice(0, 300));
 
   // The recap sheet opens by itself, one clover after another, no expanders.
