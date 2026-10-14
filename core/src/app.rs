@@ -254,7 +254,7 @@ struct Press {
     target: Target,
     /// Card centre minus pointer, in CSS px.
     grab: (f32, f32),
-    /// Where the dragged card started (for swaps).
+    /// Where the dragged card started (a cancelled drag puts it back).
     origin: Option<Card>,
     moved: bool,
     /// (pointer angle about the board centre, view angle) while spinning.
@@ -1365,7 +1365,7 @@ impl App {
             return;
         }
         match (p.target, p.moved) {
-            (Target::Card(i), true) => self.drop_card(i, p.origin),
+            (Target::Card(i), true) => self.drop_card(i),
             (Target::Card(i), false) => {
                 let sc = self.scene();
                 let c = sc.cards[i];
@@ -1401,10 +1401,11 @@ impl App {
         (here + coast).round() as i32
     }
 
-    /// Cards stay exactly where they're dropped (so players can leave
-    /// "maybe" placements), except very close to a spot, where they snap. A
-    /// card already snapped there is pushed back to where this one came from.
-    fn drop_card(&mut self, i: usize, origin: Option<Card>) {
+    /// Cards stay exactly where they're dropped, like cards on a real table
+    /// (so players can leave "maybe" placements, even on top of each other),
+    /// except very close to a spot, where they snap. Nothing else moves:
+    /// cards sharing a spot are fine, and the one put there last counts.
+    fn drop_card(&mut self, i: usize) {
         let sc = self.scene();
         let Some(w) = sc.writer else { return };
         let c = sc.cards[i];
@@ -1418,15 +1419,6 @@ impl App {
         let Some(s) = spot else {
             return self.set_card(w, i, c.loc, c.rot);
         };
-        let occupant = (0..sc.cards.len()).find(|&j| j != i && sc.cards[j].loc == Loc::Slot(s as u8));
-        if let (Some(k), Some(o)) = (occupant, origin) {
-            let occ = sc.cards[k];
-            let rot = match o.loc {
-                Loc::Table { .. } => quarter(occ.rot as i32 + self.q),
-                _ => occ.rot,
-            };
-            self.set_card(w, k, o.loc, rot);
-        }
         self.set_card(w, i, Loc::Slot(s as u8), c.rot);
     }
 

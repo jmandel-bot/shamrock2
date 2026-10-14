@@ -545,14 +545,19 @@ fn cards_stay_where_dropped_unless_near_a_spot() {
     let from = card_at(a, 3);
     drag(a, from, to);
     assert_eq!(a.scene().claim[2], Some(2));
-    // Snapping onto an occupied spot pushes the occupant back where the
-    // dragged card came from.
-    let origin = a.scene().cards[3].loc;
+    // Dropped squarely on an occupied spot, a card lands on top, like a real
+    // card: nothing else moves, and the one put there last counts.
     let from = card_at(a, 3);
     let to = a.slot_screen(2);
     drag(a, from, to);
     assert_eq!(a.scene().cards[3].loc, Loc::Slot(2));
-    assert_eq!(a.scene().cards[2].loc, origin);
+    assert_eq!(a.scene().cards[2].loc, Loc::Slot(2), "the card underneath stays put");
+    assert_eq!(a.scene().claim[2], Some(3), "the top card counts");
+    // Take the top one away: the one left behind counts again.
+    let from = card_at(a, 3);
+    let to = a.board_screen(x2 + 180.0, y2 + 180.0);
+    drag(a, from, to);
+    assert_eq!(a.scene().claim[2], Some(2));
 }
 
 #[test]

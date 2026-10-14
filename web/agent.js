@@ -113,7 +113,7 @@ export function agentTools(g) {
     },
     {
       name: 'place_card',
-      description: 'Move a card into a spot (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left) or back to the tray, while guessing. A card keeps its turn when moved; a card already in that spot is pushed back to where this one came from.',
+      description: 'Move a card into a spot (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left) or back to the tray, while guessing. A card keeps its turn when moved. Cards may share a spot, like cards on a real table: nothing else moves, and the card put there last counts for check_guess (move the other one away, e.g. to the tray, to tidy up).',
       inputSchema: { type: 'object', properties: { card, spot: { oneOf: [{ type: 'integer', minimum: 0, maximum: 3 }, { const: 'tray' }] } }, required: ['card', 'spot'] },
       run({ card: label, spot }) {
         const i = labelToIndex(label);
