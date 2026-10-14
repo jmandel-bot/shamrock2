@@ -392,6 +392,13 @@ pub struct App {
     pub outbox: Vec<u8>,
     pub cmds: Vec<f32>,
     pub strs: Vec<u8>,
+    /// The last frame's commands and strings, to tell whether this one
+    /// draws anything different (`unchanged`).
+    last_cmds: Vec<f32>,
+    last_strs: Vec<u8>,
+    /// This frame's commands are the same as the last frame's: there is
+    /// nothing new to paint.
+    pub unchanged: bool,
 }
 
 impl App {
@@ -447,6 +454,9 @@ impl App {
             outbox: Vec::new(),
             cmds: Vec::new(),
             strs: Vec::new(),
+            last_cmds: Vec::new(),
+            last_strs: Vec::new(),
+            unchanged: false,
         }
     }
 
@@ -1827,6 +1837,13 @@ impl App {
         }
         self.cursors.retain(|_, c| now - c.seen < CURSOR_TTL_MS);
         self.render();
+        // Compared as bits: colours ride in the buffer as f32s, and some are NaN.
+        let same = |a: &[f32], b: &[f32]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits());
+        self.unchanged = same(&self.cmds, &self.last_cmds) && self.strs == self.last_strs;
+        if !self.unchanged {
+            self.last_cmds.clone_from(&self.cmds);
+            self.last_strs.clone_from(&self.strs);
+        }
     }
 
     /// Guessing starts on its own only once everyone dealt into the round
