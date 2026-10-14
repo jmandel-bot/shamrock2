@@ -72,9 +72,11 @@
   #clue { position: absolute; display: none; transform-origin: center; text-align: center; font: 600 22px var(--serif);
           border: 3px solid var(--go); border-radius: 16px; background: #f6fcf6; color: #0b2414; outline: none; padding: 0 12px;
           box-shadow: 0 8px 24px #0006; }
-  #toast { overflow-wrap: anywhere; position: absolute; left: 12px; right: 12px; margin-inline: auto; width: fit-content; max-width: 420px; bottom: 12px; transform: translateY(8px); background: var(--toast); color: var(--toast-fg);
+  #toast { overflow-wrap: anywhere; position: absolute; z-index: 3; left: 12px; right: 12px; margin-inline: auto; width: fit-content; max-width: 420px; bottom: 12px; transform: translateY(8px); background: var(--toast); color: var(--toast-fg);
            padding: 10px 16px; border-radius: 14px; font-size: 16px; font-weight: 600; pointer-events: none; opacity: 0; transition: opacity .25s, transform .25s; text-align: center; box-shadow: 0 6px 20px #0008; }
   #toast.show { opacity: 1; transform: none; }
+  /* …and notices move aside so they don't cover it. */
+  .goNear #toast { left: auto; margin: 0; }
   #toast.show.act { pointer-events: auto; }
   #toast button { display: block; margin: 8px auto 0; font: 700 15px var(--sans); background: var(--go); color: var(--go-fg); border: 0; border-radius: 10px; padding: 7px 14px; }
   .happened { font-size: 15px; color: var(--fg); background: var(--menu-item); border-radius: 12px; padding: 8px 12px; }
@@ -95,6 +97,8 @@
   #dockBtns { display: flex; align-items: center; gap: 6px; flex: none; }
   #go, #alt { white-space: nowrap; max-width: 55vw; overflow: hidden; text-overflow: ellipsis; }
   #alt { padding: 9px 12px; }
+  /* Guessing on a wide screen: the core puts Guess in the empty corner by the clover. */
+  #go.near { position: fixed; transform: translate(-50%, -50%); max-width: none; padding: .55em 1.4em; border-radius: 999px; z-index: 2; box-shadow: 0 4px 16px #0003; }
   #decoys { position: absolute; top: 8px; right: 8px; z-index: 2; background: var(--bar); box-shadow: 0 2px 10px #0003; }
   .stepper { display: inline-flex; align-items: center; gap: 2px; background: var(--chip); border-radius: 999px; padding: 2px; font-size: 15px; font-weight: 600; }
   .stepper button { min-height: 40px; min-width: 38px; padding: 0; background: transparent; font-size: 22px; }

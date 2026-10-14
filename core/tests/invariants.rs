@@ -1857,3 +1857,28 @@ fn a_hand_that_goes_silent_lets_go_of_its_card() {
     drag(&mut t.apps[b], from, away);
     assert_eq!(t.apps[b].scene().cards[1].loc, Loc::Slot(3));
 }
+
+#[test]
+fn on_a_wide_screen_guess_sits_by_the_clover_clear_of_cards_and_tray() {
+    let mut t = table_in_guessing(2);
+    let g = (0..2).find(|&k| t.apps[k].strip().go.is_some_and(|b| b.act == "check")).expect("a guesser");
+    let w = 1 - g;
+    for (sw, sh, near) in [(1920.0, 1030.0, true), (1280.0, 670.0, true), (1440.0, 850.0, true), (844.0, 340.0, false), (390.0, 790.0, false), (1000.0, 1400.0, false)] {
+        let a = &mut t.apps[g];
+        (a.w, a.h) = (sw, sh);
+        let st = a.strip();
+        assert_eq!(st.go_at.is_some(), near, "{sw}x{sh}: {:?}", st.go_at);
+        let Some((x, y, size)) = st.go_at else { continue };
+        let l = a.layout();
+        // The corner square: past every card spot, before the tray, on screen.
+        let spots = (SLOT_OFF + HALF) * l.k;
+        let (tx, ..) = l.tray.unwrap();
+        let (x0, y0, x1, y1) = (x - size / 2.0, y - size / 2.0, x + size / 2.0, y + size / 2.0);
+        assert!(x0 >= l.bc.0 + spots - 0.5 && y0 >= l.bc.1 + spots - 0.5, "{sw}x{sh}: overlaps the card spots");
+        assert!(x1 <= tx && y1 <= sh && size >= 130.0, "{sw}x{sh}: runs into the tray or off screen");
+        // The writer has no button to place.
+        let wa = &mut t.apps[w];
+        (wa.w, wa.h) = (sw, sh);
+        assert_eq!(wa.strip().go_at, None);
+    }
+}

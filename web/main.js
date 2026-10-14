@@ -630,6 +630,13 @@ function renderUi(force = false) {
   goBtn.textContent = st.go?.label ?? '';
   goBtn.disabled = !st.go?.enabled;
   goBtn.onclick = st.go ? press(st.go) : null;
+  // The core may place it by the clover instead (board px; the canvas's corner is the origin).
+  goBtn.classList.toggle('near', !!st.goAt);
+  document.body.classList.toggle('goNear', !!st.goAt);
+  if (st.goAt) {
+    const [x, y, w] = st.goAt, c = canvas.getBoundingClientRect();
+    Object.assign(goBtn.style, { left: `${c.left + x}px`, top: `${c.top + y}px`, fontSize: `${Math.min(26, Math.max(17, w / 8))}px` });
+  } else goBtn.removeAttribute('style');
   const altBtn = $('alt');
   altBtn.hidden = !st.alt;
   altBtn.textContent = st.alt?.label ?? '';

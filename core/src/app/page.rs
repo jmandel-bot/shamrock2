@@ -60,7 +60,17 @@ pub struct Strip {
     pub segs: bool,
     /// The decoy stepper's label.
     pub decoy_label: String,
+    /// Where the main button sits instead of the strip, when the board is big
+    /// enough that the strip's corner is a long way from the cards: centre
+    /// and width (CSS px) of the empty corner below and right of the clover.
+    pub go_at: Option<(f32, f32, f32)>,
 }
+
+/// The empty corner between the clover's right and bottom leaves (board
+/// units): it starts past the card spots and ends at the board's edge.
+const CORNER: (f32, f32) = (SLOT_OFF + HALF, FIT_EXTENT);
+/// Narrowest corner (CSS px) the button moves into; phones keep it in the strip.
+const CORNER_MIN: f32 = 130.0;
 
 const ORDINAL: [&str; 10] = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
 
@@ -226,6 +236,18 @@ impl App {
         };
         st.invite = !self.solo && (phase == Phase::Lobby || self.links == 0);
         st.tip = st.tip.filter(|_| seated || self.solo);
+        // Guessing on a wide screen: Guess (and Next clover after it) sits by
+        // the clover, a short reach from the cards.
+        if st.go.as_ref().is_some_and(|b| matches!(b.act, "check" | "next")) {
+            let l = self.layout();
+            if l.tray.is_some_and(|t| !t.4) {
+                let (near, far) = CORNER;
+                let (mid, w) = ((near + far) / 2.0 * l.k, (far - near) * l.k);
+                if w >= CORNER_MIN {
+                    st.go_at = Some((l.bc.0 + mid, l.bc.1 + mid, w));
+                }
+            }
+        }
         st
     }
 
@@ -237,7 +259,7 @@ impl App {
         let opt = |o: Option<&str>| o.map_or("null".into(), |x| format!("\"{x}\""));
         let hint: Vec<String> = st.hint.iter().map(|h| json_str(h)).collect();
         format!(
-            "{{\"hint\":[{}],\"pulse\":{},\"go\":{},\"alt\":{},\"decoys\":{},\"tap\":{},\"invite\":{},\"tip\":{},\"segs\":{},\"decoyLabel\":{}}}",
+            "{{\"hint\":[{}],\"pulse\":{},\"go\":{},\"alt\":{},\"decoys\":{},\"tap\":{},\"invite\":{},\"tip\":{},\"segs\":{},\"decoyLabel\":{},\"goAt\":{}}}",
             hint.join(","),
             st.pulse,
             btn(&st.go),
@@ -247,7 +269,8 @@ impl App {
             st.invite,
             opt(st.tip),
             st.segs,
-            json_str(&st.decoy_label)
+            json_str(&st.decoy_label),
+            st.go_at.map_or("null".into(), |(x, y, w)| format!("[{x:.0},{y:.0},{w:.0}]"))
         )
     }
 
