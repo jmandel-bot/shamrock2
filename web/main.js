@@ -19,7 +19,19 @@ const remember = (key, value) => { try { value == null ? localStorage.removeItem
 const recall = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
 
 const { instance } = await WebAssembly.instantiateStreaming(fetch('core.wasm'), {});
-const X = instance.exports;
+// Frames run only while something is changing (see the frame loop below):
+// every call into the core wakes them, except drawing and the questions that
+// change nothing. (One missed here costs at most a 250 ms wait, not a stale screen.)
+const QUIET = new Set([
+  'memory', 'frame', 'unchanged', 'cmd_ptr', 'str_ptr', 'outbox_ptr', 'outbox_len', 'outbox_clear', 'scratch_ptr', 'inbox_reserve', 'probe_ptr',
+  'ui', 'sheet', 'digest', 'holds', 'agent_view', 'snapshot', 'origin_snapshot', 'palette', 'protocol', 'on_card', 'card_zoom', 'view_quarter',
+  'word_size', 'word_list', 'word_fit', 'card_word_scales', 'answer_rot', 'review', 'export_boards', 'scramble_boards', 'past_games', 'tables',
+  'norm_room', 'suggest_room', 'probe_card', 'probe_slot', 'probe_board', 'probe_petal', 'probe_hub', 'probe_shaking', 'probe_shown_angle',
+  'probe_word_px', 'probe_card_px',
+]);
+let framePending = false, framesStarted = false;
+const X = Object.fromEntries(Object.entries(instance.exports).map(([k, v]) =>
+  [k, typeof v !== 'function' || QUIET.has(k) ? v : (...a) => { const r = v(...a); wake(); return r; }]));
 const seed = crypto.getRandomValues(new Uint32Array(2));
 const device = X.init(seed[0], seed[1]) >>> 0; // u32 comes back as i32
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
@@ -113,7 +125,7 @@ function paint(n) {
 
 // ---- outbox: network packets, UI requests ---------------------------------
 
-const stats = { joins: 0, sentPackets: 0, sentBytes: 0, recvPackets: 0, recvBytes: 0, frameMs: [], presses: 0 };
+const stats = { joins: 0, sentPackets: 0, sentBytes: 0, recvPackets: 0, recvBytes: 0, frameMs: [], presses: 0, paints: 0 };
 let net = null;
 
 let toastTimer = 0;
@@ -1023,19 +1035,49 @@ try {
 
 // ---- frame loop ---------------------------------------------------------------
 
-let frames = 0;
-function tick(t) {
-  const t0 = performance.now();
+// The core draws every frame, but the page paints only what changed, and
+// once nothing has for half a second, frames stop: a 4 Hz tick keeps the
+// table's timers (presence, auto-start, pointers fading) going, and wakes
+// frames again the moment it draws something new. Input and messages wake
+// them too (through `X`). The tick also runs in background tabs, where
+// frames don't.
+let quiet = 0, lastStep = 0, painted = '';
+function step(t) {
+  lastStep = performance.now();
+  const t0 = lastStep;
   const n = X.frame(t);
-  paint(n);
-  const dt = performance.now() - t0;
-  if (stats.frameMs.push(dt) > 600) stats.frameMs.shift();
+  // Canvas size, zoom camera and fonts change the picture without the core.
+  const shell = `${canvas.width}x${canvas.height} ${cam.s} ${cam.x} ${cam.y} ${document.fonts?.status}`;
+  const fresh = !X.unchanged() || shell !== painted;
+  if (fresh) {
+    paint(n);
+    painted = shell;
+    stats.paints++;
+    if (stats.frameMs.push(performance.now() - t0) > 600) stats.frameMs.shift();
+  }
+  quiet = fresh ? 0 : quiet + 1;
   drainOutbox();
-  if (++frames % 6 === 0) renderUi();
+  // The page's own controls follow too (it only touches what changed).
+  renderUi();
+  return fresh;
+}
+function tick(t) {
+  framePending = false;
+  step(t);
+  if (quiet < 30) wake();
+}
+function wake() {
+  if (framePending || !framesStarted) return;
+  framePending = true;
   requestAnimationFrame(tick);
 }
+setInterval(() => {
+  if (performance.now() - lastStep < 200) return;
+  if (step(performance.now())) wake();
+}, 250);
 renderUi(true);
-requestAnimationFrame(tick);
+framesStarted = true;
+wake();
 
 // ---- harness hooks (read-only probes + a settle switch) ------------------------
 

@@ -58,6 +58,12 @@ pub extern "C" fn frame(now: f64) -> u32 {
     g().app.cmds.len() as u32
 }
 
+/// 1 if the last `frame` drew exactly what the one before it did.
+#[no_mangle]
+pub extern "C" fn unchanged() -> u32 {
+    g().app.unchanged as u32
+}
+
 #[no_mangle]
 pub extern "C" fn cmd_ptr() -> *const f32 {
     g().app.cmds.as_ptr()
