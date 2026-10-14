@@ -89,6 +89,9 @@ try {
     const t = await g.table();
     check(t.clover.solved, `clover ${k + 1} (${t.clover.writer}'s) solved through place_card, turn_card and check_guess`, JSON.stringify(t.clover.solvedSpots));
     if (k === 0) {
+      // Checking a clover someone just solved says so, rather than failing.
+      const again = await g.tool('check_guess', { clover: t.clover.index });
+      check(again.ok && /already solved/.test(again.result), 'checking a clover that was just solved says so', again.result);
       // Two players move on from the same clover: the second finds it done.
       const other = P.find((p) => p !== g);
       const first = await other.tool('next_clover', { from: t.clover.index });

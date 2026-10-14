@@ -200,7 +200,10 @@ export function agentTools(g) {
         const stale = moved(clover);
         if (stale) return done(stale, false);
         const u = g.ui();
-        if (!u.canCheck) return done(u.phase === 'guessing' ? 'fill all four spots first (and it cannot be your own clover)' : 'nothing to check', false);
+        // Someone else's check may have just solved it.
+        if (u.done) return done(`clover ${u.k} is already solved; next_clover with from: ${u.k} moves on`);
+        if (u.isWriter) return done('this is your own clover: the others guess it', false);
+        if (!u.canCheck) return done('fill all four spots first', false);
         g.act('check');
         const v = view();
         return done(v.solvedSlots.length === 4 ? `solved clover ${u.k}! (next_clover with from: ${u.k} moves on)` : `right so far: spots ${v.solvedSlots.join(', ') || 'none'}`);
