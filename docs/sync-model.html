@@ -118,6 +118,8 @@ footer { margin-top: 40px; font-size: 13.5px; color: var(--dim) }
       <li><a href="#principles">Seven principles</a></li>
       <li><a href="#state">What lives where</a></li>
       <li><a href="#rank">Which round is current</a></li>
+      <li><a href="#merge">How each part merges</a></li>
+      <li><a href="#crdt">Is this a CRDT?</a></li>
       <li><a href="#explain">Explaining any change</a></li>
       <li><a href="#history">History is personal</a></li>
       <li><a href="#move">Moving your group</a></li>
@@ -227,6 +229,29 @@ moves   table id → { room, stamp }                last writer wins; where a gr
     </tbody>
   </table></div>
   <p>Some things don't merge, by design: who is here (from live connections), and anything one device keeps for itself (Past games, What happened, saves). A change for a round the table has moved past isn't merged either. It goes to Past games on the devices that were in that round (<a href="#history">History is personal</a>). Getting every change to every device is the protocol's job, not the merge's: see <a href="#heal">How the table heals itself</a>.</p>
+
+  <h2 id="crdt">Is this a CRDT?</h2>
+  <p>Mostly, yes. The shared table is a <b>state-based CRDT</b> (a conflict-free replicated data type): replicas combine their states with a merge that's commutative, associative and idempotent, so they agree once each has seen everything. The changes sent over the wire are small pieces of that state (a "delta-state" CRDT), and a full sync is the whole state, so the same merge serves both. Every part is a standard CRDT:</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Part</th><th>Standard CRDT it is</th></tr></thead>
+    <tbody>
+      <tr><td>Seats, moves, cards, start, which clover is up</td><td>Last-writer-wins registers, keyed in maps (an LWW map). Stamps are Lamport clocks with the device id to break ties, so "latest" respects cause and effect: a change made after seeing another always wins over it.</td></tr>
+      <tr><td>Clue versions</td><td>A grow-only set of versions, read as "latest". All are kept because "what counted when guessing started" means "the latest version stamped before Start", and that is the same everywhere.</td></tr>
+      <tr><td>A check</td><td>A pair: the result keeps the most attempts, then the latest stamp (an LWW register), and the rejected placements are a grow-only set (merged by union).</td></tr>
+      <tr><td>The current round with everything in it</td><td>A lexicographic pair: the higher-ranked round wins outright, and only equal rounds merge their contents. Because rank is a total order, this is itself a lattice, and it's how a new round or New game resets the table <em>without tombstones</em>: the old round's contents are simply outranked.</td></tr>
+    </tbody>
+  </table></div>
+  <p><code>core/tests/merge.rs</code> checks the laws that make it a CRDT, on the real code: any order, any number of repeats, and two halves merged either way give one table.</p>
+  <h3>Where it isn't a textbook CRDT, on purpose</h3>
+  <ul>
+    <li><b>Last writer wins means a lost write.</b> Two players dragging the same card at once: one drag wins, the other's is overwritten. A general CRDT library (Automerge, Yjs) would do the same for a single value. For text it would merge character by character, but a clue has one writer and a few words, so a whole-value register fits.</li>
+    <li><b>Changes to a round the table has left are dropped from the table.</b> The merge is still sound, since they're outranked, but players would lose work. So the page keeps them outside the CRDT: in Past games on the devices that were in that round (<a href="#history">History is personal</a>). That's a deliberate application-level layer, not part of the shared state.</li>
+    <li><b>Delivery isn't guaranteed by the transport.</b> CRDT convergence assumes every update eventually reaches every replica. A browser mesh with no server drops whatever was in flight when a link closes. The usual remedy for state-based CRDTs supplies it: a full state exchange whenever a link opens, plus table checksums in presence pings that trigger a resync when two devices differ (<a href="#heal">How the table heals itself</a>). The merge makes those resends harmless. The resync makes them happen.</li>
+    <li><b>Some state isn't replicated at all.</b> Who is here, live pointers and cards being held are soft state with time-outs, rebuilt from live connections. They aren't a CRDT and don't need to be: there's nothing to agree on once someone has gone.</li>
+    <li><b>Decisions are made from state, then written as changes.</b> "Everyone has submitted, so guessing starts" is computed from the merged table and recorded as a Start. If two devices decide at once, the register keeps one. Rules like this one are why the table is a small fixed schema, not a general document.</li>
+  </ul>
+  <h3>Why not a CRDT library</h3>
+  <p>Automerge or Yjs would give the registers and maps for free, but not the round rule. Its "a higher round replaces everything" order, with rejection sets inside, would still be custom code on top. And either would add a dependency, and its own document format, for a schema of eight fields. The hand-written version stays small (a table saves in a few hundred bytes), stays bounded (each round resets the table, so nothing accumulates over an evening), and is checked directly by the merge test and the simulator.</p>
 
   <h2 id="explain">Explaining any change <span class="chip new">new</span></h2>
   <p>Whenever the round a device is in is replaced by one it didn't deal, the device compares the new round's header with the one it had. One classifier covers every cause, and produces one notice. The person who caused the change sees nothing.</p>
