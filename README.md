@@ -99,7 +99,7 @@ Boards from elsewhere (e.g. read off a screenshot of an old game) become ordinar
 ## Harness
 
 ```bash
-(cd core && cargo test --release)   # native properties, incl. the network simulator (300 chaotic games)
+(cd core && cargo test --release)   # native properties, merge rules (tests/merge.rs), the network simulator (300 chaotic games)
 node harness/run.mjs                # browser gates + metrics → harness/out/scorecard.json
 node harness/faults.mjs             # fault scenarios in real browsers (ONLY=text runs one)
 node harness/longnames.mjs          # 24-character names on a 360 px phone: the status strip still fits

@@ -211,6 +211,23 @@ moves   table id → { room, stamp }                last writer wins; where a gr
   </ol>
   <p>The winner becomes current everywhere. On a device whose round lost, the round's state is cleared; the seats are untouched. This order is the <em>mechanism</em>. It is meaningful for one table, and merely deterministic for two, which is why two tables also get a human choice (<a href="#move">Moving your group</a>).</p>
 
+  <h2 id="merge">How each part merges</h2>
+  <p>Every change carries its round, and every part of the table has a rule for combining two versions that doesn't depend on which arrived first. So any set of changes, delivered in any order and any number of times, gives one table. The rule: <b>a field that goes into the shared table says how it merges, and <code>core/tests/merge.rs</code> covers it</b>. That test applies random changes, from several competing rounds, in shuffled orders with duplicates, and as two halves that meet. It requires one result, and that each change reports "changed" exactly when it changed something. Stamps are unique (a device's clock and its id), so "newest" is never a tie.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Part</th><th>Merges by</th></tr></thead>
+    <tbody>
+      <tr><td>Seats, per player</td><td>Newest stamp. They belong to the table, so any round's change counts.</td></tr>
+      <tr><td>Moves, per table</td><td>Newest stamp, from any round.</td></tr>
+      <tr><td>The current round</td><td>Highest rank (see <a href="#rank">Which round is current</a>). Taking a new round clears the old round's clues, cards, checks and start, and changes for any other round are ignored.</td></tr>
+      <tr><td>Clues, per writer</td><td>Every version is kept, by stamp; the latest counts.</td></tr>
+      <tr><td>Start of guessing</td><td>Newest stamp.</td></tr>
+      <tr><td>Cards, per clover and card</td><td>Newest stamp.</td></tr>
+      <tr><td>Checks, per clover</td><td>Most attempts, then newest stamp. The placements a check rejected are combined from both versions, so two checks made at once both count. The test also requires that no rejection is ever lost.</td></tr>
+      <tr><td>Which clover is up</td><td>Newest stamp.</td></tr>
+    </tbody>
+  </table></div>
+  <p>Some things don't merge, by design: who is here (from live connections), and anything one device keeps for itself (Past games, What happened, saves). A change for a round the table has moved past isn't merged either. It goes to Past games on the devices that were in that round (<a href="#history">History is personal</a>). Getting every change to every device is the protocol's job, not the merge's: see <a href="#heal">How the table heals itself</a>.</p>
+
   <h2 id="explain">Explaining any change <span class="chip new">new</span></h2>
   <p>Whenever the round a device is in is replaced by one it didn't deal, the device compares the new round's header with the one it had. One classifier covers every cause, and produces one notice. The person who caused the change sees nothing.</p>
   <div class="lineage">
