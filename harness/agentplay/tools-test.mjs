@@ -61,17 +61,29 @@ try {
     const labels = await g.page.evaluate(() => window.__cl.agentView().cards.filter((c) => c._i < 4).sort((a, b) => a._i - b._i).map((c) => c.card));
     const leaked = JSON.stringify(await g.table()).includes('"_i"');
     check(!leaked, 'get_table never exposes internal card order');
+    if (k === 0) {
+      // Placing with the word to put on top, twice (two players carrying out
+      // the same plan): the card ends up turned once, not twice.
+      const deck = (await g.table()).clover.cards.find((c) => c.card === labels[3]);
+      const top = deck.words.left;
+      const a = await g.tool('place_card', { card: labels[3], spot: 2, clover: k, top });
+      const b = await g.tool('place_card', { card: labels[3], spot: 2, clover: k, top });
+      const now = (await g.table()).clover.cards.find((c) => c.card === labels[3]);
+      check(a.ok && b.ok && now.words.top === top && now.at === 'slot 2', 'place_card with top is safe to repeat: placed and turned once', `${a.result} | ${b.result}`);
+      check(now.movedBy === g.name, 'each card says who last moved it', String(now.movedBy));
+      await g.tool('place_card', { card: labels[3], spot: 'tray', clover: k });
+    }
     for (let round = 0; round < 5; round++) {
       const t = await g.table();
       if (t.clover.solved) break;
       for (let s = 0; s < 4; s++) {
         if (t.clover.solvedSpots.includes(s)) continue;
         // A card that bounced comes back unturned, so turn it once more each try.
-        if (round > 0) await g.tool('turn_card', { card: labels[s], times: round });
-        const r = await g.tool('place_card', { card: labels[s], spot: s });
+        if (round > 0) await g.tool('turn_card', { card: labels[s], times: round, clover: t.clover.index });
+        const r = await g.tool('place_card', { card: labels[s], spot: s, clover: t.clover.index });
         if (!r.ok) check(false, 'place_card puts a card in a spot', r.result);
       }
-      await g.tool('check_guess');
+      await g.tool('check_guess', { clover: t.clover.index });
       await until(async () => (await g.table()).clover.solvedSpots.length > t.clover.solvedSpots.length || (await g.table()).clover.solved, 3000);
     }
     const t = await g.table();
@@ -83,6 +95,10 @@ try {
       await until(async () => (await g.table()).clover.index !== t.clover.index);
       const second = await g.tool('next_clover', { from: t.clover.index });
       check(first.ok && second.ok && /already moved the table on/.test(second.result), 'next_clover after someone else moved on reports success, not "not solved"', `${first.result} | ${second.result}`);
+      // A move still meant for the clover just left is refused, and moves nothing.
+      const before = JSON.stringify((await g.table()).clover.cards);
+      const late = await g.tool('turn_card', { card: labels[0], times: 1, clover: t.clover.index });
+      check(!late.ok && /moved on/.test(late.result) && JSON.stringify((await g.table()).clover.cards) === before, 'a move for a clover the table has left is refused and changes nothing', late.result);
     } else {
       await g.tool('next_clover', { from: t.clover.index });
     }

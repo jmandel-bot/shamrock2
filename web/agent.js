@@ -31,6 +31,29 @@ export function agentTools(g) {
     g.sync();
   }
   const card = { type: 'integer', minimum: 0, description: 'Card number as listed by get_table (a tray label)' };
+  const cloverArg = { type: 'integer', minimum: 0, description: 'The clover you are looking at: clover.index in get_table' };
+  const topArg = { type: 'string', description: 'The word that should end up on the card\'s top edge' };
+  const cardOf = (i) => view().cards.find((c) => c._i === i);
+  // A move meant for one clover never lands on another's cards.
+  const moved = (clover) => {
+    const u = g.ui();
+    if (u.phase !== 'guessing') return `guessing isn't under way (the table is in ${u.phase})`;
+    if (clover !== u.k) return `the table has moved on: it's on clover ${u.k} (${u.writerName}'s) now, not clover ${clover}. Nothing was moved; look again (get_table) before moving cards`;
+    return null;
+  };
+  const busy = (i, label) => { const by = cardOf(i)?.heldBy; return by ? `${by} is moving card ${label} right now; wait for them to let go` : null; };
+  // Why a move didn't land: usually someone else moved the same card at the same moment.
+  const missed = (c, label, what) => {
+    const me = g.ui().name, by = c.movedBy;
+    return `card ${label} ${what}: ${by && by !== me ? `${by} moved it at the same moment` : 'it was moved again before this landed'}; it is at ${c.at}, reading ${c.words.join(' / ')}`;
+  };
+  const tap = (i) => { settle(); const p = point(g.X.probe_card, i); g.X.pointer_down(...p); g.X.pointer_up(...p); g.sync(); };
+  // Turn until `top` is on the top edge (at most three quarter turns). Null when it is.
+  const turnTo = (i, label, top) => {
+    for (let k = 0; k < 4 && cardOf(i).words[0] !== top; k++) tap(i);
+    const c = cardOf(i);
+    return c.words[0] === top ? null : missed(c, label, `doesn't have "${top}" on top`);
+  };
 
   return [
     {
@@ -58,6 +81,7 @@ export function agentTools(g) {
             // this spot, turned as it is now.
             // heldBy: another player is moving this card right now (a card
             // is in one hand at a time).
+            // movedBy: who last moved or turned it.
             cards: v.cards.map(({ _i, ...c }) => ({ ...c, words: Object.fromEntries(LEAVES.map((l, e) => [l, c.words[e]])) })),
           },
         };
@@ -115,38 +139,66 @@ export function agentTools(g) {
     },
     {
       name: 'place_card',
-      description: 'Move a card into a spot (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left) or back to the tray, while guessing. A card keeps its turn when moved. Cards may share a spot, like cards on a real table: nothing else moves, and the card put there last counts for check_guess (move the other one away, e.g. to the tray, to tidy up).',
-      inputSchema: { type: 'object', properties: { card, spot: { oneOf: [{ type: 'integer', minimum: 0, maximum: 3 }, { const: 'tray' }] } }, required: ['card', 'spot'] },
-      run({ card: label, spot }) {
+      description: 'Move a card into a spot (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left) or back to the tray, while guessing. '
+        + 'Give `clover`, the clover you are looking at (clover.index in get_table): if the table has moved on, the move is refused instead of landing on another clover\'s cards. '
+        + 'Give `top`, the word that should end up on the card\'s top edge, to place and turn it in one step; this is safe to repeat (if two players carry out the same plan, the card still ends up turned once). '
+        + 'Without `top` the card keeps its turn. Cards may share a spot, like cards on a real table: nothing else moves, and the card put there last counts for check_guess (move the other one away, e.g. to the tray, to tidy up).',
+      inputSchema: { type: 'object', properties: { card, spot: { oneOf: [{ type: 'integer', minimum: 0, maximum: 3 }, { const: 'tray' }] }, clover: cloverArg, top: topArg }, required: ['card', 'spot', 'clover'] },
+      run({ card: label, spot, clover, top }) {
+        const stale = moved(clover);
+        if (stale) return done(stale, false);
         const i = labelToIndex(label);
         if (i === undefined) return done(`no card ${label}`, false);
-        const by = view().cards.find((c) => c._i === i)?.heldBy;
-        if (by) return done(`${by} is moving card ${label} right now; wait for them to let go`, false);
-        settle();
-        const to = spot === 'tray' ? g.trayPoint() : point(g.X.probe_slot, spot);
-        drag(point(g.X.probe_card, i), to);
-        const at = view().cards.find((c) => c._i === i)?.at;
-        return done(`card ${label} is at ${at}`, spot === 'tray' ? at === 'tray' : at === `slot ${spot}`);
+        const held = busy(i, label);
+        if (held) return done(held, false);
+        if (top !== undefined && !cardOf(i).words.includes(top)) return done(`card ${label} has no word "${top}" (it reads ${cardOf(i).words.join(' / ')})`, false);
+        const want = spot === 'tray' ? 'tray' : `slot ${spot}`;
+        // Already there: nothing to drag (so repeating a move changes nothing).
+        if (cardOf(i).at !== want) {
+          settle();
+          const to = spot === 'tray' ? g.trayPoint() : point(g.X.probe_slot, spot);
+          drag(point(g.X.probe_card, i), to);
+        }
+        const c = cardOf(i);
+        if (c.at !== want) return done(missed(c, label, `isn't in ${spot === 'tray' ? 'the tray' : `spot ${spot}`}`), false);
+        if (top !== undefined) {
+          const t = turnTo(i, label, top);
+          if (t) return done(t, false);
+        }
+        return done(`card ${label} is ${spot === 'tray' ? 'in the tray' : `in spot ${spot}`}, reading top/right/bottom/left: ${cardOf(i).words.join(' / ')}`);
       },
     },
     {
       name: 'turn_card',
-      description: 'Turn a card a quarter clockwise, `times` times: each word moves one edge on (left to top, top to right, right to bottom, bottom to left).',
-      inputSchema: { type: 'object', properties: { card, times: { type: 'integer', minimum: 1, maximum: 3, default: 1 } }, required: ['card'] },
-      run({ card: label, times = 1 }) {
+      description: 'Turn a card, while guessing. Give `top`, the word that should end up on its top edge: this is safe to repeat (two players carrying out the same plan still leave it turned once). '
+        + 'Or give `times`, quarter turns clockwise: each word moves one edge on (left to top, top to right, right to bottom, bottom to left). '
+        + 'Give `clover` (clover.index in get_table) so a turn meant for one clover never lands on another.',
+      inputSchema: { type: 'object', properties: { card, clover: cloverArg, top: topArg, times: { type: 'integer', minimum: 1, maximum: 3 } }, required: ['card', 'clover'] },
+      run({ card: label, clover, top, times }) {
+        const stale = moved(clover);
+        if (stale) return done(stale, false);
         const i = labelToIndex(label);
         if (i === undefined) return done(`no card ${label}`, false);
-        const by = view().cards.find((c) => c._i === i)?.heldBy;
-        if (by) return done(`${by} is moving card ${label} right now; wait for them to let go`, false);
-        for (let t = 0; t < times; t++) { settle(); const p = point(g.X.probe_card, i); g.X.pointer_down(...p); g.X.pointer_up(...p); g.sync(); }
-        return done(`card ${label} reads top/right/bottom/left: ${view().cards.find((c) => c._i === i)?.words.join(' / ')}`);
+        const held = busy(i, label);
+        if (held) return done(held, false);
+        if (top !== undefined) {
+          if (!cardOf(i).words.includes(top)) return done(`card ${label} has no word "${top}" (it reads ${cardOf(i).words.join(' / ')})`, false);
+          const t = turnTo(i, label, top);
+          if (t) return done(t, false);
+        } else {
+          for (let t = 0; t < (times ?? 1); t++) tap(i);
+        }
+        return done(`card ${label} reads top/right/bottom/left: ${cardOf(i).words.join(' / ')}`);
       },
     },
     {
       name: 'check_guess',
-      description: 'Check the cards in the spots. Right spots lock (see solvedSpots); wrong cards go back to the tray, unturned, and need placing and turning again. Any guesser may check; agree among yourselves who moves cards.',
-      inputSchema: { type: 'object', properties: {} },
-      run() {
+      description: 'Check the cards in the spots. Right spots lock (see solvedSpots); wrong cards go back to the tray, unturned, and need placing and turning again. '
+        + 'Any guesser may check at any time; try to agree first. Give `clover` (clover.index in get_table) so a check meant for one clover never checks another.',
+      inputSchema: { type: 'object', properties: { clover: cloverArg }, required: ['clover'] },
+      run({ clover }) {
+        const stale = moved(clover);
+        if (stale) return done(stale, false);
         const u = g.ui();
         if (!u.canCheck) return done(u.phase === 'guessing' ? 'fill all four spots first (and it cannot be your own clover)' : 'nothing to check', false);
         g.act('check');

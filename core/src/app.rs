@@ -1272,6 +1272,14 @@ impl App {
             .next()
     }
 
+    /// The player on device `d`: this device's, or a connected one's.
+    fn seat_of_device(&self, d: u32) -> Option<u32> {
+        if d == self.device {
+            return self.seat;
+        }
+        self.peers.get(&d).map(|(seat, _)| *seat).filter(|s| *s != 0)
+    }
+
     /// A card is in one hand at a time: say whose, and pulse it in their colour.
     fn refuse(&mut self, i: usize, seat: u32) {
         self.refused = Some((i, seat, self.now));
@@ -1966,11 +1974,12 @@ impl App {
                 };
                 let words = turn_words(sc.words[i], c.rot).map(json_str).join(",");
                 format!(
-                    "{{\"card\":{},\"_i\":{i},\"at\":{at},\"words\":[{words}],\"movable\":{},\"rejectedHere\":{},\"heldBy\":{}}}",
+                    "{{\"card\":{},\"_i\":{i},\"at\":{at},\"words\":[{words}],\"movable\":{},\"rejectedHere\":{},\"heldBy\":{},\"movedBy\":{}}}",
                     rank[i],
                     sc.movable.get(i).copied().unwrap_or(false),
                     self.rejected_in(&sc, i).is_some(),
-                    self.hand_on(i, None).map_or("null".into(), |(_, seat)| json_str(&self.name_of(seat)))
+                    self.hand_on(i, None).map_or("null".into(), |(_, seat)| json_str(&self.name_of(seat))),
+                    self.seat_of_device(sc.cards[i].stamp.peer).map_or("null".into(), |seat| json_str(&self.name_of(seat)))
                 )
             })
             .collect();

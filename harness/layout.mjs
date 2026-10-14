@@ -157,15 +157,15 @@ async function solve(d) {
   if (t.clover?.isMine) return false;
   for (let s = 0; s < 4; s++) {
     const label = await d.page.evaluate((s) => window.__cl.agentView().cards.find((c) => c._i === s).card, s);
-    await d.tool('place_card', { card: label, spot: s });
+    await d.tool('place_card', { card: label, spot: s, clover: t.clover.index });
     const want = await d.page.evaluate((s) => window.__cl.answerRot(s), s);
     for (let k = 0; k < 4; k++) {
       const dg = await d.digest(), c = dg.puzzles[+dg.phase.split(':')[1]].cards[s];
       if (c[0] === 'slot' && c[2] === want) break;
-      await d.tool('turn_card', { card: label });
+      await d.tool('turn_card', { card: label, clover: t.clover.index });
     }
   }
-  await d.tool('check_guess');
+  await d.tool('check_guess', { clover: t.clover.index });
   return true;
 }
 

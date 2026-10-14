@@ -115,7 +115,7 @@ await scenario('a laggy connection (600 ms behind)', async () => {
   const lag = ps[1], t = await lag.table();
   if (!t.clover.isMine) {
     const labels = await lag.page.evaluate(() => window.__cl.agentView().cards.filter((c) => c._i < 4).sort((a, b) => a._i - b._i).map((c) => c.card));
-    for (let s = 0; s < 4; s++) await lag.tool('place_card', { card: labels[s], spot: s });
+    for (let s = 0; s < 4; s++) await lag.tool('place_card', { card: labels[s], spot: s, clover: t.clover.index });
   }
   check(await until(() => agree(ps), 15000), 'moves from the laggy screen reach everyone, and agree');
   await done(ps);
@@ -195,7 +195,7 @@ await scenario('a phone dies mid-drag', async () => {
   await g.ctx.close();
   check(await until(() => other.page.evaluate(() => Object.keys(window.__cl.holds()).length === 0), 8000), 'when that phone dies, the hold goes away');
   const labels = await other.page.evaluate(() => window.__cl.agentView().cards.filter((c) => c._i === 0).map((c) => c.card));
-  const r = await other.tool('place_card', { card: labels[0], spot: 0 });
+  const r = await other.tool('place_card', { card: labels[0], spot: 0, clover: (await other.table()).clover.index });
   check(r.ok, 'and the card can be moved by someone else', r.result);
   await done(ps);
 });
@@ -222,7 +222,7 @@ await scenario('two hands reach for the same card', async () => {
   for (let k = 1; k <= 6; k++) await a.page.mouse.move(at[0] + 8 * k, at[1] + 5 * k);
   await until(() => b.page.evaluate(() => window.__cl.holds()[1] !== undefined), 5000);
   const before = await where(b, 1);
-  const r = await b.tool('place_card', { card: await label(b, 1), spot: 3 });
+  const r = await b.tool('place_card', { card: await label(b, 1), spot: 3, clover: (await b.table()).clover.index });
   check(!r.ok && r.result.includes(`${a.name} is moving`), `${b.name}'s tools say ${a.name} has the card`, r.result);
   const bAt = await screen(b, 'card', 1), bTo = await screen(b, 'slot', 3);
   await b.page.mouse.move(...bAt); await b.page.mouse.down();

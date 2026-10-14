@@ -80,8 +80,8 @@ async function player(k) {
     },
     clue: async ({ leaf, text }) => said(await tool('write_clue', { leaf, text })),
     decoys: async ({ n }) => said(await tool('set_decoys', { count: n })),
-    move: async ({ card, slot }) => said(await tool('place_card', { card, spot: slot })),
-    turn: async ({ card, times }) => said(await tool('turn_card', { card, times })),
+    move: async ({ card, slot, top }) => said(await tool('place_card', { card, spot: slot, top, clover: (await tool('get_table')).clover.index })),
+    turn: async ({ card, times, top }) => said(await tool('turn_card', { card, times, top, clover: (await tool('get_table')).clover.index })),
     pick: async ({ clover }) => said(await tool('choose_clover', { clover })),
     recap: async () => tool('get_recap'),
     async screenshot() {
