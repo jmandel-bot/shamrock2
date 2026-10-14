@@ -31,12 +31,19 @@ Player k listens on `apiBasePort + k`. Logs and screenshots go to `out/`.
 ## Real models over MCP
 
 `mcp-bridge.mjs` is a small MCP server that offers one player's page tools
-(exactly as the page defines them, plus a `wait_for_change` long-poll) to an
-MCP client: what a browser assistant gets over WebMCP. `mcp-game.mjs` starts
-the driver and one `claude -p` session per player, each allowed only those
-tools (no shell, no files, no tactics guide: the rules come from the tool
-descriptions), then prints the clovers, guesses, tool calls and tool errors.
-Transcripts and each player's report go to `out/`. It spends model time, so
-it isn't part of `run.mjs`.
+(exactly as the page defines them) to an MCP client: what a browser assistant
+gets over WebMCP. Two more tools stand in for what people have around a real
+table: `wait_for_change`, a long-poll, and `say`, table talk (what players
+would say on the call). `wait_for_change` and `get_table` return what others
+said since the player last looked. `mcp-game.mjs` starts the driver and one
+`claude -p` session per player, each allowed only those tools (no shell, no
+files, no tactics guide: the rules come from the tool descriptions), then
+prints the clovers, guesses, tool calls and tool errors. Players play as a real
+table does: no turn order and nobody in charge; anyone moves any card and
+anyone may check, ideally after agreeing; a clover's writer gives no hints.
+Transcripts, each player's report, and `events.jsonl` (every line of talk and
+every action, in order) go to `out/`. It spends model time, so it isn't part
+of `run.mjs`.
 
     node harness/agentplay/mcp-game.mjs [players=3] [model=opus] [apiBasePort=9181]
+    node harness/agentplay/mcp-game.mjs Fable:claude-fable-5-1,Opus:claude-opus-5-5,…   # a mixed table

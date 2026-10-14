@@ -8,7 +8,7 @@
 //   e.g. node harness/agentplay/driver.mjs agent-test 3 9111
 import { chromium } from 'playwright';
 import http from 'node:http';
-import { mkdir, appendFile } from 'node:fs/promises';
+import { mkdir, appendFile, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { serve } from '../serve.mjs';
 
@@ -18,12 +18,19 @@ const N = +count, BASE = +base, PORT = BASE - 10, RELAY = BASE - 9;
 const OUT = here('./out/');
 await mkdir(OUT, { recursive: true });
 const LOG = `${OUT}log.txt`;
+await rm(`${OUT}events.jsonl`, { force: true });
 const log = async (who, msg) => { const line = `${new Date().toISOString().slice(11, 19)} ${who}: ${msg}`; console.log(line); await appendFile(LOG, line + '\n'); };
 
 const srv = await serve({ port: PORT, relayPort: RELAY, quiet: true });
 const browser = await chromium.launch({ args: ['--disable-features=WebRtcHideLocalIpsWithMdns'] });
 const url = `http://localhost:${PORT}/?signal=ws://localhost:${RELAY}#${room}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Table talk: what the players say to each other, as on the call people have
+// while they play. Shared by every player's API; not part of the game.
+const talk = [];
+// Everything that happens, in order, for reading the game back (events.jsonl).
+const t0 = Date.now();
+const event = (e) => appendFile(`${OUT}events.jsonl`, JSON.stringify({ t: Date.now() - t0, ...e }) + '\n');
 
 async function player(k) {
   const ctx = await browser.newContext({ viewport: { width: 900, height: 980 } });
@@ -53,6 +60,7 @@ async function player(k) {
     return { ...t, ...dom };
   };
   const key = (s) => JSON.stringify(s);
+  const me = async () => (await tool('get_table')).you ?? tag;
 
   const actions = {
     join: async ({ name }) => said(await tool('join_table', { name })),
@@ -90,18 +98,36 @@ async function player(k) {
       // The tools as an assistant would see them: names, descriptions, input schemas.
       if (req.method === 'GET' && u.pathname === '/tools') return reply(200, await ev(() => window.__cl.toolSpecs()));
       if (req.method === 'GET' && u.pathname === '/state') {
-        // ?wait=N: hold up to N seconds until something changes since ?since=<etag>.
+        // ?wait=N: hold up to N seconds until something changes since ?since=<etag>
+        // (the table, or table talk). ?talk=K: return what was said from entry K on.
         const wait = Math.min(+(u.searchParams.get('wait') ?? 0), 60), since = u.searchParams.get('since');
-        const t0 = Date.now();
-        let s = await state();
-        while (wait && since && String(hash(key(s))) === since && Date.now() - t0 < wait * 1000) { await sleep(400); s = await state(); }
-        return reply(200, { etag: String(hash(key(s))), ...s });
+        const heard = +(u.searchParams.get('talk') ?? talk.length);
+        const start = Date.now();
+        const look = async () => { const st = await state(); return [st, String(hash(key(st) + talk.length))]; };
+        let [s, etag] = await look();
+        while (wait && since && etag === since && Date.now() - start < wait * 1000) { await sleep(400); [s, etag] = await look(); }
+        return reply(200, { etag, ...s, talk: talk.slice(heard), talkCount: talk.length });
+      }
+      // Table talk: POST /say {text}.
+      if (req.method === 'POST' && u.pathname === '/say') {
+        let body = ''; for await (const c of req) body += c;
+        const text = String(JSON.parse(body || '{}').text ?? '').slice(0, 600);
+        const who = await me();
+        talk.push({ who, text });
+        await log(tag, `says: ${text}`);
+        await event({ who, kind: 'say', text });
+        return reply(200, { result: 'said', talkCount: talk.length });
       }
       // Any agent tool by name: POST /tool/<name> with its arguments.
       if (req.method === 'POST' && u.pathname.startsWith('/tool/')) {
         let body = ''; for await (const c of req) body += c;
-        const result = await tool(u.pathname.slice(6), body ? JSON.parse(body) : {});
+        const name = u.pathname.slice(6), args = body ? JSON.parse(body) : {};
+        const result = await tool(name, args);
         await log(tag, `${u.pathname.slice(1)} ${body} -> ${said(result)}`);
+        if (name !== 'get_table') {
+          const t = await tool('get_table');
+          await event({ who: t.you ?? tag, kind: 'tool', name, args, ok: result?.ok !== false, result: said(result), clover: t.clover?.index, phase: t.phase });
+        }
         return reply(200, { result });
       }
       if (req.method === 'POST' && actions[u.pathname.slice(1)]) {

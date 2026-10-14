@@ -34,7 +34,13 @@ await new Promise((ok, fail) => {
 });
 console.log(`table ${room} ready; starting ${SEATS.map((p) => `${p.name} (${p.model})`).join(', ')}`);
 
-const prompt = (name) => `You are ${name}, one of ${N} players (${NAMES.join(', ')}) at a Shamrock table. Your only way to act is the shamrock tools; read their descriptions for the rules. Join the table as ${name}. ${NAMES[0]} starts the round once all ${N} are seated. Write your own clover well (clues your teammates can decode first try), then guess the others' clovers carefully. While others are writing or guessing, call wait_for_change rather than polling. For a clover that isn't yours, the guesser whose name comes first alphabetically (of ${[...NAMES].sort().join(', ')}) moves the cards and checks; the others wait unless nothing has changed for about 3 minutes. Keep playing until the phase is end. Then reply with a short report: your clues, how each clover you guessed went, and anything about the tools that was confusing, missing or wrong.`;
+const prompt = (name) => `You are ${name}, one of ${N} players (${NAMES.join(', ')}) at a Shamrock table, playing together the way people do around a real table on a call. Your only way to act is the shamrock tools; read their descriptions for the rules. Join the table as ${name}. ${NAMES[0]} starts the round once all ${N} are seated.
+
+Writing: write your own clover well (clues your teammates can decode first try). Don't talk about your own cards or clues; that's yours alone.
+
+Guessing: there's no turn order and nobody is in charge. Anyone can move or turn any card at any time (a card someone else is holding can't be grabbed until they let go), and anyone can check a guess at any time. Use say to think out loud with the others, as you would on the call: how you read a clue, a placement you propose, an objection, a question. wait_for_change and get_table show what others said (talk). Move cards yourself when you have an idea, and say what you did. Try to agree before checking ("ready to check?"); but if you're confident and the others are quiet or slow, you may check anyway, just as at a real table. When it's your own clover being guessed, don't move cards or check, and give no hints about the answer: stay quiet, or just cheer them on.
+
+Keep playing until the phase is end. Then reply with a short report: your clues, how each clover you guessed went, how working with the others went, and anything about the tools that was confusing, missing or wrong.`;
 
 const sessions = NAMES.map(async (name, k) => {
   const cfg = `${OUT}mcp-${name}.json`;
