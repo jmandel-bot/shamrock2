@@ -1,6 +1,6 @@
 //! Native harness: properties the game must satisfy, independent of browsers.
 
-use cloverleaf::app::{App, BOLD_OFF, BOLD_ON, SHEET_CLOVERS, SHEET_JOIN, SHEET_PLAYERS, SHEET_RECAP, EV_EDIT_CLUE, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE, EV_OUTDATED, SAVE_TTL_MS, ZOOM_MAX, ZOOM_MIN};
+use cloverleaf::app::{App, BOLD_OFF, BOLD_ON, EV_STATUS, SHEET_CLOVERS, SHEET_JOIN, SHEET_PLAYERS, SHEET_RECAP, EV_EDIT_CLUE, EV_KEEP, EV_MOVED, EV_NET, EV_NOTICE, EV_OUTDATED, SAVE_TTL_MS, ZOOM_MAX, ZOOM_MIN};
 use cloverleaf::model::*;
 
 const TAU: f32 = std::f32::consts::TAU;
@@ -1739,4 +1739,121 @@ fn a_rejected_placement_is_marked_when_it_comes_back() {
     t.apps[g].action(3);
     t.pump();
     assert!(t.apps[g].shared.check(w).done() && t.apps[g].rejected_at(0).is_none());
+}
+
+/// Start dragging card `i` on device `k` toward `to` (screen px), a few
+/// steps, without letting go.
+fn grab_toward(a: &mut App, i: usize, to: (f32, f32)) {
+    let from = card_at(a, i);
+    a.pointer_down(from.0, from.1);
+    for k in 1..=4 {
+        let t = k as f32 / 4.0;
+        a.pointer_move(from.0 + (to.0 - from.0) * t * 0.5, from.1 + (to.1 - from.1) * t * 0.5);
+    }
+}
+
+fn statuses(a: &mut App) -> Vec<String> {
+    drain(a).1.into_iter().filter(|(k, _)| *k == EV_STATUS).map(|(_, b)| String::from_utf8_lossy(&b).into_owned()).collect()
+}
+
+#[test]
+fn a_card_is_in_one_hand_at_a_time() {
+    let mut t = table_in_guessing(3);
+    let w = t.writer_now();
+    let gs: Vec<usize> = (0..3).filter(|&k| t.apps[k].seat != Some(w)).collect();
+    let (a, b) = (gs[0], gs[1]);
+    for x in t.apps.iter_mut() {
+        x.settle();
+    }
+    // A picks up card 1; once B's screen knows, B can't take it.
+    let to = t.apps[a].slot_screen(0);
+    grab_toward(&mut t.apps[a], 1, to);
+    t.pump();
+    // Held still, finger down, for longer than a silent hand's time-out:
+    // still held.
+    for _ in 0..40 {
+        t.t += 150.0;
+        let now = t.t;
+        for x in t.apps.iter_mut() {
+            x.frame(now);
+        }
+        t.pump();
+    }
+    let before = t.apps[b].scene().cards[1];
+    let from = card_at(&t.apps[b], 1);
+    let away = t.apps[b].slot_screen(3);
+    drag(&mut t.apps[b], from, away);
+    assert_eq!(t.apps[b].scene().cards[1].loc, before.loc, "B's drag did nothing");
+    assert!(statuses(&mut t.apps[b]).iter().any(|s| s.contains("is moving this card")), "B is told who has it");
+    // Nor turn it with a tap.
+    let at = card_at(&t.apps[b], 1);
+    tap(&mut t.apps[b], at);
+    assert_eq!(t.apps[b].scene().cards[1].rot, before.rot, "B's tap didn't turn it");
+    // A lets go on spot 0: everyone agrees it's there, and now B can take it.
+    let to = t.apps[a].slot_screen(0);
+    t.apps[a].pointer_up(to.0, to.1);
+    t.pump();
+    assert!(t.digests_equal());
+    assert_eq!(t.apps[b].scene().cards[1].loc, Loc::Slot(0));
+    let from = card_at(&t.apps[b], 1);
+    drag(&mut t.apps[b], from, away);
+    assert_eq!(t.apps[b].scene().cards[1].loc, Loc::Slot(3), "free again once A let go");
+}
+
+#[test]
+fn two_hands_grabbing_at_once_leave_one_holding_it() {
+    let mut t = table_in_guessing(3);
+    let w = t.writer_now();
+    let gs: Vec<usize> = (0..3).filter(|&k| t.apps[k].seat != Some(w)).collect();
+    let (a, b) = (gs[0], gs[1]);
+    let watcher = (0..3).find(|&k| k != a && k != b).unwrap();
+    for x in t.apps.iter_mut() {
+        x.settle();
+    }
+    // Both grab card 2 before either hears of the other.
+    let (ta, tb) = (t.apps[a].slot_screen(1), t.apps[b].slot_screen(3));
+    grab_toward(&mut t.apps[a], 2, ta);
+    grab_toward(&mut t.apps[b], 2, tb);
+    t.pump();
+    let (keeper, _loser, drop) = if t.apps[a].device < t.apps[b].device { (a, b, 1u8) } else { (b, a, 3u8) };
+    // Both keep moving; only the keeper's moves count, and the watcher sees one hand.
+    for _ in 0..3 {
+        for &k in &[a, b] {
+            let to = if k == a { ta } else { tb };
+            t.apps[k].pointer_move(to.0 - 5.0, to.1 - 5.0);
+        }
+        t.pump();
+    }
+    let keeper_seat = t.apps[keeper].seat.unwrap();
+    assert_eq!(t.apps[watcher].holds().get(&2), Some(&keeper_seat), "the watcher sees only the keeper's hand");
+    assert!(!t.apps[keeper].holds().contains_key(&2), "the loser's hand let go");
+    // Both let go over their own spots: the card goes where the keeper put it.
+    t.apps[a].pointer_up(ta.0, ta.1);
+    t.apps[b].pointer_up(tb.0, tb.1);
+    t.pump();
+    assert!(t.digests_equal());
+    assert_eq!(t.apps[watcher].scene().cards[2].loc, Loc::Slot(drop));
+}
+
+#[test]
+fn a_hand_that_goes_silent_lets_go_of_its_card() {
+    let mut t = table_in_guessing(3);
+    let w = t.writer_now();
+    let gs: Vec<usize> = (0..3).filter(|&k| t.apps[k].seat != Some(w)).collect();
+    let (a, b) = (gs[0], gs[1]);
+    for x in t.apps.iter_mut() {
+        x.settle();
+    }
+    let to = t.apps[a].slot_screen(0);
+    grab_toward(&mut t.apps[a], 1, to);
+    t.pump();
+    assert!(t.apps[b].holds().contains_key(&1));
+    // A's phone dies mid-drag: nothing more from it. 4 s later, B can take the card.
+    let later = t.t + 4100.0;
+    t.apps[b].frame(later);
+    assert!(!t.apps[b].holds().contains_key(&1));
+    let from = card_at(&t.apps[b], 1);
+    let away = t.apps[b].slot_screen(3);
+    drag(&mut t.apps[b], from, away);
+    assert_eq!(t.apps[b].scene().cards[1].loc, Loc::Slot(3));
 }

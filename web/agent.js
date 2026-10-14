@@ -56,6 +56,8 @@ export function agentTools(g) {
             // "tray", "slot N", or "board" (set down outside any spot).
             // rejectedHere: an earlier check already rejected this card in
             // this spot, turned as it is now.
+            // heldBy: another player is moving this card right now (a card
+            // is in one hand at a time).
             cards: v.cards.map(({ _i, ...c }) => ({ ...c, words: Object.fromEntries(LEAVES.map((l, e) => [l, c.words[e]])) })),
           },
         };
@@ -118,6 +120,8 @@ export function agentTools(g) {
       run({ card: label, spot }) {
         const i = labelToIndex(label);
         if (i === undefined) return done(`no card ${label}`, false);
+        const by = view().cards.find((c) => c._i === i)?.heldBy;
+        if (by) return done(`${by} is moving card ${label} right now; wait for them to let go`, false);
         settle();
         const to = spot === 'tray' ? g.trayPoint() : point(g.X.probe_slot, spot);
         drag(point(g.X.probe_card, i), to);
@@ -132,6 +136,8 @@ export function agentTools(g) {
       run({ card: label, times = 1 }) {
         const i = labelToIndex(label);
         if (i === undefined) return done(`no card ${label}`, false);
+        const by = view().cards.find((c) => c._i === i)?.heldBy;
+        if (by) return done(`${by} is moving card ${label} right now; wait for them to let go`, false);
         for (let t = 0; t < times; t++) { settle(); const p = point(g.X.probe_card, i); g.X.pointer_down(...p); g.X.pointer_up(...p); g.sync(); }
         return done(`card ${label} reads top/right/bottom/left: ${view().cards.find((c) => c._i === i)?.words.join(' / ')}`);
       },

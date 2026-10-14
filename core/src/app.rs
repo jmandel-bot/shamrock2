@@ -242,6 +242,8 @@ const PALETTE: [u32; 8] =
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Target {
     Card(usize),
+    /// A card another player's hand is holding: the press does nothing.
+    Held(usize),
     Petal(u8),
     Hub,
     Board,
@@ -382,6 +384,9 @@ pub struct App {
     last_guess: Option<(u32, u8)>,
     /// Cards booted by the last guess: when their shake started.
     shakes: BTreeMap<(u32, u8), f64>,
+    /// The last card I couldn't take because someone else held it: (card,
+    /// their seat, when), to pulse it in their colour.
+    refused: Option<(usize, u32, f64)>,
     solved_at: f64,
     pub now: f64,
     pub outbox: Vec<u8>,
@@ -433,6 +438,7 @@ impl App {
             last_done: None,
             last_guess: None,
             shakes: BTreeMap::new(),
+            refused: None,
             pal: &DARK,
             word_w: Default::default(),
             word_layouts: Default::default(),
@@ -1256,8 +1262,32 @@ impl App {
 
     // ---- input --------------------------------------------------------------
 
+    /// Another player's hand on card `i` (from their live pointer): its
+    /// device and seat. With `below`, only a hand on a device numbered lower.
+    fn hand_on(&self, i: usize, below: Option<u32>) -> Option<(u32, u32)> {
+        self.cursors
+            .iter()
+            .filter(|(d, c)| c.card == Some(i as u8) && c.seat != 0 && Some(c.seat) != self.seat && below.is_none_or(|b| **d < b))
+            .map(|(d, c)| (*d, c.seat))
+            .next()
+    }
+
+    /// A card is in one hand at a time: say whose, and pulse it in their colour.
+    fn refuse(&mut self, i: usize, seat: u32) {
+        self.refused = Some((i, seat, self.now));
+        let who = self.name_of(seat);
+        self.status(&format!("{who} is moving this card"));
+    }
+
     pub fn pointer_down(&mut self, sx: f32, sy: f32) {
-        let target = self.hit(sx, sy);
+        let mut target = self.hit(sx, sy);
+        // Someone else is holding it: the first hand keeps it.
+        if let Target::Card(i) = target {
+            if let Some((_, seat)) = self.hand_on(i, None) {
+                self.refuse(i, seat);
+                target = Target::Held(i);
+            }
+        }
         let (grab, origin) = match target {
             Target::Card(i) => {
                 let c = self.scene().cards[i];
@@ -1282,16 +1312,25 @@ impl App {
             self.cursor_dirty = true;
         }
 
-        let Some(p) = self.press.as_mut() else { return };
+        let Some(p) = self.press.as_ref() else { return };
         if !p.moved && (sx - p.sx).hypot(sy - p.sy) < DRAG_THRESHOLD {
             return;
         }
+        // Someone else picked it up between my press and my first move.
+        if let (Target::Card(i), false) = (p.target, p.moved) {
+            if let Some((_, seat)) = self.hand_on(i, None) {
+                self.refuse(i, seat);
+                self.press.as_mut().unwrap().target = Target::Held(i);
+            }
+        }
+        let Some(p) = self.press.as_mut() else { return };
         p.moved = true;
         match p.target {
             Target::Card(i) => {
                 let (cx, cy) = (sx + p.grab.0, sy + p.grab.1);
                 self.drag_card(i, cx, cy);
             }
+            Target::Held(_) => {}
             _ => {
                 // Dragging anywhere else spins my view of the board.
                 let (psx, psy, spin) = (p.sx, p.sy, p.spin);
@@ -1753,7 +1792,24 @@ impl App {
             self.q = (self.q as f32 / 4.0).round() as i32 * 4;
             self.poses.clear();
         }
+        // Two hands took the same card before either heard of the other:
+        // the hand on the lower-numbered device keeps it, and this one lets go
+        // (every device applies the same rule, so nothing more is sent).
+        if let Some(i) = self.dragging_card() {
+            if let Some((_, seat)) = self.hand_on(i, Some(self.device)) {
+                if let Some(p) = self.press.as_mut() {
+                    p.target = Target::Held(i);
+                }
+                self.cursor_dirty = true;
+                self.refuse(i, seat);
+            }
+        }
         self.flush_cards();
+        // A card held still is still held: say so every second, so other
+        // screens' holds only time out when this device really goes quiet.
+        if self.dragging_card().is_some() && now - self.last_cursor_ms >= 1000.0 {
+            self.cursor_dirty = true;
+        }
         if self.cursor_dirty && now - self.last_cursor_ms >= 33.0 {
             self.cursor_dirty = false;
             self.last_cursor_ms = now;
@@ -1910,10 +1966,11 @@ impl App {
                 };
                 let words = turn_words(sc.words[i], c.rot).map(json_str).join(",");
                 format!(
-                    "{{\"card\":{},\"_i\":{i},\"at\":{at},\"words\":[{words}],\"movable\":{},\"rejectedHere\":{}}}",
+                    "{{\"card\":{},\"_i\":{i},\"at\":{at},\"words\":[{words}],\"movable\":{},\"rejectedHere\":{},\"heldBy\":{}}}",
                     rank[i],
                     sc.movable.get(i).copied().unwrap_or(false),
-                    self.rejected_in(&sc, i).is_some()
+                    self.rejected_in(&sc, i).is_some(),
+                    self.hand_on(i, None).map_or("null".into(), |(_, seat)| json_str(&self.name_of(seat)))
                 )
             })
             .collect();
@@ -2031,8 +2088,14 @@ impl App {
             }
             self.xform(f);
             let solved = matches!(c.loc, Loc::Slot(s) if sc.locked & (1 << s) != 0) && phase != Phase::Writing;
+            // A card I couldn't take: a pulse in the holder's colour.
+            let refused = self.refused.filter(|r| r.0 == i && self.now - r.2 < 700.0);
             let (stroke, lw) = match held {
                 _ if Some(i) == dragging => (0xffffffff, 4.0),
+                _ if refused.is_some() => {
+                    let (_, seat, t) = refused.unwrap();
+                    (self.color_of(seat), 7.0 + 9.0 * (1.0 - ((self.now - t) / 700.0) as f32))
+                }
                 Some(h) => (self.color_of(h), 7.0),
                 None if solved => (0x2fa84fff, 6.0),
                 None => (self.pal.paper_edge, 2.0),

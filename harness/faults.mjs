@@ -200,6 +200,61 @@ await scenario('a phone dies mid-drag', async () => {
   await done(ps);
 });
 
+await scenario('two hands reach for the same card', async () => {
+  const room = `hands-${Date.now().toString(36)}`;
+  const ps = await table(room, ['Ana', 'Ben', 'Cy']);
+  await ps[0].tool('start_round');
+  for (const p of ps) await writeAll(p, p.name.toLowerCase());
+  await until(async () => (await Promise.all(ps.map((p) => p.table()))).every((t) => t.phase === 'guessing'));
+  const writer = (await ps[0].table()).clover.writer;
+  const [a, b] = ps.filter((p) => p.name !== writer);
+  const watcher = ps.find((p) => p.name === writer);
+  for (const p of ps) await p.page.evaluate(() => window.__cl.settle());
+  const screen = (p, what, i) => p.page.evaluate(([what, i]) => { const r = document.getElementById('c').getBoundingClientRect(); const c = window.__cl[what](i); return [r.left + c[0], r.top + c[1]]; }, [what, i]);
+  const where = (p, i) => p.page.evaluate((i) => { const d = window.__cl.digest(); return JSON.stringify(d.puzzles[+d.phase.split(':')[1]].cards[i]); }, i);
+  const label = (p, i) => p.page.evaluate((i) => window.__cl.agentView().cards.find((c) => c._i === i).card, i);
+  const toastText = (p) => p.page.evaluate(() => document.getElementById('toast').textContent);
+
+  // One guesser holds card 1 (finger down, moving); the other can't take it.
+  const at = await screen(a, 'card', 1);
+  await a.page.mouse.move(...at);
+  await a.page.mouse.down();
+  for (let k = 1; k <= 6; k++) await a.page.mouse.move(at[0] + 8 * k, at[1] + 5 * k);
+  await until(() => b.page.evaluate(() => window.__cl.holds()[1] !== undefined), 5000);
+  const before = await where(b, 1);
+  const r = await b.tool('place_card', { card: await label(b, 1), spot: 3 });
+  check(!r.ok && r.result.includes(`${a.name} is moving`), `${b.name}'s tools say ${a.name} has the card`, r.result);
+  const bAt = await screen(b, 'card', 1), bTo = await screen(b, 'slot', 3);
+  await b.page.mouse.move(...bAt); await b.page.mouse.down();
+  for (let k = 1; k <= 8; k++) await b.page.mouse.move(bAt[0] + (bTo[0] - bAt[0]) * k / 8, bAt[1] + (bTo[1] - bAt[1]) * k / 8);
+  await b.page.mouse.up();
+  check(await where(b, 1) === before, `${b.name}'s own drag doesn't move it`, `${before} → ${await where(b, 1)}`);
+  check((await toastText(b)).includes(`${a.name} is moving this card`), `${b.name} is told who has it`, await toastText(b));
+  await a.page.mouse.up();
+
+  // Both grab card 2 at once, each 300 ms behind the other, toward different spots.
+  for (const p of [a, b]) await p.chaos({ delayMs: 300 });
+  await until(() => watcher.page.evaluate(() => Object.keys(window.__cl.holds()).length === 0), 5000);
+  const [aFrom, bFrom, aTo, bTo2] = [await screen(a, 'card', 2), await screen(b, 'card', 2), await screen(a, 'slot', 1), await screen(b, 'slot', 3)];
+  await Promise.all([[a, aFrom], [b, bFrom]].map(async ([p, f]) => { await p.page.mouse.move(...f); await p.page.mouse.down(); }));
+  const seen = [];
+  const sampling = (async () => { const t0 = Date.now(); while (Date.now() - t0 < 2600) { seen.push(await watcher.page.evaluate(() => window.__cl.holds()[2] ?? null)); await sleep(50); } })();
+  for (let k = 1; k <= 24; k++) {
+    await Promise.all([[a, aFrom, aTo], [b, bFrom, bTo2]].map(([p, f, t]) => p.page.mouse.move(f[0] + (t[0] - f[0]) * k / 24, f[1] + (t[1] - f[1]) * k / 24)));
+    await sleep(60);
+  }
+  await sampling;
+  const settled = seen.slice(-20).filter((x) => x !== null);
+  check(settled.length > 0 && settled.every((x) => x === settled[0]), 'the watcher sees the card settle in one hand', JSON.stringify(seen));
+  const keeper = (await a.page.evaluate(() => window.__cl.device)) < (await b.page.evaluate(() => window.__cl.device)) ? a : b;
+  await Promise.all([a, b].map((p) => p.page.mouse.up()));
+  for (const p of [a, b]) await p.chaos({ delayMs: 0 });
+  check(await until(() => agree(ps), 15000), 'every screen agrees afterwards');
+  const spot = (await watcher.page.evaluate(() => window.__cl.agentView().cards.find((c) => c._i === 2).at));
+  check(spot === `slot ${keeper === a ? 1 : 3}`, `the card is where the keeper (${keeper.name}) dropped it`, spot);
+  await done(ps);
+});
+
 await scenario('left alone, then joined again', async () => {
   const room = `alone-${Date.now().toString(36)}`;
   const ps = await table(room, ['Ana', 'Ben']);
